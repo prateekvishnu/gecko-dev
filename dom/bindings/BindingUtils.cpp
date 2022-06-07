@@ -71,6 +71,7 @@
 #include "mozilla/dom/XULFrameElementBinding.h"
 #include "mozilla/dom/XULMenuElementBinding.h"
 #include "mozilla/dom/XULPopupElementBinding.h"
+#include "mozilla/dom/XULResizerElementBinding.h"
 #include "mozilla/dom/XULTextElementBinding.h"
 #include "mozilla/dom/XULTreeElementBinding.h"
 #include "mozilla/dom/Promise.h"
@@ -2780,7 +2781,7 @@ bool MayResolveGlobal(const JSAtomState& aNames, jsid aId,
   return JS_MayResolveStandardClass(aNames, aId, aMaybeObj);
 }
 
-bool EnumerateGlobal(JSContext* aCx, JS::HandleObject aObj,
+bool EnumerateGlobal(JSContext* aCx, JS::Handle<JSObject*> aObj,
                      JS::MutableHandleVector<jsid> aProperties,
                      bool aEnumerableOnly) {
   MOZ_ASSERT(JS_IsGlobalObject(aObj),
@@ -3531,22 +3532,29 @@ bool GetSetlikeBackingObject(JSContext* aCx, JS::Handle<JSObject*> aObj,
 }
 
 static inline JSObject* NewObservableArrayProxyObject(
-    JSContext* aCx, const ObservableArrayProxyHandler* aHandler) {
-  JS::RootedObject target(aCx, JS::NewArrayObject(aCx, 0));
+    JSContext* aCx, const ObservableArrayProxyHandler* aHandler, void* aOwner) {
+  JS::Rooted<JSObject*> target(aCx, JS::NewArrayObject(aCx, 0));
   if (NS_WARN_IF(!target)) {
     return nullptr;
   }
 
-  JS::RootedValue targetValue(aCx, JS::ObjectValue(*target));
-  return js::NewProxyObject(aCx, aHandler, targetValue, nullptr);
+  JS::Rooted<JS::Value> targetValue(aCx, JS::ObjectValue(*target));
+  JS::Rooted<JSObject*> proxy(
+      aCx, js::NewProxyObject(aCx, aHandler, targetValue, nullptr));
+  if (!proxy) {
+    return nullptr;
+  }
+  js::SetProxyReservedSlot(proxy, OBSERVABLE_ARRAY_DOM_INTERFACE_SLOT,
+                           JS::PrivateValue(aOwner));
+  return proxy;
 }
 
 bool GetObservableArrayBackingObject(
     JSContext* aCx, JS::Handle<JSObject*> aObj, size_t aSlotIndex,
     JS::MutableHandle<JSObject*> aBackingObj, bool* aBackingObjCreated,
-    const ObservableArrayProxyHandler* aHandler) {
+    const ObservableArrayProxyHandler* aHandler, void* aOwner) {
   return GetBackingObject<NewObservableArrayProxyObject>(
-      aCx, aObj, aSlotIndex, aBackingObj, aBackingObjCreated, aHandler);
+      aCx, aObj, aSlotIndex, aBackingObj, aBackingObjCreated, aHandler, aOwner);
 }
 
 bool ForEachHandler(JSContext* aCx, unsigned aArgc, JS::Value* aVp) {
@@ -3831,6 +3839,8 @@ bool HTMLConstructor(JSContext* aCx, unsigned aArgc, JS::Value* aVp,
     if (definition->mLocalName == nsGkAtoms::description ||
         definition->mLocalName == nsGkAtoms::label) {
       cb = XULTextElement_Binding::GetConstructorObject;
+    } else if (definition->mLocalName == nsGkAtoms::resizer) {
+      cb = XULResizerElement_Binding::GetConstructorObject;
     } else if (definition->mLocalName == nsGkAtoms::menupopup ||
                definition->mLocalName == nsGkAtoms::popup ||
                definition->mLocalName == nsGkAtoms::panel ||

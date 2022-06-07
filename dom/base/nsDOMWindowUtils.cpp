@@ -1080,6 +1080,10 @@ nsDOMWindowUtils::SendNativeTouchPoint(uint32_t aPointerId,
                                        int32_t aScreenY, double aPressure,
                                        uint32_t aOrientation,
                                        nsIObserver* aObserver) {
+  // FYI: This was designed for automated tests, but currently, this is used by
+  //      DevTools to emulate touch events from mouse events in the responsive
+  //      design mode.
+
   nsCOMPtr<nsIWidget> widget = GetWidget();
   if (!widget) {
     return NS_ERROR_FAILURE;
@@ -2124,7 +2128,7 @@ nsDOMWindowUtils::GetNodeObservedByIMEContentObserver(nsINode** aNode) {
     *aNode = nullptr;
     return NS_OK;
   }
-  *aNode = do_AddRef(observer->GetObservingContent()).take();
+  *aNode = do_AddRef(observer->GetObservingElement()).take();
   return NS_OK;
 }
 
@@ -3194,7 +3198,7 @@ nsDOMWindowUtils::GetUnanimatedComputedStyle(Element* aElement,
   if (!pseudo) {
     return NS_ERROR_FAILURE;
   }
-  RefPtr<ComputedStyle> computedStyle =
+  RefPtr<const ComputedStyle> computedStyle =
       nsComputedDOMStyle::GetUnanimatedComputedStyleNoFlush(aElement, *pseudo);
   if (!computedStyle) {
     return NS_ERROR_FAILURE;
@@ -3382,7 +3386,7 @@ nsDOMWindowUtils::GetFileId(JS::Handle<JS::Value> aFile, JSContext* aCx,
 }
 
 NS_IMETHODIMP
-nsDOMWindowUtils::GetFilePath(JS::HandleValue aFile, JSContext* aCx,
+nsDOMWindowUtils::GetFilePath(JS::Handle<JS::Value> aFile, JSContext* aCx,
                               nsAString& _retval) {
   if (aFile.isPrimitive()) {
     _retval.Truncate();
@@ -4071,7 +4075,7 @@ nsDOMWindowUtils::IsKeyboardEventUserActivity(Event* aEvent, bool* aResult) {
 
 NS_IMETHODIMP
 nsDOMWindowUtils::GetContentAPZTestData(
-    JSContext* aContext, JS::MutableHandleValue aOutContentTestData) {
+    JSContext* aContext, JS::MutableHandle<JS::Value> aOutContentTestData) {
   if (nsIWidget* widget = GetWidget()) {
     WindowRenderer* renderer = widget->GetWindowRenderer();
     if (!renderer) {
@@ -4089,7 +4093,7 @@ nsDOMWindowUtils::GetContentAPZTestData(
 
 NS_IMETHODIMP
 nsDOMWindowUtils::GetCompositorAPZTestData(
-    JSContext* aContext, JS::MutableHandleValue aOutCompositorTestData) {
+    JSContext* aContext, JS::MutableHandle<JS::Value> aOutCompositorTestData) {
   if (nsIWidget* widget = GetWidget()) {
     WindowRenderer* renderer = widget->GetWindowRenderer();
     if (!renderer) {
@@ -4165,7 +4169,7 @@ nsDOMWindowUtils::SetResizeMargin(int32_t aResizeMargin) {
 
 NS_IMETHODIMP
 nsDOMWindowUtils::GetFrameUniformityTestData(
-    JSContext* aContext, JS::MutableHandleValue aOutFrameUniformity) {
+    JSContext* aContext, JS::MutableHandle<JS::Value> aOutFrameUniformity) {
   nsIWidget* widget = GetWidget();
   if (!widget) {
     return NS_ERROR_NOT_AVAILABLE;

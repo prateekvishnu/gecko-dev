@@ -15,6 +15,7 @@ use super::generics::{self, GreaterThanOrEqualToOne, NonNegative, ZeroToOne};
 use super::specified;
 use super::{CSSFloat, CSSInteger};
 use crate::context::QuirksMode;
+use crate::stylesheets::container_rule::ContainerInfo;
 use crate::font_metrics::{get_metrics_provider_for_product, FontMetricsProvider};
 use crate::media_queries::Device;
 #[cfg(feature = "gecko")]
@@ -46,7 +47,8 @@ pub use self::box_::{AnimationIterationCount, AnimationName, AnimationTimeline, 
 pub use self::box_::{Appearance, BreakBetween, BreakWithin, Clear, ContentVisibility, Float};
 pub use self::box_::{Display, Overflow, OverflowAnchor, TransitionProperty};
 pub use self::box_::{OverflowClipBox, OverscrollBehavior, Perspective, Resize, ScrollbarGutter};
-pub use self::box_::{ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStrictness, ScrollSnapType};
+pub use self::box_::{ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStop};
+pub use self::box_::{ScrollSnapStrictness, ScrollSnapType};
 pub use self::box_::{TouchAction, VerticalAlign, WillChange};
 pub use self::color::{Color, ColorOrAuto, ColorPropertyValue, ColorScheme, PrintColorAdjust};
 pub use self::column::ColumnCount;
@@ -172,6 +174,9 @@ pub struct Context<'a> {
     /// values, which SMIL allows.
     pub for_smil_animation: bool,
 
+    /// Returns the container information to evaluate a given container query.
+    pub container_info: Option<ContainerInfo>,
+
     /// The property we are computing a value for, if it is a non-inherited
     /// property.  None if we are computed a value for an inherited property
     /// or not computing for a property at all (e.g. in a media query
@@ -202,6 +207,42 @@ impl<'a> Context<'a> {
             in_media_query: true,
             quirks_mode,
             for_smil_animation: false,
+            container_info: None,
+            for_non_inherited_property: None,
+            rule_cache_conditions: RefCell::new(&mut conditions),
+        };
+
+        f(&context)
+    }
+
+    /// Creates a suitable context for container query evaluation for the style
+    /// specified.
+    pub fn for_container_query_evaluation<F, R>(
+        device: &Device,
+        container_info_and_style: Option<(ContainerInfo, Arc<ComputedValues>)>,
+        f: F,
+    ) -> R
+    where
+        F: FnOnce(&Context) -> R,
+    {
+        let mut conditions = RuleCacheConditions::default();
+        let provider = get_metrics_provider_for_product();
+
+        let (container_info, style) = match container_info_and_style {
+            Some((ci, s)) => (Some(ci), Some(s)),
+            None => (None, None),
+        };
+
+        let style = style.as_ref().map(|s| &**s);
+        let quirks_mode = device.quirks_mode();
+        let context = Context {
+            builder: StyleBuilder::for_inheritance(device, style, None),
+            font_metrics_provider: &provider,
+            cached_system_font: None,
+            in_media_query: true,
+            quirks_mode,
+            for_smil_animation: false,
+            container_info,
             for_non_inherited_property: None,
             rule_cache_conditions: RefCell::new(&mut conditions),
         };
@@ -265,8 +306,8 @@ impl<'a, 'cx, 'cx_a: 'cx, S: ToComputedValue + 'a> ComputedVecIter<'a, 'cx, 'cx_
     /// Construct an iterator from a slice of specified values and a context
     pub fn new(cx: &'cx Context<'cx_a>, values: &'a [S]) -> Self {
         ComputedVecIter {
-            cx: cx,
-            values: values,
+            cx,
+            values,
         }
     }
 }

@@ -5,16 +5,20 @@
 
 var EXPORTED_SYMBOLS = ["SearchSERPTelemetryParent"];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "SearchSERPTelemetry",
   "resource:///modules/SearchSERPTelemetry.jsm"
 );
 
 class SearchSERPTelemetryParent extends JSWindowActorParent {
   receiveMessage(msg) {
+    let browser = this.browsingContext.top.embedderElement;
+
     if (msg.name == "SearchTelemetry:PageInfo") {
-      SearchSERPTelemetry.reportPageWithAds(msg.data);
+      lazy.SearchSERPTelemetry.reportPageWithAds(msg.data, browser);
     }
   }
 }

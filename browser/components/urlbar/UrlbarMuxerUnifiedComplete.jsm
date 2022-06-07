@@ -13,8 +13,8 @@ var EXPORTED_SYMBOLS = ["UrlbarMuxerUnifiedComplete"];
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
   UrlbarProviderQuickSuggest:
     "resource:///modules/UrlbarProviderQuickSuggest.jsm",
@@ -883,6 +883,31 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       )
     ) {
       return false;
+    }
+
+    // Discard history results whose URLs were originally sponsored. We use the
+    // presence of a partner's URL search param to detect these. The param is
+    // defined in the pref below, which is also used for the newtab page.
+    if (
+      result.source == UrlbarUtils.RESULT_SOURCE.HISTORY &&
+      result.type == UrlbarUtils.RESULT_TYPE.URL
+    ) {
+      let param = Services.prefs.getCharPref(
+        "browser.newtabpage.activity-stream.hideTopSitesWithSearchParam"
+      );
+      if (param) {
+        let [key, value] = param.split("=");
+        let searchParams;
+        try {
+          ({ searchParams } = new URL(result.payload.url));
+        } catch (error) {}
+        if (
+          (value === undefined && searchParams?.has(key)) ||
+          (value !== undefined && searchParams?.getAll(key).includes(value))
+        ) {
+          return false;
+        }
+      }
     }
 
     // Heuristic results must always be the first result.  If this result is a

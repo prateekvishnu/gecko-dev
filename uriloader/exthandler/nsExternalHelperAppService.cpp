@@ -198,11 +198,7 @@ static nsresult GetDownloadDirectory(nsIFile** _directory,
   return NS_ERROR_FAILURE;
 #endif
 
-  bool usePrefDir =
-      StaticPrefs::browser_download_improvements_to_download_panel();
-#ifdef XP_MACOSX
-  usePrefDir = true;
-#endif
+  bool usePrefDir = !StaticPrefs::browser_download_start_downloads_in_tmp_dir();
 
   nsCOMPtr<nsIFile> dir;
   nsresult rv;
@@ -584,10 +580,6 @@ static const nsDefaultMimeTypeEntry nonDecodableExtensions[] = {
  * image/ mimetypes.
  */
 static const char* forcedExtensionMimetypes[] = {
-    // Note: zip and json mimetypes are commonly used with a variety of
-    // extensions; don't add them here. It's a similar story for text/xml,
-    // but slightly worse because we can use it when sniffing for a mimetype
-    // if one hasn't been provided, so don't re-add that here either.
     APPLICATION_PDF, APPLICATION_OGG, APPLICATION_WASM,
     TEXT_CALENDAR,   TEXT_CSS,        TEXT_VCARD};
 
@@ -604,23 +596,19 @@ static const char* descriptionOverwriteExtensions[] = {
 static StaticRefPtr<nsExternalHelperAppService> sExtHelperAppSvcSingleton;
 
 /**
- * On Mac child processes, return an nsOSHelperAppServiceChild for remoting
- * OS calls to the parent process. On all other platforms use
+ * In child processes, return an nsOSHelperAppServiceChild for remoting
+ * OS calls to the parent process.  In the parent process itself, use
  * nsOSHelperAppService.
  */
 /* static */
 already_AddRefed<nsExternalHelperAppService>
 nsExternalHelperAppService::GetSingleton() {
   if (!sExtHelperAppSvcSingleton) {
-#if defined(XP_MACOSX) || defined(XP_WIN)
     if (XRE_IsParentProcess()) {
       sExtHelperAppSvcSingleton = new nsOSHelperAppService();
     } else {
       sExtHelperAppSvcSingleton = new nsOSHelperAppServiceChild();
     }
-#else
-    sExtHelperAppSvcSingleton = new nsOSHelperAppService();
-#endif  // defined(XP_MACOSX) || defined(XP_WIN)
     ClearOnShutdown(&sExtHelperAppSvcSingleton);
   }
 
@@ -2366,7 +2354,7 @@ nsresult nsExternalAppHandler::CreateTransfer() {
         mDownloadClassification, referrerInfo, mBrowsingContext,
         mHandleInternally, nullptr);
   } else {
-    rv = transfer->Init(mSourceUrl, target, u""_ns, mMimeInfo,
+    rv = transfer->Init(mSourceUrl, nullptr, target, u""_ns, mMimeInfo,
                         mTimeDownloadStarted, mTempFile, this,
                         channel && NS_UsePrivateBrowsing(channel),
                         mDownloadClassification, referrerInfo);
@@ -2458,7 +2446,7 @@ nsresult nsExternalAppHandler::CreateFailedTransfer() {
         mDownloadClassification, referrerInfo, mBrowsingContext,
         mHandleInternally, httpChannel);
   } else {
-    rv = transfer->Init(mSourceUrl, pseudoTarget, u""_ns, mMimeInfo,
+    rv = transfer->Init(mSourceUrl, nullptr, pseudoTarget, u""_ns, mMimeInfo,
                         mTimeDownloadStarted, mTempFile, this,
                         channel && NS_UsePrivateBrowsing(channel),
                         mDownloadClassification, referrerInfo);
@@ -3662,7 +3650,7 @@ nsExternalHelperAppService::ShouldModifyExtension(nsIMIMEInfo* aMimeInfo,
   // on the content type.
   bool canForce = StringBeginsWith(MIMEType, "image/"_ns) ||
                   StringBeginsWith(MIMEType, "audio/"_ns) ||
-                  StringBeginsWith(MIMEType, "video/"_ns);
+                  StringBeginsWith(MIMEType, "video/"_ns) || aFileExt.IsEmpty();
 
   if (!canForce) {
     for (const char* mime : forcedExtensionMimetypes) {
@@ -3676,7 +3664,7 @@ nsExternalHelperAppService::ShouldModifyExtension(nsIMIMEInfo* aMimeInfo,
     }
 
     if (!canForce) {
-      return ModifyExtension_Append;
+      return ModifyExtension_Ignore;
     }
   }
 

@@ -295,8 +295,8 @@ nsresult nsHttpTransaction::Init(
   if (mHasRequestBody) {
     // wrap the headers and request body in a multiplexed input stream.
     nsCOMPtr<nsIMultiplexInputStream> multi;
-    rv = nsMultiplexInputStreamConstructor(
-        nullptr, NS_GET_IID(nsIMultiplexInputStream), getter_AddRefs(multi));
+    rv = nsMultiplexInputStreamConstructor(NS_GET_IID(nsIMultiplexInputStream),
+                                           getter_AddRefs(multi));
     if (NS_FAILED(rv)) return rv;
 
     rv = multi->AppendStream(headers);
@@ -660,16 +660,21 @@ void nsHttpTransaction::OnTransportStatus(nsITransport* transport,
       return;
     }
 
-    nsCOMPtr<nsISeekableStream> seekable = do_QueryInterface(mRequestStream);
-    if (!seekable) {
+    nsCOMPtr<nsITellableStream> tellable = do_QueryInterface(mRequestStream);
+    if (!tellable) {
       LOG1(
           ("nsHttpTransaction::OnTransportStatus %p "
-           "SENDING_TO without seekable request stream\n",
+           "SENDING_TO without tellable request stream\n",
            this));
+      MOZ_ASSERT(
+          !mRequestStream,
+          "mRequestStream should be tellable as it was wrapped in "
+          "nsBufferedInputStream, which provides the tellable interface even "
+          "when wrapping non-tellable streams.");
       progress = 0;
     } else {
       int64_t prog = 0;
-      seekable->Tell(&prog);
+      tellable->Tell(&prog);
       progress = prog;
     }
 
@@ -1315,8 +1320,7 @@ bool nsHttpTransaction::ShouldRestartOn0RttError(nsresult reason) {
        "mEarlyDataWasAvailable=%d error=%" PRIx32 "]\n",
        this, mEarlyDataWasAvailable, static_cast<uint32_t>(reason)));
   return StaticPrefs::network_http_early_data_disable_on_error() &&
-         mEarlyDataWasAvailable &&
-         SecurityErrorToBeHandledByTransaction(reason);
+         mEarlyDataWasAvailable && SecurityErrorThatMayNeedRestart(reason);
 }
 
 void nsHttpTransaction::Close(nsresult reason) {
@@ -1976,7 +1980,7 @@ nsresult nsHttpTransaction::ParseLineSegment(char* segment, uint32_t len) {
       mResponseHead->Reset();
       return NS_OK;
     }
-    {
+    if (!mConnection->IsProxyConnectInProgress()) {
       MutexAutoLock lock(mLock);
       mEarlyHintObserver = nullptr;
     }

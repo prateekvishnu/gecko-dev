@@ -299,12 +299,15 @@ static StyleRect<T> StyleRectWithAllSides(const T& aSide) {
 nsStyleMargin::nsStyleMargin(const Document& aDocument)
     : mMargin(StyleRectWithAllSides(
           LengthPercentageOrAuto::LengthPercentage(LengthPercentage::Zero()))),
-      mScrollMargin(StyleRectWithAllSides(StyleLength{0.})) {
+      mScrollMargin(StyleRectWithAllSides(StyleLength{0.})),
+      mOverflowClipMargin(StyleLength::Zero()) {
   MOZ_COUNT_CTOR(nsStyleMargin);
 }
 
 nsStyleMargin::nsStyleMargin(const nsStyleMargin& aSrc)
-    : mMargin(aSrc.mMargin), mScrollMargin(aSrc.mScrollMargin) {
+    : mMargin(aSrc.mMargin),
+      mScrollMargin(aSrc.mScrollMargin),
+      mOverflowClipMargin(aSrc.mOverflowClipMargin) {
   MOZ_COUNT_CTOR(nsStyleMargin);
 }
 
@@ -322,6 +325,10 @@ nsChangeHint nsStyleMargin::CalcDifference(
   if (mScrollMargin != aNewData.mScrollMargin) {
     // FIXME: Bug 1530253 Support re-snapping when scroll-margin changes.
     hint |= nsChangeHint_NeutralChange;
+  }
+
+  if (mOverflowClipMargin != aNewData.mOverflowClipMargin) {
+    hint |= nsChangeHint_UpdateOverflow | nsChangeHint_RepaintFrame;
   }
 
   return hint;
@@ -2429,7 +2436,8 @@ nsChangeHint nsStyleDisplay::CalcDifference(
     // FIXME: Bug 1530253 Support re-snapping when scroll-snap-align changes.
     hint |= nsChangeHint_NeutralChange;
   }
-  if (mScrollSnapType != aNewData.mScrollSnapType) {
+  if (mScrollSnapType != aNewData.mScrollSnapType ||
+      mScrollSnapStop != aNewData.mScrollSnapStop) {
     // FIXME: Bug 1530253 Support re-snapping when scroll-snap-type changes.
     hint |= nsChangeHint_RepaintFrame;
   }
@@ -3155,6 +3163,7 @@ nsStyleUIReset::nsStyleUIReset(const Document& aDocument)
       mWindowDragging(StyleWindowDragging::Default),
       mWindowShadow(StyleWindowShadow::Default),
       mWindowOpacity(1.0),
+      mMozWindowInputRegionMargin(StyleLength::Zero()),
       mWindowTransformOrigin{LengthPercentage::FromPercentage(0.5),
                              LengthPercentage::FromPercentage(0.5),
                              {0.}},
@@ -3188,6 +3197,7 @@ nsStyleUIReset::nsStyleUIReset(const nsStyleUIReset& aSource)
       mWindowDragging(aSource.mWindowDragging),
       mWindowShadow(aSource.mWindowShadow),
       mWindowOpacity(aSource.mWindowOpacity),
+      mMozWindowInputRegionMargin(aSource.mMozWindowInputRegionMargin),
       mMozWindowTransform(aSource.mMozWindowTransform),
       mWindowTransformOrigin(aSource.mWindowTransformOrigin),
       mTransitions(aSource.mTransitions.Clone()),
@@ -3237,27 +3247,29 @@ nsChangeHint nsStyleUIReset::CalcDifference(
     hint |= nsChangeHint_SchedulePaint;
   }
 
-  if (!hint && (mTransitions != aNewData.mTransitions ||
-                mTransitionTimingFunctionCount !=
-                    aNewData.mTransitionTimingFunctionCount ||
-                mTransitionDurationCount != aNewData.mTransitionDurationCount ||
-                mTransitionDelayCount != aNewData.mTransitionDelayCount ||
-                mTransitionPropertyCount != aNewData.mTransitionPropertyCount ||
-                mAnimations != aNewData.mAnimations ||
-                mAnimationTimingFunctionCount !=
-                    aNewData.mAnimationTimingFunctionCount ||
-                mAnimationDurationCount != aNewData.mAnimationDurationCount ||
-                mAnimationDelayCount != aNewData.mAnimationDelayCount ||
-                mAnimationNameCount != aNewData.mAnimationNameCount ||
-                mAnimationDirectionCount != aNewData.mAnimationDirectionCount ||
-                mAnimationFillModeCount != aNewData.mAnimationFillModeCount ||
-                mAnimationPlayStateCount != aNewData.mAnimationPlayStateCount ||
-                mAnimationIterationCountCount !=
-                    aNewData.mAnimationIterationCountCount ||
-                mAnimationTimelineCount != aNewData.mAnimationTimelineCount ||
-                mIMEMode != aNewData.mIMEMode ||
-                mWindowOpacity != aNewData.mWindowOpacity ||
-                mMozWindowTransform != aNewData.mMozWindowTransform)) {
+  if (!hint &&
+      (mTransitions != aNewData.mTransitions ||
+       mTransitionTimingFunctionCount !=
+           aNewData.mTransitionTimingFunctionCount ||
+       mTransitionDurationCount != aNewData.mTransitionDurationCount ||
+       mTransitionDelayCount != aNewData.mTransitionDelayCount ||
+       mTransitionPropertyCount != aNewData.mTransitionPropertyCount ||
+       mAnimations != aNewData.mAnimations ||
+       mAnimationTimingFunctionCount !=
+           aNewData.mAnimationTimingFunctionCount ||
+       mAnimationDurationCount != aNewData.mAnimationDurationCount ||
+       mAnimationDelayCount != aNewData.mAnimationDelayCount ||
+       mAnimationNameCount != aNewData.mAnimationNameCount ||
+       mAnimationDirectionCount != aNewData.mAnimationDirectionCount ||
+       mAnimationFillModeCount != aNewData.mAnimationFillModeCount ||
+       mAnimationPlayStateCount != aNewData.mAnimationPlayStateCount ||
+       mAnimationIterationCountCount !=
+           aNewData.mAnimationIterationCountCount ||
+       mAnimationTimelineCount != aNewData.mAnimationTimelineCount ||
+       mIMEMode != aNewData.mIMEMode ||
+       mWindowOpacity != aNewData.mWindowOpacity ||
+       mMozWindowInputRegionMargin != aNewData.mMozWindowInputRegionMargin ||
+       mMozWindowTransform != aNewData.mMozWindowTransform)) {
     hint |= nsChangeHint_NeutralChange;
   }
 

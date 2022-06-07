@@ -354,7 +354,7 @@ class NavigationDelegateTest : BaseSessionTest() {
         mainSession.forCallbacksDuringWait(object : NavigationDelegate {
             @AssertCalled(count = 1)
             override fun onLoadError(session: GeckoSession, uri: String?, error: WebRequestError): GeckoResult<String>? {
-                assertThat("categories should match", error.category, equalTo(WebRequestError.ERROR_CATEGORY_SECURITY))
+                assertThat("categories should match", error.category, equalTo(WebRequestError.ERROR_CATEGORY_NETWORK))
                 assertThat("codes should match", error.code, equalTo(WebRequestError.ERROR_HTTPS_ONLY))
                 return null
             }
@@ -424,7 +424,7 @@ class NavigationDelegateTest : BaseSessionTest() {
         privateSession.forCallbacksDuringWait(object : NavigationDelegate {
             @AssertCalled(count = 1)
             override fun onLoadError(session: GeckoSession, uri: String?, error: WebRequestError): GeckoResult<String>? {
-                assertThat("categories should match", error.category, equalTo(WebRequestError.ERROR_CATEGORY_SECURITY))
+                assertThat("categories should match", error.category, equalTo(WebRequestError.ERROR_CATEGORY_NETWORK))
                 assertThat("codes should match", error.code, equalTo(WebRequestError.ERROR_HTTPS_ONLY))
                 return null
             }
@@ -623,6 +623,52 @@ class NavigationDelegateTest : BaseSessionTest() {
         mainSession.waitForPageStop()
 
         sessionRule.runtime.settings.setAllowInsecureConnections(GeckoRuntimeSettings.ALLOW_ALL)
+    }
+
+    @Test fun loadHSTSBadCert() {
+        // TODO: Bug 1673954
+        assumeThat(sessionRule.env.isFission, equalTo(false))
+
+        val httpsFirstPref = "dom.security.https_first"
+        assertThat("https pref should be false", sessionRule.getPrefs(httpsFirstPref)[0] as Boolean, equalTo(false))
+
+        // load secure url with hsts header
+        val uri = "https://example.com/tests/junit/hsts_header.sjs"
+        mainSession.loadUri(uri)
+        mainSession.waitForPageStop()
+
+        // load insecure subdomain url to see if it gets upgraded to https
+        val http_uri = "http://test1.example.com/"
+        val https_uri = "https://test1.example.com/"
+
+        mainSession.loadUri(http_uri)
+        mainSession.waitForPageStop()
+
+        mainSession.forCallbacksDuringWait(object : NavigationDelegate {
+            @AssertCalled(count = 2)
+            override fun onLoadRequest(session: GeckoSession,
+                                        request: LoadRequest):
+                                        GeckoResult<AllowOrDeny>? {
+                assertThat("URI should be HTTP then redirected to HTTPS",
+                           request.uri, equalTo(forEachCall(http_uri, https_uri)))
+                return null
+            }
+        })
+
+        // load subdomain that will trigger the cert error
+        val no_cert_uri = "https://nocert.example.com/"
+        mainSession.loadUri(no_cert_uri)
+        mainSession.waitForPageStop()
+
+        mainSession.forCallbacksDuringWait(object : NavigationDelegate {
+            @AssertCalled(count = 1)
+            override fun onLoadError(session: GeckoSession, uri: String?, error: WebRequestError): GeckoResult<String>? {
+                assertThat("categories should match", error.category, equalTo(WebRequestError.ERROR_CATEGORY_NETWORK))
+                assertThat("codes should match", error.code, equalTo(WebRequestError.ERROR_BAD_HSTS_CERT))
+                return null
+            }
+        })
+        sessionRule.clearHSTSState()
     }
 
     @Ignore // Disabled for bug 1619344.

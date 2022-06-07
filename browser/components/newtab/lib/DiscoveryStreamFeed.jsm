@@ -6,35 +6,32 @@
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NewTabUtils",
   "resource://gre/modules/NewTabUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "RemoteSettings",
   "resource://services-settings/remote-settings.js"
 );
 const { setTimeout, clearTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 const { actionTypes: at, actionCreators: ac } = ChromeUtils.import(
   "resource://activity-stream/common/Actions.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "Region",
   "resource://gre/modules/Region.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PersistentCache",
   "resource://activity-stream/lib/PersistentCache.jsm"
 );
@@ -73,13 +70,13 @@ const PREF_PERSONALIZATION_OVERRIDE =
 
 let getHardcodedLayout;
 
-this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
+class DiscoveryStreamFeed {
   constructor() {
     // Internal state for checking if we've intialized all our data
     this.loaded = false;
 
     // Persistent cache for remote endpoint data.
-    this.cache = new PersistentCache(CACHE_KEY, true);
+    this.cache = new lazy.PersistentCache(CACHE_KEY, true);
     this.locale = Services.locale.appLocaleAsBCP47;
     this._impressionId = this.getOrCreateImpressionId();
     // Internal in-memory cache for parsing json prefs.
@@ -147,7 +144,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
   }
 
   get region() {
-    return Region.home;
+    return lazy.Region.home;
   }
 
   get showSpocs() {
@@ -167,7 +164,10 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
   }
 
   get personalized() {
-    // If both spocs and recs are not personalized, we might as well return false here.
+    // If stories are not displayed, no point in trying to personalize them.
+    if (!this.showStories) {
+      return false;
+    }
     const spocsPersonalized = this.store.getState().Prefs.values?.pocketConfig
       ?.spocsPersonalized;
     const recsPersonalized = this.store.getState().Prefs.values?.pocketConfig
@@ -261,7 +261,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       const controller = new AbortController();
       const { signal } = controller;
 
-      const fetchPromise = fetch(endpoint, {
+      const fetchPromise = lazy.fetch(endpoint, {
         ...options,
         credentials: "omit",
         signal,
@@ -415,12 +415,12 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
     return urlObject.toString();
   }
 
-  parseSpocPositions(csvPositions) {
-    let spocPositions;
+  parseGridPositions(csvPositions) {
+    let gridPositions;
 
     // Only accept parseable non-negative integers
     try {
-      spocPositions = csvPositions.map(index => {
+      gridPositions = csvPositions.map(index => {
         let parsedInt = parseInt(index, 10);
 
         if (!isNaN(parsedInt) && parsedInt >= 0) {
@@ -432,10 +432,10 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
     } catch (e) {
       // Catch spoc positions that are not numbers or negative, and do nothing.
       // We have hard coded backup positions.
-      spocPositions = undefined;
+      gridPositions = undefined;
     }
 
-    return spocPositions;
+    return gridPositions;
   }
 
   async loadLayout(sendUpdate, isStartup) {
@@ -477,9 +477,15 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       layoutResp = getHardcodedLayout({
         items,
         sponsoredCollectionsEnabled,
-        spocPositions: this.parseSpocPositions(
+        spocPositions: this.parseGridPositions(
           pocketConfig.spocPositions?.split(`,`)
         ),
+        widgetPositions: this.parseGridPositions(
+          pocketConfig.widgetPositions?.split(`,`)
+        ),
+        widgetData: [
+          ...(this.locale.startsWith("en-") ? [{ type: "TopicsWidget" }] : []),
+        ],
         compactLayout: pocketConfig.compactLayout,
         hybridLayout: pocketConfig.hybridLayout,
         hideCardBackground: pocketConfig.hideCardBackground,
@@ -1083,7 +1089,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
       let flights = this.readDataPref(PREF_FLIGHT_BLOCKS);
       const filteredItems = data.filter(item => {
         const blocked =
-          NewTabUtils.blockedLinks.isBlocked({ url: item.url }) ||
+          lazy.NewTabUtils.blockedLinks.isBlocked({ url: item.url }) ||
           flights[item.flight_id];
         return !blocked;
       });
@@ -1687,7 +1693,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         Services.obs.notifyObservers(null, "idle-daily");
         break;
       case at.DISCOVERY_STREAM_DEV_SYNC_RS:
-        RemoteSettings.pollChanges();
+        lazy.RemoteSettings.pollChanges();
         break;
       case at.DISCOVERY_STREAM_DEV_EXPIRE_CACHE:
         // Personalization scores update at a slower interval than content, so in order to debug,
@@ -1871,7 +1877,7 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
         break;
     }
   }
-};
+}
 
 /* This function generates a hardcoded layout each call.
    This is because modifying the original object would
@@ -1902,7 +1908,9 @@ this.DiscoveryStreamFeed = class DiscoveryStreamFeed {
 */
 getHardcodedLayout = ({
   items = 21,
-  spocPositions = [2, 4, 11, 20],
+  spocPositions = [1, 5, 7, 11, 18, 20],
+  widgetPositions = [],
+  widgetData = [],
   sponsoredCollectionsEnabled = false,
   compactLayout = false,
   hybridLayout = false,
@@ -2012,6 +2020,12 @@ getHardcodedLayout = ({
             essentialReadsHeader,
             editorsPicksHeader,
             readTime: readTime || compactLayout,
+          },
+          widgets: {
+            positions: widgetPositions.map(position => {
+              return { index: position };
+            }),
+            data: widgetData,
           },
           loadMore,
           lastCardMessageEnabled,

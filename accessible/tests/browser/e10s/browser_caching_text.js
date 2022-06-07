@@ -269,6 +269,8 @@ addAccessibleTask(
   }
 );
 
+const boldAttrs = { "font-weight": "700" };
+
 /**
  * Test text attribute methods.
  */
@@ -288,7 +290,6 @@ addAccessibleTask(
       "font-style": "normal",
       "font-weight": "400",
     };
-    const boldAttrs = { "font-weight": "700" };
 
     const plain = findAccessibleChildByID(docAcc, "plain");
     testDefaultTextAttrs(plain, defAttrs, true);
@@ -335,6 +336,103 @@ addAccessibleTask(
     testTextAttrs(fontFamilies, 0, {}, defAttrs, 0, 2, true);
     testTextAttrs(fontFamilies, 2, {}, defAttrs, 2, 6, true);
     testTextAttrs(fontFamilies, 6, {}, defAttrs, 6, 8, true);
+  },
+  {
+    chrome: true,
+    topLevel: isCacheEnabled,
+    iframe: isCacheEnabled,
+    remoteIframe: isCacheEnabled,
+  }
+);
+
+/**
+ * Test spelling errors.
+ */
+addAccessibleTask(
+  `
+<textarea id="textarea" spellcheck="true">test tset tset test</textarea>
+<div contenteditable id="editable" spellcheck="true">plain<span> ts</span>et <b>bold</b></div>
+  `,
+  async function(browser, docAcc) {
+    const misspelledAttrs = { invalid: "spelling" };
+
+    const textarea = findAccessibleChildByID(docAcc, "textarea");
+    info("Focusing textarea");
+    let spellingChanged = waitForEvent(EVENT_TEXT_ATTRIBUTE_CHANGED, textarea);
+    textarea.takeFocus();
+    await spellingChanged;
+    testTextAttrs(textarea, 0, {}, {}, 0, 5, true); // "test "
+    testTextAttrs(textarea, 5, misspelledAttrs, {}, 5, 9, true); // "tset"
+    testTextAttrs(textarea, 9, {}, {}, 9, 10, true); // " "
+    testTextAttrs(textarea, 10, misspelledAttrs, {}, 10, 14, true); // "tset"
+    testTextAttrs(textarea, 14, {}, {}, 14, 19, true); // " test"
+
+    // Test removal of a spelling error.
+    info('textarea: Changing first "tset" to "test"');
+    // setTextRange fires multiple EVENT_TEXT_ATTRIBUTE_CHANGED, so replace by
+    // selecting and typing instead.
+    spellingChanged = waitForEvent(EVENT_TEXT_ATTRIBUTE_CHANGED, textarea);
+    await invokeContentTask(browser, [], () => {
+      content.document.getElementById("textarea").setSelectionRange(5, 9);
+    });
+    EventUtils.sendString("test");
+    // Move the cursor to trigger spell check.
+    EventUtils.synthesizeKey("KEY_ArrowRight");
+    await spellingChanged;
+    testTextAttrs(textarea, 0, {}, {}, 0, 10, true); // "test test "
+    testTextAttrs(textarea, 10, misspelledAttrs, {}, 10, 14, true); // "tset"
+    testTextAttrs(textarea, 14, {}, {}, 14, 19, true); // " test"
+
+    // Test addition of a spelling error.
+    info('textarea: Changing it back to "tset"');
+    spellingChanged = waitForEvent(EVENT_TEXT_ATTRIBUTE_CHANGED, textarea);
+    await invokeContentTask(browser, [], () => {
+      content.document.getElementById("textarea").setSelectionRange(5, 9);
+    });
+    EventUtils.sendString("tset");
+    EventUtils.synthesizeKey("KEY_ArrowRight");
+    await spellingChanged;
+    testTextAttrs(textarea, 0, {}, {}, 0, 5, true); // "test "
+    testTextAttrs(textarea, 5, misspelledAttrs, {}, 5, 9, true); // "tset"
+    testTextAttrs(textarea, 9, {}, {}, 9, 10, true); // " "
+    testTextAttrs(textarea, 10, misspelledAttrs, {}, 10, 14, true); // "tset"
+    testTextAttrs(textarea, 14, {}, {}, 14, 19, true); // " test"
+
+    // Ensure that changing the text without changing any spelling errors
+    // correctly updates offsets.
+    info('textarea: Changing first "test" to "the"');
+    // Spelling errors don't change, so we won't get
+    // EVENT_TEXT_ATTRIBUTE_CHANGED. We change the text, wait for the insertion
+    // and then select a character so we know when the change is done.
+    let inserted = waitForEvent(EVENT_TEXT_INSERTED, textarea);
+    await invokeContentTask(browser, [], () => {
+      content.document.getElementById("textarea").setSelectionRange(0, 4);
+    });
+    EventUtils.sendString("the");
+    await inserted;
+    let selected = waitForEvent(EVENT_TEXT_SELECTION_CHANGED, textarea);
+    EventUtils.synthesizeKey("KEY_ArrowRight", { shiftKey: true });
+    await selected;
+    testTextAttrs(textarea, 0, {}, {}, 0, 4, true); // "the "
+    testTextAttrs(textarea, 4, misspelledAttrs, {}, 4, 8, true); // "tset"
+    testTextAttrs(textarea, 8, {}, {}, 8, 9, true); // " "
+    testTextAttrs(textarea, 9, misspelledAttrs, {}, 9, 13, true); // "tset"
+    testTextAttrs(textarea, 13, {}, {}, 13, 18, true); // " test"
+
+    const editable = findAccessibleChildByID(docAcc, "editable");
+    info("Focusing editable");
+    spellingChanged = waitForEvent(EVENT_TEXT_ATTRIBUTE_CHANGED, editable);
+    editable.takeFocus();
+    await spellingChanged;
+    // Test normal text and spelling errors crossing text nodes.
+    testTextAttrs(editable, 0, {}, {}, 0, 6, true); // "plain "
+    // Ensure we detect the spelling error even though there is a style change
+    // after it.
+    testTextAttrs(editable, 6, misspelledAttrs, {}, 6, 10, true); // "tset"
+    testTextAttrs(editable, 10, {}, {}, 10, 11, true); // " "
+    // Ensure a style change is still detected in the presence of a spelling
+    // error.
+    testTextAttrs(editable, 11, boldAttrs, {}, 11, 15, true); // "bold"
   },
   {
     chrome: true,
@@ -725,6 +823,63 @@ addAccessibleTask(
     is(empty.caretOffset, 0, "Caret offset in empty textarea is 0");
     evt.QueryInterface(nsIAccessibleCaretMoveEvent);
     ok(!evt.isAtEndOfLine, "Caret is not at end of line");
+  },
+  { chrome: true, topLevel: true, iframe: true, remoteIframe: true }
+);
+
+/**
+ * Test setting the caret.
+ */
+addAccessibleTask(
+  `
+<textarea id="textarea">ab\nc</textarea>
+<div id="editable" contenteditable>
+  <p id="p">a<a id="link" href="https://example.com/">b</a></p>
+</div>
+  `,
+  async function(browser, docAcc) {
+    const textarea = findAccessibleChildByID(docAcc, "textarea", [
+      nsIAccessibleText,
+    ]);
+    info("textarea: Set caret offset to 0");
+    let focused = waitForEvent(EVENT_FOCUS, textarea);
+    let caretMoved = waitForEvent(EVENT_TEXT_CARET_MOVED, textarea);
+    textarea.caretOffset = 0;
+    await focused;
+    await caretMoved;
+    is(textarea.caretOffset, 0, "textarea caret correct");
+    // Test setting caret to another line.
+    info("textarea: Set caret offset to 3");
+    caretMoved = waitForEvent(EVENT_TEXT_CARET_MOVED, textarea);
+    textarea.caretOffset = 3;
+    await caretMoved;
+    is(textarea.caretOffset, 3, "textarea caret correct");
+    // Test setting caret to the end.
+    info("textarea: Set caret offset to 4 (end)");
+    caretMoved = waitForEvent(EVENT_TEXT_CARET_MOVED, textarea);
+    textarea.caretOffset = 4;
+    await caretMoved;
+    is(textarea.caretOffset, 4, "textarea caret correct");
+
+    const editable = findAccessibleChildByID(docAcc, "editable", [
+      nsIAccessibleText,
+    ]);
+    focused = waitForEvent(EVENT_FOCUS, editable);
+    editable.takeFocus();
+    await focused;
+    const p = findAccessibleChildByID(docAcc, "p", [nsIAccessibleText]);
+    info("p: Set caret offset to 0");
+    caretMoved = waitForEvent(EVENT_TEXT_CARET_MOVED, p);
+    p.caretOffset = 0;
+    await focused;
+    await caretMoved;
+    is(p.caretOffset, 0, "p caret correct");
+    const link = findAccessibleChildByID(docAcc, "link", [nsIAccessibleText]);
+    info("link: Set caret offset to 0");
+    caretMoved = waitForEvent(EVENT_TEXT_CARET_MOVED, link);
+    link.caretOffset = 0;
+    await caretMoved;
+    is(link.caretOffset, 0, "link caret correct");
   },
   { chrome: true, topLevel: true, iframe: true, remoteIframe: true }
 );

@@ -257,10 +257,10 @@ ScopedSaveMultiTex::~ScopedSaveMultiTex() {
 // --
 
 class ScopedBindArrayBuffer final {
+ public:
   GLContext& mGL;
   const GLuint mOldVBO;
 
- public:
   ScopedBindArrayBuffer(GLContext* const gl, const GLuint vbo)
       : mGL(*gl), mOldVBO(mGL.GetIntAs<GLuint>(LOCAL_GL_ARRAY_BUFFER_BINDING)) {
     mGL.fBindBuffer(LOCAL_GL_ARRAY_BUFFER, vbo);
@@ -479,6 +479,7 @@ void DrawBlitProg::Draw(const BaseArgs& args,
   GLint vaa0Normalized;
   GLsizei vaa0Stride;
   GLvoid* vaa0Pointer;
+  GLuint vaa0Buffer;
   if (mParent.mQuadVAO) {
     oldVAO = gl->GetIntAs<GLuint>(LOCAL_GL_VERTEX_ARRAY_BINDING);
     gl->fBindVertexArray(mParent.mQuadVAO);
@@ -494,6 +495,7 @@ void DrawBlitProg::Draw(const BaseArgs& args,
 
     gl->fEnableVertexAttribArray(0);
     const ScopedBindArrayBuffer bindVBO(gl, mParent.mQuadVBO);
+    vaa0Buffer = bindVBO.mOldVBO;
     gl->fVertexAttribPointer(0, 2, LOCAL_GL_FLOAT, false, 0, 0);
   }
 
@@ -507,6 +509,9 @@ void DrawBlitProg::Draw(const BaseArgs& args,
     } else {
       gl->fDisableVertexAttribArray(0);
     }
+    // The current VERTEX_ARRAY_BINDING is not necessarily the same as the
+    // buffer set for vaa0Buffer.
+    const ScopedBindArrayBuffer bindVBO(gl, vaa0Buffer);
     gl->fVertexAttribPointer(0, vaa0Size, vaa0Type, bool(vaa0Normalized),
                              vaa0Stride, vaa0Pointer);
   }
@@ -1321,15 +1326,8 @@ bool GLBlitHelper::BlitImage(layers::GPUVideoImage* const srcImage,
 
 // -------------------------------------
 #ifdef MOZ_WAYLAND
-bool GLBlitHelper::BlitImage(layers::DMABUFSurfaceImage* srcImage,
-                             const gfx::IntSize& destSize,
-                             OriginPos destOrigin) const {
-  DMABufSurface* surface = srcImage->GetSurface();
-  if (!surface) {
-    gfxCriticalError() << "Null DMABUFSurface for GLBlitHelper::BlitImage";
-    return false;
-  }
-
+bool GLBlitHelper::Blit(DMABufSurface* surface, const gfx::IntSize& destSize,
+                        OriginPos destOrigin) const {
   const auto& srcOrigin = OriginPos::BottomLeft;
 
   DrawBlitProg::BaseArgs baseArgs;
@@ -1382,6 +1380,17 @@ bool GLBlitHelper::BlitImage(layers::DMABUFSurfaceImage* srcImage,
   prog->Draw(baseArgs, pYuvArgs);
 
   return true;
+}
+
+bool GLBlitHelper::BlitImage(layers::DMABUFSurfaceImage* srcImage,
+                             const gfx::IntSize& destSize,
+                             OriginPos destOrigin) const {
+  DMABufSurface* surface = srcImage->GetSurface();
+  if (!surface) {
+    gfxCriticalError() << "Null DMABUFSurface for GLBlitHelper::BlitImage";
+    return false;
+  }
+  return Blit(surface, destSize, destOrigin);
 }
 #endif
 

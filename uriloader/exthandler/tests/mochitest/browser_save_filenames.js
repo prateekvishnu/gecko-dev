@@ -23,6 +23,9 @@ let types = {
   js: "application/x-javascript",
   binary: "application/octet-stream",
   gook: "application/x-gook",
+  zip: "application/zip",
+  json: "application/json",
+  tar: "application/x-tar",
 };
 
 const PNG_DATA = atob(
@@ -198,7 +201,15 @@ function getItems(parentid) {
           elem.localName == "img" && elem.dataset.nodrag != "true";
         let unknown = elem.dataset.unknown;
         let noattach = elem.dataset.noattach;
-        elements.push({ draggable, unknown, filename, url, noattach });
+        let winexeext = elem.dataset.winexeext;
+        elements.push({
+          draggable,
+          unknown,
+          filename,
+          url,
+          noattach,
+          winexeext,
+        });
         elem = elem.nextElementSibling;
       }
       return elements;
@@ -261,7 +272,7 @@ add_task(async function save_document() {
     if (idx == 66 && AppConstants.platform == "win") {
       // This is special-cased on Windows. The default filename will be used, since
       // the filename is invalid, but since the previous test file has the same issue,
-      // this second file will be saved with a number suffix added to it. -->
+      // this second file will be saved with a number suffix added to it.
       filename = "index_002";
     }
 
@@ -572,12 +583,14 @@ add_task(async function save_links() {
     let filename = PathUtils.filename(download.target.path);
 
     let expectedFilename = expectedItems[idx].filename;
-    if (AppConstants.platform == "win" && idx == 54) {
-      // On Windows, .txt is added when saving as an attachment
-      // to avoid this looking like an executable. This
-      // is done in validateLeafName in HelperAppDlg.jsm.
+    if (AppConstants.platform == "win") {
+      // On Windows, an extension is added to executable files when saving as
+      // an attachment to avoid the file looking like an executable. This is
+      // done in validateLeafName in HelperAppDlg.jsm.
       // XXXndeakin should we do this for all save mechanisms?
-      expectedFilename += ".txt";
+      if (expectedItems[idx].winexeext) {
+        expectedFilename += "." + expectedItems[idx].winexeext;
+      }
     }
 
     // Use checkShortenedFilename to check long filenames.
@@ -713,6 +726,13 @@ add_task(async function save_download_links() {
           " was saved with the correct name when link has download attribute"
       );
     } else {
+      if (idx == 66 && filename == "index(1)") {
+        // Sometimes, the previous test's file still exists or wasn't created in time
+        // and a non-duplicated name is created. Allow this rather than figuring out
+        // how to avoid it since it doesn't affect what is being tested here.
+        filename = "index";
+      }
+
       is(
         filename,
         downloads[idx].filename,

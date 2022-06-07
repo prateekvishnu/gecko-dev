@@ -488,7 +488,7 @@ ArrayObject& ModuleNamespaceObject::exports() {
 
 IndirectBindingMap& ModuleNamespaceObject::bindings() {
   Value value = GetProxyReservedSlot(this, BindingsSlot);
-  auto bindings = static_cast<IndirectBindingMap*>(value.toPrivate());
+  auto* bindings = static_cast<IndirectBindingMap*>(value.toPrivate());
   MOZ_ASSERT(bindings);
   return *bindings;
 }
@@ -1269,8 +1269,8 @@ ModuleNamespaceObject* ModuleObject::createNamespace(JSContext* cx,
     return nullptr;
   }
 
-  auto ns = ModuleNamespaceObject::create(cx, self, exports.as<ArrayObject>(),
-                                          std::move(bindings));
+  auto* ns = ModuleNamespaceObject::create(cx, self, exports.as<ArrayObject>(),
+                                           std::move(bindings));
   if (!ns) {
     return nullptr;
   }
@@ -2261,7 +2261,10 @@ void js::AsyncModuleExecutionFulfilled(JSContext* cx,
 
   if (module->hasTopLevelCapability()) {
     MOZ_ASSERT(module->getCycleRoot() == module);
-    ModuleObject::topLevelCapabilityResolve(cx, module);
+    if (!ModuleObject::topLevelCapabilityResolve(cx, module)) {
+      // If Resolve fails, there's nothing more we can do here.
+      cx->clearPendingException();
+    }
   }
 
   RootedArrayObject sortedList(cx);
@@ -2312,7 +2315,10 @@ void js::AsyncModuleExecutionFulfilled(JSContext* cx,
         m->setAsyncEvaluatingFalse();
         if (m->hasTopLevelCapability()) {
           MOZ_ASSERT(m->getCycleRoot() == m);
-          ModuleObject::topLevelCapabilityResolve(cx, m);
+          if (!ModuleObject::topLevelCapabilityResolve(cx, m)) {
+            // If Resolve fails, there's nothing more we can do here.
+            cx->clearPendingException();
+          }
         }
       }
     }
@@ -2358,7 +2364,10 @@ void js::AsyncModuleExecutionRejected(JSContext* cx, HandleModuleObject module,
   // Step 7.
   if (module->hasTopLevelCapability()) {
     MOZ_ASSERT(module->getCycleRoot() == module);
-    ModuleObject::topLevelCapabilityReject(cx, module, error);
+    if (!ModuleObject::topLevelCapabilityReject(cx, module, error)) {
+      // If Reject fails, there's nothing more we can do here.
+      cx->clearPendingException();
+    }
   }
 
   // Return undefined.
@@ -2593,7 +2602,7 @@ static bool OnRootModuleRejected(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   HandleValue error = args.get(0);
 
-  js::ReportExceptionClosure reportExn(error);
+  ReportExceptionClosure reportExn(error);
   PrepareScriptEnvironmentAndInvoke(cx, cx->global(), reportExn);
 
   args.rval().setUndefined();
@@ -2601,8 +2610,27 @@ static bool OnRootModuleRejected(JSContext* cx, unsigned argc, Value* vp) {
 };
 
 bool js::OnModuleEvaluationFailure(JSContext* cx,
-                                   HandleObject evaluationPromise) {
+                                   HandleObject evaluationPromise,
+                                   JS::ModuleErrorBehaviour errorBehaviour) {
   if (evaluationPromise == nullptr) {
+    return false;
+  }
+
+  // To allow module evaluation to happen synchronously throw the error
+  // immediately. This assumes that any error will already have caused the
+  // promise to be rejected, and doesn't support top-level await.
+  if (errorBehaviour == JS::ThrowModuleErrorsSync) {
+    JS::PromiseState state = JS::GetPromiseState(evaluationPromise);
+    MOZ_DIAGNOSTIC_ASSERT(state == JS::PromiseState::Rejected ||
+                          state == JS::PromiseState::Fulfilled);
+
+    JS::SetSettledPromiseIsHandled(cx, evaluationPromise);
+    if (state == JS::PromiseState::Fulfilled) {
+      return true;
+    }
+
+    RootedValue error(cx, JS::GetPromiseResult(evaluationPromise));
+    JS_SetPendingException(cx, error);
     return false;
   }
 

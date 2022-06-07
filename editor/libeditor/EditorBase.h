@@ -129,7 +129,7 @@ class EditorBase : public nsIEditor,
    * The default constructor. This should suffice. the setting of the
    * interfaces is done after the construction of the editor class.
    */
-  EditorBase();
+  explicit EditorBase(EditorType aEditorType);
 
   bool IsInitialized() const { return !!mDocument; }
   bool Destroyed() const { return mDidPreDestroy; }
@@ -201,7 +201,7 @@ class EditorBase : public nsIEditor,
   nsPresContext* GetPresContext() const;
   already_AddRefed<nsCaret> GetCaret() const;
 
-  already_AddRefed<nsIWidget> GetWidget();
+  already_AddRefed<nsIWidget> GetWidget() const;
 
   nsISelectionController* GetSelectionController() const;
 
@@ -292,7 +292,7 @@ class EditorBase : public nsIEditor,
   /**
    * Finalizes selection and caret for the editor.
    */
-  nsresult FinalizeSelection();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult FinalizeSelection();
 
   /**
    * Returns true if selection is in an editable element and both the range
@@ -572,9 +572,9 @@ class EditorBase : public nsIEditor,
   }
 
   /**
-   * Get the focused content, if we're focused.  Returns null otherwise.
+   * Get the focused element, if we're focused.  Returns null otherwise.
    */
-  virtual nsIContent* GetFocusedContent() const;
+  virtual Element* GetFocusedElement() const;
 
   /**
    * Whether the aGUIEvent should be handled by this editor or not.  When this
@@ -591,28 +591,29 @@ class EditorBase : public nsIEditor,
    * designMode, you should set the document node to aNode except that an
    * element in the document has focus.
    */
-  virtual Element* FindSelectionRoot(nsINode* aNode) const;
+  [[nodiscard]] virtual Element* FindSelectionRoot(const nsINode& aNode) const;
 
   /**
-   * This method has to be called by EditorEventListener::Focus.
-   * All actions that have to be done when the editor is focused needs to be
-   * added here.
+   * OnFocus() is called when we get a focus event.
+   *
+   * @param aOriginalEventTargetNode    The original event target node of the
+   *                                    focus event.
    */
-  MOZ_CAN_RUN_SCRIPT void OnFocus(nsINode& aFocusEventTargetNode);
+  MOZ_CAN_RUN_SCRIPT virtual nsresult OnFocus(
+      const nsINode& aOriginalEventTargetNode);
+
+  /**
+   * OnBlur() is called when we're blurred.
+   *
+   * @param aEventTarget        The event target of the blur event.
+   */
+  virtual nsresult OnBlur(const dom::EventTarget* aEventTarget) = 0;
 
   /** Resyncs spellchecking state (enabled/disabled).  This should be called
    * when anything that affects spellchecking state changes, such as the
    * spellcheck attribute value.
    */
   void SyncRealTimeSpell();
-
-  /**
-   * This method re-initializes the selection and caret state that are for
-   * current editor state. When editor session is destroyed, it always reset
-   * selection state even if this has no focus.  So if destroying editor,
-   * we have to call this method for focused editor to set selection state.
-   */
-  MOZ_CAN_RUN_SCRIPT void ReinitializeSelection(Element& aElement);
 
   /**
    * Do "cut".
@@ -991,10 +992,22 @@ class EditorBase : public nsIEditor,
     }
     [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
     CanHandleAndMaybeDispatchBeforeInputEvent() {
-      if (NS_WARN_IF(!CanHandle())) {
+      if (MOZ_UNLIKELY(NS_WARN_IF(!CanHandle()))) {
         return NS_ERROR_NOT_INITIALIZED;
       }
+      nsresult rv = MaybeFlushPendingNotifications();
+      if (MOZ_UNLIKELY(NS_FAILED(rv))) {
+        return rv;
+      }
       return MaybeDispatchBeforeInputEvent();
+    }
+    [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
+    CanHandleAndFlushPendingNotifications() {
+      if (MOZ_UNLIKELY(NS_WARN_IF(!CanHandle()))) {
+        return NS_ERROR_NOT_INITIALIZED;
+      }
+      MOZ_ASSERT(MayEditActionRequireLayout(mRawEditAction));
+      return MaybeFlushPendingNotifications();
     }
 
     [[nodiscard]] bool IsDataAvailable() const {
@@ -1181,6 +1194,7 @@ class EditorBase : public nsIEditor,
       TopLevelEditSubActionDataRef().Clear();
       switch (mTopLevelEditSubAction) {
         case EditSubAction::eInsertNode:
+        case EditSubAction::eMoveNode:
         case EditSubAction::eCreateNode:
         case EditSubAction::eSplitNode:
         case EditSubAction::eInsertText:
@@ -1277,6 +1291,9 @@ class EditorBase : public nsIEditor,
    private:
     bool IsBeforeInputEventEnabled() const;
 
+    [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
+    MaybeFlushPendingNotifications() const;
+
     static bool NeedsBeforeInputEventHandling(EditAction aEditAction) {
       MOZ_ASSERT(aEditAction != EditAction::eNone);
       switch (aEditAction) {
@@ -1287,6 +1304,9 @@ class EditorBase : public nsIEditor,
         // If we're being initialized, we may need to create a padding <br>
         // element, but it shouldn't cause `beforeinput` event.
         case EditAction::eInitializing:
+        // If we're just selecting or getting table cells, we shouldn't
+        // dispatch `beforeinput` event.
+        case NS_EDIT_ACTION_CASES_ACCESSING_TABLE_DATA_WITHOUT_EDITING:
         // If raw level transaction API is used, the API user needs to handle
         // both "beforeinput" event and "input" event if it's necessary.
         case EditAction::eUnknown:
@@ -1371,7 +1391,12 @@ class EditorBase : public nsIEditor,
     // for current edit sub action.
     EditSubActionData mEditSubActionData;
 
+    // mEditAction and mRawEditActions stores edit action.  The difference of
+    // them is, if and only if edit actions are nested and parent edit action
+    // is one of trying to edit something, but nested one is not so, it's
+    // overwritten by the parent edit action.
     EditAction mEditAction;
+    EditAction mRawEditAction;
 
     // Different from its data, you can refer "current" AutoEditActionDataSetter
     // instance's mTopLevelEditSubAction member since it's copied from the
@@ -1680,7 +1705,7 @@ class EditorBase : public nsIEditor,
    *
    * @param aContent    The node which will be removed form the DOM tree.
    */
-  virtual MOZ_CAN_RUN_SCRIPT nsresult
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
   DeleteNodeWithTransaction(nsIContent& aContent);
 
   /**
@@ -1768,13 +1793,13 @@ class EditorBase : public nsIEditor,
    *
    * @param aTag        Tag you want.
    */
-  already_AddRefed<Element> CreateHTMLContent(const nsAtom* aTag);
+  already_AddRefed<Element> CreateHTMLContent(const nsAtom* aTag) const;
 
   /**
    * Creates text node which is marked as "maybe modified frequently" and
    * "maybe masked" if this is a password editor.
    */
-  already_AddRefed<nsTextNode> CreateTextNode(const nsAString& aData);
+  already_AddRefed<nsTextNode> CreateTextNode(const nsAString& aData) const;
 
   /**
    * DoInsertText(), DoDeleteText(), DoReplaceText() and DoSetText() are
@@ -1811,22 +1836,25 @@ class EditorBase : public nsIEditor,
    *
    * @param aElement    The element for which to insert formatting.
    */
-  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult MarkElementDirty(Element& aElement);
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
+  MarkElementDirty(Element& aElement) const;
 
   MOZ_CAN_RUN_SCRIPT nsresult
   DoTransactionInternal(nsITransaction* aTransaction);
 
   /**
-   * Returns true if aNode is our root node.
+   * Returns true if aNode is our root node.  The root is:
+   * If TextEditor, the anonymous <div> element.
+   * If HTMLEditor, a <body> element or the document element which may not be
+   * editable if it's not in the design mode.
    */
   bool IsRoot(const nsINode* inNode) const;
-  bool IsEditorRoot(const nsINode* aNode) const;
 
   /**
    * Returns true if aNode is a descendant of our root node.
+   * See the comment for IsRoot() for what the root node means.
    */
   bool IsDescendantOfRoot(const nsINode* inNode) const;
-  bool IsDescendantOfEditorRoot(const nsINode* aNode) const;
 
   /**
    * Returns true when inserting text should be a part of current composition.
@@ -1925,14 +1953,8 @@ class EditorBase : public nsIEditor,
       const dom::AbstractRange* aRange = nullptr);
 
   /**
-   * Likewise, but gets the editor's root instead, which is different for HTML
-   * editors.
-   */
-  virtual Element* GetEditorRoot() const;
-
-  /**
    * Whether the editor is active on the DOM window.  Note that when this
-   * returns true but GetFocusedContent() returns null, it means that this
+   * returns true but GetFocusedElement() returns null, it means that this
    * editor was focused when the DOM window was active.
    */
   virtual bool IsActiveInDOMWindow() const;
@@ -2210,6 +2232,21 @@ class EditorBase : public nsIEditor,
     return mIsHTMLEditorClass ? EditorType::HTML : EditorType::Text;
   }
 
+  /**
+   * Check whether the caller can keep handling focus event.
+   *
+   * @param aOriginalEventTargetNode    The original event target of the focus
+   *                                    event.
+   */
+  [[nodiscard]] bool CanKeepHandlingFocusEvent(
+      const nsINode& aOriginalEventTargetNode) const;
+
+  /**
+   * If this editor has skipped spell checking and not yet flushed, this runs
+   * the spell checker.
+   */
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult FlushPendingSpellCheck();
+
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult EnsureEmptyTextFirstChild();
 
   /**
@@ -2359,11 +2396,13 @@ class EditorBase : public nsIEditor,
    * the editor's sync/async settings for reflowing, painting, and scrolling
    * match.
    */
-  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult ScrollSelectionFocusIntoView();
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
+  ScrollSelectionFocusIntoView() const;
 
   virtual nsresult InstallEventListeners();
   virtual void CreateEventListeners();
   virtual void RemoveEventListeners();
+  [[nodiscard]] bool IsListeningToEvents() const;
 
   /**
    * Called if and only if this editor is in readonly mode.
@@ -2379,9 +2418,9 @@ class EditorBase : public nsIEditor,
   /**
    * Return true if spellchecking should be enabled for this editor.
    */
-  bool GetDesiredSpellCheckState();
+  [[nodiscard]] bool GetDesiredSpellCheckState();
 
-  bool CanEnableSpellCheck() {
+  [[nodiscard]] bool CanEnableSpellCheck() const {
     // Check for password/readonly/disabled, which are not spellchecked
     // regardless of DOM. Also, check to see if spell check should be skipped
     // or not.
@@ -2401,11 +2440,15 @@ class EditorBase : public nsIEditor,
       nsIContent& aAncestorLimit) const;
 
   /**
-   * Initializes selection and caret for the editor.  If aEventTarget isn't
-   * a host of the editor, i.e., the editor doesn't get focus, this does
-   * nothing.
+   * Initializes selection and caret for the editor at getting focus.  If
+   * aOriginalEventTargetNode isn't a host of the editor, i.e., the editor
+   * doesn't get focus, this does nothing.
+   *
+   * @param aOriginalEventTargetNode    The original event target node of the
+   *                                    focus event.
    */
-  MOZ_CAN_RUN_SCRIPT nsresult InitializeSelection(nsINode& aFocusEventTarget);
+  MOZ_CAN_RUN_SCRIPT nsresult
+  InitializeSelection(const nsINode& aOriginalEventTargetNode);
 
   enum NotificationForEditorObservers {
     eNotifyEditorObserversOfEnd,
@@ -2849,6 +2892,7 @@ class EditorBase : public nsIEditor,
                                                // ToGenericNSResult
   friend class ListItemElementSelectionState;  // AutoEditActionDataSetter,
                                                // ToGenericNSResult
+  friend class MoveNodeTransaction;            // ToGenericNSResult
   friend class ParagraphStateAtSelection;      // AutoEditActionDataSetter,
                                                // ToGenericNSResult
   friend class ReplaceTextTransaction;  // AllowsTransactionsToChangeSelection,

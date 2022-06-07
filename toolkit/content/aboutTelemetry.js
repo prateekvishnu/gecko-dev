@@ -21,15 +21,18 @@ const { TelemetrySend } = ChromeUtils.import(
   "resource://gre/modules/TelemetrySend.jsm"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 ChromeUtils.defineModuleGetter(
   this,
   "Preferences",
   "resource://gre/modules/Preferences.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "ObjectUtils",
+  "resource://gre/modules/ObjectUtils.jsm"
 );
 
 const Telemetry = Services.telemetry;
@@ -1803,7 +1806,7 @@ class Section {
       data = isCurrentPayload
         ? this.dataFiltering(payload, selectedStore, process)
         : this.archivePingDataFiltering(aPayload, process);
-      hasData = hasData || data !== {};
+      hasData = hasData || !ObjectUtils.isEmpty(data);
       this.renderContent(data, process, div, section, this.renderData);
     }
     setHasData(section, hasData);
@@ -1919,8 +1922,8 @@ var Events = {
     if (payload) {
       for (const process of Object.keys(aPayload.processes)) {
         let data = aPayload.processes[process].events;
-        hasData = hasData || data !== {};
         if (data && Object.keys(data).length) {
+          hasData = true;
           let s = GenericSubsection.renderSubsectionHeader(
             process,
             true,
@@ -1941,8 +1944,8 @@ var Events = {
       // handle archived ping
       for (const process of Object.keys(aPayload.events)) {
         let data = process;
-        hasData = hasData || data !== {};
         if (data && Object.keys(data).length) {
+          hasData = true;
           let s = GenericSubsection.renderSubsectionHeader(
             process,
             true,

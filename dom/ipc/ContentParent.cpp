@@ -147,13 +147,8 @@
 #include "mozilla/ipc/ByteBuf.h"
 #include "mozilla/ipc/CrashReporterHost.h"
 #include "mozilla/ipc/Endpoint.h"
-#include "mozilla/ipc/FileDescriptorSetParent.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
-#include "mozilla/ipc/IPCStreamAlloc.h"
-#include "mozilla/ipc/IPCStreamDestination.h"
-#include "mozilla/ipc/IPCStreamSource.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
-#include "mozilla/ipc/PChildToParentStreamParent.h"
 #include "mozilla/ipc/TestShellParent.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/ImageBridgeParent.h"
@@ -2942,7 +2937,7 @@ bool ContentParent::InitInternal(ProcessPriority aInitialPriority) {
       if (NS_WARN_IF(!jsapi.Init(xpc::PrivilegedJunkScope()))) {
         MOZ_CRASH();
       }
-      JS::RootedValue init(jsapi.cx());
+      JS::Rooted<JS::Value> init(jsapi.cx());
       // We'll crash on failure, so use a IgnoredErrorResult (which also
       // auto-suppresses exceptions).
       IgnoredErrorResult rv;
@@ -3006,8 +3001,11 @@ bool ContentParent::InitInternal(ProcessPriority aInitialPriority) {
   }
 
 #ifdef MOZ_WIDGET_ANDROID
-  Unused << SendDecoderSupportedMimeTypes(
-      AndroidDecoderModule::GetSupportedMimeTypes());
+  if (!(StaticPrefs::media_utility_process_enabled() &&
+        StaticPrefs::media_utility_android_media_codec_enabled())) {
+    Unused << SendDecoderSupportedMimeTypes(
+        AndroidDecoderModule::GetSupportedMimeTypes());
+  }
 #endif
 
   // Must send screen info before send initialData
@@ -3352,7 +3350,7 @@ mozilla::ipc::IPCResult ContentParent::RecvSetClipboard(
 
   rv = nsContentUtils::IPCTransferableToTransferable(
       aDataTransfer, aIsPrivateData, aRequestingPrincipal, aContentPolicyType,
-      trans, this, nullptr);
+      true /* aAddDataFlavor */, trans, this);
   NS_ENSURE_SUCCESS(rv, IPC_OK());
 
   clipboard->SetData(trans, nullptr, aWhichClipboard);
@@ -4337,27 +4335,6 @@ mozilla::ipc::IPCResult ContentParent::RecvInitStreamFilter(
   return IPC_OK();
 }
 
-PChildToParentStreamParent* ContentParent::AllocPChildToParentStreamParent() {
-  return mozilla::ipc::AllocPChildToParentStreamParent();
-}
-
-bool ContentParent::DeallocPChildToParentStreamParent(
-    PChildToParentStreamParent* aActor) {
-  delete aActor;
-  return true;
-}
-
-PParentToChildStreamParent* ContentParent::AllocPParentToChildStreamParent() {
-  MOZ_CRASH(
-      "PParentToChildStreamParent actors should be manually constructed!");
-}
-
-bool ContentParent::DeallocPParentToChildStreamParent(
-    PParentToChildStreamParent* aActor) {
-  delete aActor;
-  return true;
-}
-
 mozilla::ipc::IPCResult ContentParent::RecvAddSecurityState(
     const MaybeDiscarded<WindowContext>& aContext, uint32_t aStateFlags) {
   if (aContext.IsNullOrDiscarded()) {
@@ -4791,7 +4768,7 @@ mozilla::ipc::IPCResult ContentParent::RecvScriptErrorInternal(
     }
     JSContext* cx = jsapi.cx();
 
-    JS::RootedValue stack(cx);
+    JS::Rooted<JS::Value> stack(cx);
     ErrorResult rv;
     data.Read(cx, &stack, rv);
     if (rv.Failed() || !stack.isObject()) {
@@ -4799,10 +4776,10 @@ mozilla::ipc::IPCResult ContentParent::RecvScriptErrorInternal(
       return IPC_OK();
     }
 
-    JS::RootedObject stackObj(cx, &stack.toObject());
+    JS::Rooted<JSObject*> stackObj(cx, &stack.toObject());
     MOZ_ASSERT(JS::IsUnwrappedSavedFrame(stackObj));
 
-    JS::RootedObject stackGlobal(cx, JS::GetNonCCWObjectGlobal(stackObj));
+    JS::Rooted<JSObject*> stackGlobal(cx, JS::GetNonCCWObjectGlobal(stackObj));
     msg = new nsScriptErrorWithStack(JS::NothingHandleValue, stackObj,
                                      stackGlobal);
   } else {
@@ -5035,17 +5012,6 @@ mozilla::ipc::IPCResult ContentParent::RecvCreateAudioIPCConnection(
 already_AddRefed<extensions::PExtensionsParent>
 ContentParent::AllocPExtensionsParent() {
   return MakeAndAddRef<extensions::ExtensionsParent>();
-}
-
-PFileDescriptorSetParent* ContentParent::AllocPFileDescriptorSetParent(
-    const FileDescriptor& aFD) {
-  return new FileDescriptorSetParent(aFD);
-}
-
-bool ContentParent::DeallocPFileDescriptorSetParent(
-    PFileDescriptorSetParent* aActor) {
-  delete static_cast<FileDescriptorSetParent*>(aActor);
-  return true;
 }
 
 void ContentParent::NotifyUpdatedDictionaries() {
@@ -6492,25 +6458,22 @@ mozilla::ipc::IPCResult ContentParent::RecvStoreUserInteractionAsPermission(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult ContentParent::RecvAsyncShouldAllowAccessFor(
-    const MaybeDiscarded<BrowsingContext>& aTopContext,
+mozilla::ipc::IPCResult ContentParent::RecvTestCookiePermissionDecided(
+    const MaybeDiscarded<BrowsingContext>& aContext,
     const Principal& aPrincipal,
-    const AsyncShouldAllowAccessForResolver&& aResolver) {
-  if (aTopContext.IsNullOrDiscarded()) {
+    const TestCookiePermissionDecidedResolver&& aResolver) {
+  if (aContext.IsNullOrDiscarded()) {
     return IPC_OK();
   }
 
-  ContentBlocking::AsyncShouldAllowAccessFor(aTopContext.get_canonical(),
-                                             aPrincipal)
-      ->Then(GetCurrentSerialEventTarget(), __func__,
-             [aResolver](ContentBlocking::AsyncShouldAllowAccessForPromise::
-                             ResolveOrRejectValue&& aValue) {
-               bool allowed = aValue.IsResolve();
+  RefPtr<WindowGlobalParent> wgp =
+      aContext.get_canonical()->GetCurrentWindowGlobal();
+  nsCOMPtr<nsICookieJarSettings> cjs = wgp->CookieJarSettings();
 
-               aResolver(Tuple<const bool&, const uint32_t&>(
-                   allowed, allowed ? 0 : aValue.RejectValue()));
-             });
-
+  Maybe<bool> result =
+      ContentBlocking::CheckCookiesPermittedDecidesStorageAccessAPI(cjs,
+                                                                    aPrincipal);
+  aResolver(result);
   return IPC_OK();
 }
 
@@ -7269,18 +7232,6 @@ mozilla::ipc::IPCResult ContentParent::RecvCommitBrowsingContextTransaction(
   return aTransaction.CommitFromIPC(aContext, this);
 }
 
-PParentToChildStreamParent* ContentParent::SendPParentToChildStreamConstructor(
-    PParentToChildStreamParent* aActor) {
-  MOZ_ASSERT(NS_IsMainThread());
-  return PContentParent::SendPParentToChildStreamConstructor(aActor);
-}
-
-PFileDescriptorSetParent* ContentParent::SendPFileDescriptorSetConstructor(
-    const FileDescriptor& aFD) {
-  MOZ_ASSERT(NS_IsMainThread());
-  return PContentParent::SendPFileDescriptorSetConstructor(aFD);
-}
-
 mozilla::ipc::IPCResult ContentParent::RecvBlobURLDataRequest(
     const nsCString& aBlobURL, nsIPrincipal* aTriggeringPrincipal,
     nsIPrincipal* aLoadingPrincipal, const OriginAttributes& aOriginAttributes,
@@ -7657,7 +7608,8 @@ NS_IMETHODIMP ContentParent::GetExistingActor(const nsACString& aName,
 }
 
 already_AddRefed<JSActor> ContentParent::InitJSActor(
-    JS::HandleObject aMaybeActor, const nsACString& aName, ErrorResult& aRv) {
+    JS::Handle<JSObject*> aMaybeActor, const nsACString& aName,
+    ErrorResult& aRv) {
   RefPtr<JSProcessActorParent> actor;
   if (aMaybeActor.get()) {
     aRv = UNWRAP_OBJECT(JSProcessActorParent, aMaybeActor.get(), actor);

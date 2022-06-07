@@ -18,19 +18,20 @@ const { throttle } = require("devtools/shared/throttle");
 const Services = require("Services");
 const EventEmitter = require("devtools/shared/event-emitter");
 
+const lazy = {};
+
 loader.lazyRequireGetter(
-  this,
+  lazy,
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm",
   true
 );
 loader.lazyRequireGetter(
-  this,
+  lazy,
   "NetUtil",
   "resource://gre/modules/NetUtil.jsm",
   true
 );
-loader.lazyRequireGetter(this, "OS", "resource://gre/modules/osfile.jsm", true);
 
 const {
   getString,
@@ -94,12 +95,6 @@ function StyleSheetEditor(resource, win, styleSheetFriendlyIndex) {
   this._isNew = this.styleSheet.isNew;
   this.styleSheetFriendlyIndex = styleSheetFriendlyIndex;
 
-  // True when we've called update() on the style sheet.
-  // @backward-compat { version 86 } Starting 86, onStyleApplied will be able to know
-  // if the style was applied because of a change in the StyleEditor (via the `event.cause`
-  // property inside the resource update). `this._isUpdating` can be dropped when 86
-  // reaches release.
-  this._isUpdating = false;
   // True when we've just set the editor text based on a style-applied
   // event from the StyleSheetActor.
   this._justSetText = false;
@@ -204,13 +199,15 @@ StyleSheetEditor.prototype = {
     }
 
     if (!this.styleSheet.href) {
+      // TODO(bug 176993): Probably a different index + string for
+      // constructable stylesheets, they can't be meaningfully edited right now
+      // because we don't have their original text.
       const index = this.styleSheetFriendlyIndex + 1 || 0;
       return getString("inlineStyleSheet", index);
     }
 
     if (!this._friendlyName) {
-      const sheetURI = this.styleSheet.href;
-      this._friendlyName = shortSource({ href: sheetURI });
+      this._friendlyName = shortSource(this.styleSheet);
       try {
         this._friendlyName = decodeURI(this._friendlyName);
       } catch (ex) {
@@ -244,14 +241,14 @@ StyleSheetEditor.prototype = {
 
     let path;
     const href = removeQuery(relatedSheet.href);
-    const uri = NetUtil.newURI(href);
+    const uri = lazy.NetUtil.newURI(href);
 
     if (uri.scheme == "file") {
       const file = uri.QueryInterface(Ci.nsIFileURL).file;
       path = file.path;
     } else if (this.savedFile) {
       const origHref = removeQuery(this.styleSheet.href);
-      const origUri = NetUtil.newURI(origHref);
+      const origUri = lazy.NetUtil.newURI(origHref);
       path = findLinkedFilePath(uri, origUri, this.savedFile);
     } else {
       // we can't determine path to generated file on disk
@@ -267,8 +264,8 @@ StyleSheetEditor.prototype = {
     this.linkedCSSFileError = null;
 
     // save last file change time so we can compare when we check for changes.
-    OS.File.stat(path).then(info => {
-      this._fileModDate = info.lastModificationDate.getTime();
+    IOUtils.stat(path).then(info => {
+      this._fileModDate = info.lastModified;
     }, this.markLinkedFileBroken);
 
     this.emit("linked-css-file");
@@ -403,13 +400,8 @@ StyleSheetEditor.prototype = {
     const updateIsFromSyleSheetEditor =
       update?.event?.cause === STYLE_SHEET_UPDATE_CAUSED_BY_STYLE_EDITOR;
 
-    // @backward-compat { version 86 } this._isUpdating can be removed.
-    // See property declaration for more information.
-    if (this._isUpdating || updateIsFromSyleSheetEditor) {
-      // We just applied an edit in the editor, so we can drop this
-      // notification.
-      // @backward-compat { version 86 } this._isUpdating can be removed.
-      this._isUpdating = false;
+    if (updateIsFromSyleSheetEditor) {
+      // We just applied an edit in the editor, so we can drop this notification.
       this.emit("style-applied");
       return;
     }
@@ -619,9 +611,6 @@ StyleSheetEditor.prototype = {
       this._state.text = this.sourceEditor.getText();
     }
 
-    // @backward-compat { version 86 } See property declaration for more information.
-    this._isUpdating = true;
-
     try {
       const styleSheetsFront = await this._getStyleSheetsFront();
       await styleSheetsFront.update(
@@ -762,14 +751,14 @@ StyleSheetEditor.prototype = {
         this._state.text = this.sourceEditor.getText();
       }
 
-      const ostream = FileUtils.openSafeFileOutputStream(returnFile);
+      const ostream = lazy.FileUtils.openSafeFileOutputStream(returnFile);
       const converter = Cc[
         "@mozilla.org/intl/scriptableunicodeconverter"
       ].createInstance(Ci.nsIScriptableUnicodeConverter);
       converter.charset = "UTF-8";
       const istream = converter.convertToInputStream(this._state.text);
 
-      NetUtil.asyncCopy(istream, ostream, status => {
+      lazy.NetUtil.asyncCopy(istream, ostream, status => {
         if (!Components.isSuccessCode(status)) {
           if (callback) {
             callback(null);
@@ -777,7 +766,7 @@ StyleSheetEditor.prototype = {
           this.emit("error", { key: SAVE_ERROR });
           return;
         }
-        FileUtils.closeSafeFileOutputStream(ostream);
+        lazy.FileUtils.closeSafeFileOutputStream(ostream);
 
         this.onFileSaved(returnFile);
 
@@ -789,7 +778,9 @@ StyleSheetEditor.prototype = {
 
     let defaultName;
     if (this._friendlyName) {
-      defaultName = OS.Path.basename(this._friendlyName);
+      defaultName = PathUtils.isAbsolute(this._friendlyName)
+        ? PathUtils.filename(this._friendlyName)
+        : this._friendlyName;
     }
     showFilePicker(
       file || this._styleSheetFilePath,
@@ -830,8 +821,8 @@ StyleSheetEditor.prototype = {
    * if so, update the live style sheet.
    */
   checkLinkedFileForChanges: function() {
-    OS.File.stat(this.linkedCSSFile).then(info => {
-      const lastChange = info.lastModificationDate.getTime();
+    IOUtils.stat(this.linkedCSSFile).then(info => {
+      const lastChange = info.lastModified;
 
       if (this._fileModDate && lastChange != this._fileModDate) {
         this._fileModDate = lastChange;
@@ -878,15 +869,12 @@ StyleSheetEditor.prototype = {
    * file from disk and live update the stylesheet object with the contents.
    */
   updateLinkedStyleSheet: function() {
-    OS.File.read(this.linkedCSSFile).then(async array => {
+    IOUtils.read(this.linkedCSSFile).then(async array => {
       const decoder = new TextDecoder();
       const text = decoder.decode(array);
 
       // Ensure we don't re-fetch the text from the original source
       // actor when we're notified that the style sheet changed.
-      // @backward-compat { version 86 } See property declaration for more information.
-      this._isUpdating = true;
-
       const styleSheetsFront = await this._getStyleSheetsFront();
 
       await styleSheetsFront.update(
@@ -972,7 +960,7 @@ function findLinkedFilePath(uri, origUri, file) {
   const project = findProjectPath(file, origBranch);
 
   const parts = project.concat(branch);
-  const path = OS.Path.join.apply(this, parts);
+  const path = PathUtils.join.apply(this, parts);
 
   return path;
 }
@@ -991,7 +979,7 @@ function findLinkedFilePath(uri, origUri, file) {
  *        array of path parts
  */
 function findProjectPath(file, branch) {
-  const path = OS.Path.split(file.path).components;
+  const path = PathUtils.split(file.path);
 
   for (let i = 2; i <= branch.length; i++) {
     // work backwards until we find a differing directory name
@@ -1017,8 +1005,8 @@ function findProjectPath(file, branch) {
  *         object with 'branch' and 'origBranch' array of path parts for branch
  */
 function findUnsharedBranches(origUri, uri) {
-  origUri = OS.Path.split(origUri.pathQueryRef).components;
-  uri = OS.Path.split(uri.pathQueryRef).components;
+  origUri = PathUtils.split(origUri.pathQueryRef);
+  uri = PathUtils.split(uri.pathQueryRef);
 
   for (let i = 0; i < uri.length - 1; i++) {
     if (uri[i] != origUri[i]) {

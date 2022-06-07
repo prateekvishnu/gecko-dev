@@ -13,7 +13,6 @@
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
 #include "jit/mips-shared/SharedICHelpers-mips-shared.h"
-#include "jit/mips32/Bailouts-mips32.h"
 #ifdef JS_ION_PERF
 #  include "jit/PerfSpewer.h"
 #endif
@@ -146,7 +145,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   masm.loadPtr(slotToken, s2);
 
   // Save stack pointer as baseline frame.
-  masm.movePtr(StackPointer, BaselineFrameReg);
+  masm.movePtr(StackPointer, FramePointer);
 
   // Load the number of actual arguments into s3.
   masm.loadPtr(slotVp, s3);
@@ -201,20 +200,20 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   masm.push(s4);  // descriptor
 
   CodeLabel returnLabel;
-  CodeLabel oomReturnLabel;
+  Label oomReturnLabel;
   {
     // Handle Interpreter -> Baseline OSR.
     AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
+    MOZ_ASSERT(!regs.has(FramePointer));
     regs.take(OsrFrameReg);
-    regs.take(BaselineFrameReg);
     regs.take(reg_code);
     regs.take(ReturnReg);
 
     const Address slotNumStackValues(
-        BaselineFrameReg,
+        FramePointer,
         sizeof(EnterJITRegs) + offsetof(EnterJITArgs, numStackValues));
     const Address slotScopeChain(
-        BaselineFrameReg,
+        FramePointer,
         sizeof(EnterJITRegs) + offsetof(EnterJITArgs, scopeChain));
 
     Label notOsr;
@@ -232,10 +231,10 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     // Push previous frame pointer.
     masm.subPtr(Imm32(sizeof(uintptr_t)), StackPointer);
-    masm.storePtr(BaselineFrameReg, Address(StackPointer, 0));
+    masm.storePtr(FramePointer, Address(StackPointer, 0));
 
     // Reserve frame.
-    Register framePtr = BaselineFrameReg;
+    Register framePtr = FramePointer;
     masm.subPtr(Imm32(BaselineFrame::Size()), StackPointer);
     masm.movePtr(StackPointer, framePtr);
 
@@ -268,8 +267,8 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     using Fn = bool (*)(BaselineFrame * frame, InterpreterFrame * interpFrame,
                         uint32_t numStackValues);
     masm.setupUnalignedABICall(scratch);
-    masm.passABIArg(BaselineFrameReg);  // BaselineFrame
-    masm.passABIArg(OsrFrameReg);       // InterpreterFrame
+    masm.passABIArg(FramePointer);  // BaselineFrame
+    masm.passABIArg(OsrFrameReg);   // InterpreterFrame
     masm.passABIArg(numStackValues);
     masm.callWithABI<Fn, jit::InitBaselineFrameForOsr>(
         MoveOp::GENERAL, CheckUnsafeCallWithABI::DontCheckHasExitFrame);
@@ -308,8 +307,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.movePtr(framePtr, StackPointer);
     masm.addPtr(Imm32(2 * sizeof(uintptr_t)), StackPointer);
     masm.moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
-    masm.ma_li(scratch, &oomReturnLabel);
-    masm.jump(scratch);
+    masm.jump(&oomReturnLabel);
 
     masm.bind(&notOsr);
     // Load the scope chain in R1.
@@ -329,7 +327,6 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.bind(&returnLabel);
     masm.addCodeLabel(returnLabel);
     masm.bind(&oomReturnLabel);
-    masm.addCodeLabel(oomReturnLabel);
   }
 
   // s0 <- 8*argc (size of all arguments we pushed on the stack)
@@ -434,6 +431,8 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
       break;
   }
   masm.pushReturnAddress();
+
+#error "Port changes from bug 1772506"
 
   Register numActArgsReg = t6;
   Register calleeTokenReg = t7;
@@ -606,12 +605,9 @@ static const uint32_t bailoutInfoOutParamSize = 2 * sizeof(uintptr_t);
  * In this case frame size is stored in $ra (look at
  * CodeGeneratorMIPS::generateOutOfLineCode()) and thunk code should save it
  * on stack. Other difference is that members snapshotOffset_ and padding_ are
- * pushed to the stack by CodeGeneratorMIPS::visitOutOfLineBailout(). Field
- * frameClassId_ is forced to be NO_FRAME_SIZE_CLASS_ID
- * (See: JitRuntime::generateBailoutHandler).
+ * pushed to the stack by CodeGeneratorMIPS::visitOutOfLineBailout().
  */
-static void PushBailoutFrame(MacroAssembler& masm, uint32_t frameClass,
-                             Register spArg) {
+static void PushBailoutFrame(MacroAssembler& masm, Register spArg) {
   // Make sure that alignment is proper.
   masm.checkStackAlignment();
 
@@ -637,22 +633,19 @@ static void PushBailoutFrame(MacroAssembler& masm, uint32_t frameClass,
                  BailoutStack::offsetOfFpRegs() + i * sizeof(double));
   }
 
-  // Store the frameSize_ or tableOffset_ stored in ra
+  // Store the frameSize_ stored in ra
   // See: JitRuntime::generateBailoutTable()
   // See: CodeGeneratorMIPS::generateOutOfLineCode()
   masm.storePtr(ra, Address(StackPointer, BailoutStack::offsetOfFrameSize()));
 
-  // Put frame class to stack
-  masm.storePtr(ImmWord(frameClass),
-                Address(StackPointer, BailoutStack::offsetOfFrameClass()));
+#error "Code needs to be updated"
 
   // Put pointer to BailoutStack as first argument to the Bailout()
   masm.movePtr(StackPointer, spArg);
 }
 
-static void GenerateBailoutThunk(MacroAssembler& masm, uint32_t frameClass,
-                                 Label* bailoutTail) {
-  PushBailoutFrame(masm, frameClass, a0);
+static void GenerateBailoutThunk(MacroAssembler& masm, Label* bailoutTail) {
+  PushBailoutFrame(masm, a0);
 
   // Put pointer to BailoutInfo
   masm.subPtr(Imm32(bailoutInfoOutParamSize), StackPointer);
@@ -670,23 +663,17 @@ static void GenerateBailoutThunk(MacroAssembler& masm, uint32_t frameClass,
   masm.loadPtr(Address(StackPointer, 0), a2);
 
   // Remove both the bailout frame and the topmost Ion frame's stack.
-  if (frameClass == NO_FRAME_SIZE_CLASS_ID) {
-    // Load frameSize from stack
-    masm.loadPtr(Address(StackPointer, bailoutInfoOutParamSize +
-                                           BailoutStack::offsetOfFrameSize()),
-                 a1);
 
-    // Remove complete BailoutStack class and data after it
-    masm.addPtr(Imm32(sizeof(BailoutStack) + bailoutInfoOutParamSize),
-                StackPointer);
-    // Remove frame size srom stack
-    masm.addPtr(a1, StackPointer);
-  } else {
-    uint32_t frameSize = FrameSizeClass::FromClass(frameClass).frameSize();
-    // Remove the data this fuction added and frame size.
-    masm.addPtr(Imm32(bailoutDataSize + bailoutInfoOutParamSize + frameSize),
-                StackPointer);
-  }
+  // Load frameSize from stack
+  masm.loadPtr(Address(StackPointer, bailoutInfoOutParamSize +
+                                         BailoutStack::offsetOfFrameSize()),
+               a1);
+
+  // Remove complete BailoutStack class and data after it
+  masm.addPtr(Imm32(sizeof(BailoutStack) + bailoutInfoOutParamSize),
+              StackPointer);
+  // Remove frame size srom stack
+  masm.addPtr(a1, StackPointer);
 
   // Jump to shared bailout tail. The BailoutInfo pointer has to be in a2.
   masm.jump(bailoutTail);

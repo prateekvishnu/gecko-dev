@@ -92,12 +92,6 @@ loader.lazyRequireGetter(
 loader.lazyRequireGetter(this, "ZoomKeys", "devtools/client/shared/zoom-keys");
 loader.lazyRequireGetter(
   this,
-  "settleAll",
-  "devtools/shared/ThreadSafeDevToolsUtils",
-  true
-);
-loader.lazyRequireGetter(
-  this,
   "ToolboxButtons",
   "devtools/client/definitions",
   true
@@ -2528,8 +2522,10 @@ Toolbox.prototype = {
    *
    * @param {string} id
    *        The id of the tool to load.
+   * @param {Object} options
+   *        Object that will be passed to the panel `open` method.
    */
-  loadTool: function(id) {
+  loadTool: function(id, options) {
     let iframe = this.doc.getElementById("toolbox-panel-iframe-" + id);
     if (iframe) {
       const panel = this._toolPanels.get(id);
@@ -2603,7 +2599,7 @@ Toolbox.prototype = {
           // The panel can implement an 'open' method for asynchronous
           // initialization sequence.
           if (typeof panel.open == "function") {
-            built = panel.open();
+            built = panel.open(options);
           } else {
             built = new Promise(resolve => {
               resolve(panel);
@@ -2740,8 +2736,10 @@ Toolbox.prototype = {
    *        The id of the tool to switch to
    * @param {string} reason
    *        Reason the tool was opened
+   * @param {Object} options
+   *        Object that will be passed to the panel
    */
-  selectTool: function(id, reason = "unknown") {
+  selectTool: function(id, reason = "unknown", options) {
     this.emit("panel-changed");
 
     if (this.currentToolId == id) {
@@ -2792,7 +2790,7 @@ Toolbox.prototype = {
       Services.prefs.setCharPref(this._prefs.LAST_TOOL, id);
     }
 
-    return this.loadTool(id).then(panel => {
+    return this.loadTool(id, options).then(panel => {
       // focus the tool's frame to start receiving key events
       this.focusTool(id);
 
@@ -3978,13 +3976,17 @@ Toolbox.prototype = {
     }
     this.destroyHarAutomation();
 
-    const outstanding = [];
     for (const [id, panel] of this._toolPanels) {
       try {
         gDevTools.emit(id + "-destroy", this, panel);
         this.emit(id + "-destroy", panel);
 
-        outstanding.push(panel.destroy());
+        const rv = panel.destroy();
+        if (rv) {
+          console.error(
+            `Panel ${id}'s destroy method returned something whereas it shouldn't (and should be synchronous).`
+          );
+        }
       } catch (e) {
         // We don't want to stop here if any panel fail to close.
         console.error("Panel " + id + ":", e);
@@ -3995,11 +3997,9 @@ Toolbox.prototype = {
     this._toolNames = null;
 
     // Reset preferences set by the toolbox, then remove the preference front.
-    outstanding.push(
-      this.resetPreference().then(() => {
-        this._preferenceFrontRequest = null;
-      })
-    );
+    const onResetPreference = this.resetPreference().then(() => {
+      this._preferenceFrontRequest = null;
+    });
 
     this.commands.targetCommand.unwatchTargets({
       types: this.commands.targetCommand.ALL_TYPES,
@@ -4047,12 +4047,10 @@ Toolbox.prototype = {
       session_id: this.sessionId,
     });
 
-    // Finish all outstanding tasks (which means finish destroying panels and
-    // then destroying the host, successfully or not) before destroying the
-    // target descriptor.
+    // Wait for the preferences to be reset before destroying the target descriptor (which will destroy the preference front)
     const onceDestroyed = new Promise(resolve => {
       resolve(
-        settleAll(outstanding)
+        onResetPreference
           .catch(console.error)
           .then(async () => {
             // Destroy the node picker *after* destroying the panel,

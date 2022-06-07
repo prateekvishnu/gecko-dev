@@ -173,20 +173,13 @@ class HyperTextAccessible : public AccessibleWrap,
    */
   int32_t OffsetAtPoint(int32_t aX, int32_t aY, uint32_t aCoordType);
 
-  /**
-   * Return a rect (in dev pixels) of the given text range relative given
-   * coordinate system.
-   */
   LayoutDeviceIntRect TextBounds(
       int32_t aStartOffset, int32_t aEndOffset,
       uint32_t aCoordType =
-          nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE);
+          nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE) override;
 
-  /**
-   * Return a rect (in dev pixels) for character at given offset relative given
-   * coordinate system.
-   */
-  LayoutDeviceIntRect CharBounds(int32_t aOffset, uint32_t aCoordType) {
+  LayoutDeviceIntRect CharBounds(int32_t aOffset,
+                                 uint32_t aCoordType) override {
     int32_t endOffset = aOffset == static_cast<int32_t>(CharacterCount())
                             ? aOffset
                             : aOffset + 1;
@@ -197,7 +190,7 @@ class HyperTextAccessible : public AccessibleWrap,
    * Get/set caret offset, if no caret then -1.
    */
   virtual int32_t CaretOffset() const override;
-  void SetCaretOffset(int32_t aOffset);
+  virtual void SetCaretOffset(int32_t aOffset) override;
 
   /**
    * Provide the line number for the caret.

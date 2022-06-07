@@ -19,10 +19,14 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   AsyncShutdown: "resource://gre/modules/AsyncShutdown.jsm",
   BroadcastConduit: "resource://gre/modules/ConduitsParent.jsm",
   DeferredTask: "resource://gre/modules/DeferredTask.jsm",
@@ -35,9 +39,10 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   PerformanceCounters: "resource://gre/modules/PerformanceCounters.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   Schemas: "resource://gre/modules/Schemas.jsm",
+  getErrorNameForTelemetry: "resource://gre/modules/ExtensionTelemetry.jsm",
 });
 
-XPCOMUtils.defineLazyServiceGetters(this, {
+XPCOMUtils.defineLazyServiceGetters(lazy, {
   aomStartup: [
     "@mozilla.org/addons/addon-manager-startup;1",
     "amIAddonManagerStartup",
@@ -46,7 +51,7 @@ XPCOMUtils.defineLazyServiceGetters(this, {
 
 // We're using the pref to avoid loading PerformanceCounters.jsm for nothing.
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "gTimingEnabled",
   "extensions.webextensions.enablePerformanceCounters",
   false
@@ -91,8 +96,6 @@ let GlobalManager;
 let ParentAPIManager;
 let StartupCache;
 
-const global = this;
-
 function verifyActorForContext(actor, context) {
   if (JSWindowActorParent.isInstance(actor)) {
     let target = actor.browsingContext.top.embedderElement;
@@ -109,7 +112,7 @@ function verifyActorForContext(actor, context) {
 // This object loads the ext-*.js scripts that define the extension API.
 let apiManager = new (class extends SchemaAPIManager {
   constructor() {
-    super("main", Schemas);
+    super("main", lazy.Schemas);
     this.initialized = null;
 
     /* eslint-disable mozilla/balanced-listeners */
@@ -123,7 +126,7 @@ let apiManager = new (class extends SchemaAPIManager {
         return;
       }
 
-      let extension = new ExtensionData(resourceURI, isPrivileged);
+      let extension = new lazy.ExtensionData(resourceURI, isPrivileged);
       await extension.loadManifest();
 
       return Promise.all(
@@ -146,15 +149,15 @@ let apiManager = new (class extends SchemaAPIManager {
     /* eslint-enable mozilla/balanced-listeners */
 
     // Handle any changes that happened during startup
-    let disabledIds = AddonManager.getStartupChanges(
-      AddonManager.STARTUP_CHANGE_DISABLED
+    let disabledIds = lazy.AddonManager.getStartupChanges(
+      lazy.AddonManager.STARTUP_CHANGE_DISABLED
     );
     if (disabledIds.length) {
       this._callHandlers(disabledIds, "disable", "onDisable");
     }
 
-    let uninstalledIds = AddonManager.getStartupChanges(
-      AddonManager.STARTUP_CHANGE_UNINSTALLED
+    let uninstalledIds = lazy.AddonManager.getStartupChanges(
+      lazy.AddonManager.STARTUP_CHANGE_UNINSTALLED
     );
     if (uninstalledIds.length) {
       this._callHandlers(uninstalledIds, "uninstall", "onUninstall");
@@ -199,21 +202,21 @@ let apiManager = new (class extends SchemaAPIManager {
 
       // Load order matters here. The base manifest defines types which are
       // extended by other schemas, so needs to be loaded first.
-      return Schemas.load(BASE_SCHEMA).then(() => {
+      return lazy.Schemas.load(BASE_SCHEMA).then(() => {
         let promises = [];
         for (let { value } of Services.catMan.enumerateCategory(
           CATEGORY_EXTENSION_SCHEMAS
         )) {
-          promises.push(Schemas.load(value));
+          promises.push(lazy.Schemas.load(value));
         }
         for (let [url, { content }] of this.schemaURLs) {
-          promises.push(Schemas.load(url, content));
+          promises.push(lazy.Schemas.load(url, content));
         }
         for (let url of schemaURLs) {
-          promises.push(Schemas.load(url));
+          promises.push(lazy.Schemas.load(url));
         }
         return Promise.all(promises).then(() => {
-          Schemas.updateSharedSchemas();
+          lazy.Schemas.updateSharedSchemas();
         });
       });
     })();
@@ -246,7 +249,7 @@ let apiManager = new (class extends SchemaAPIManager {
       promises.push(...ids.map(id => this.emit("enabling", id)));
     }
 
-    AsyncShutdown.profileBeforeChange.addBlocker(
+    lazy.AsyncShutdown.profileBeforeChange.addBlocker(
       `Extension API ${event} handlers for ${ids.join(",")}`,
       Promise.all(promises)
     );
@@ -265,7 +268,7 @@ const ProxyMessenger = {
   ports: new Map(),
 
   init() {
-    this.conduit = new BroadcastConduit(ProxyMessenger, {
+    this.conduit = new lazy.BroadcastConduit(ProxyMessenger, {
       id: "ProxyMessenger",
       reportOnClosed: "portId",
       recv: ["PortConnect", "PortMessage", "NativeMessage", "RuntimeMessage"],
@@ -276,14 +279,14 @@ const ProxyMessenger = {
   openNative(nativeApp, sender) {
     let context = ParentAPIManager.getContextById(sender.childId);
     if (context.extension.hasPermission("geckoViewAddons")) {
-      return new GeckoViewConnection(
+      return new lazy.GeckoViewConnection(
         this.getSender(context.extension, sender),
         sender.actor.browsingContext.top.embedderElement,
         nativeApp,
         context.extension.hasPermission("nativeMessagingFromContent")
       );
     } else if (sender.verified) {
-      return new NativeApp(context, nativeApp);
+      return new lazy.NativeApp(context, nativeApp);
     }
     sender = this.getSender(context.extension, sender);
     throw new Error(`Native messaging not allowed: ${JSON.stringify(sender)}`);
@@ -439,7 +442,7 @@ GlobalManager = {
   async receiveMessage({ name, data }) {
     switch (name) {
       case "Extension:SendPerformanceCounter":
-        PerformanceCounters.merge(data.counters);
+        lazy.PerformanceCounters.merge(data.counters);
         break;
     }
   },
@@ -464,6 +467,7 @@ class ProxyContextParent extends BaseContext {
   constructor(envType, extension, params, xulBrowser, principal) {
     super(envType, extension);
 
+    this.childId = params.childId;
     this.uri = Services.io.newURI(params.url);
 
     this.incognito = params.incognito;
@@ -475,7 +479,7 @@ class ProxyContextParent extends BaseContext {
     // message manager object may change when `xulBrowser` swaps docshells, e.g.
     // when a tab is moved to a different window.
     this.messageManagerProxy =
-      xulBrowser && new MessageManagerProxy(xulBrowser);
+      xulBrowser && new lazy.MessageManagerProxy(xulBrowser);
 
     Object.defineProperty(this, "principal", {
       value: principal,
@@ -723,7 +727,7 @@ class DevToolsExtensionPageContextParent extends ExtensionPageContextParent {
     }
 
     this._devToolsCommandsPromise = (async () => {
-      const commands = await DevToolsShim.createCommandsForTabForWebExtension(
+      const commands = await lazy.DevToolsShim.createCommandsForTabForWebExtension(
         this.devToolsToolbox.descriptorFront.localTab
       );
       await commands.targetCommand.startListening();
@@ -802,7 +806,7 @@ ParentAPIManager = {
     // TODO: Bug 1595186 - remove/replace all usage of MessageManager below.
     Services.obs.addObserver(this, "message-manager-close");
 
-    this.conduit = new BroadcastConduit(this, {
+    this.conduit = new lazy.BroadcastConduit(this, {
       id: "ParentAPIManager",
       reportOnClosed: "childId",
       recv: [
@@ -813,7 +817,7 @@ ParentAPIManager = {
         "RemoveListener",
       ],
       send: ["CallResult"],
-      query: ["RunListener"],
+      query: ["RunListener", "StreamFilterSuspendCancel"],
     });
   },
 
@@ -850,6 +854,10 @@ ParentAPIManager = {
         this.proxyContexts.delete(childId);
       }
     }
+  },
+
+  queryStreamFilterSuspendCancel(childId) {
+    return this.conduit.queryStreamFilterSuspendCancel(childId);
   },
 
   recvCreateProxyContext(data, { actor, sender }) {
@@ -955,7 +963,7 @@ ParentAPIManager = {
 
   async retrievePerformanceCounters() {
     // getting the parent counters
-    return PerformanceCounters.getData();
+    return lazy.PerformanceCounters.getData();
   },
 
   /**
@@ -972,9 +980,15 @@ ParentAPIManager = {
     // to log again, check for the flag.
     const { alreadyLogged } = data.options || {};
     if (!alreadyLogged) {
-      ExtensionActivityLog.log(id, context.viewType, "api_call", data.path, {
-        args: data.args,
-      });
+      lazy.ExtensionActivityLog.log(
+        id,
+        context.viewType,
+        "api_call",
+        data.path,
+        {
+          args: data.args,
+        }
+      );
     }
 
     let start = Cu.now();
@@ -986,9 +1000,9 @@ ParentAPIManager = {
         { startTime: start },
         `${id}, api_call: ${data.path}`
       );
-      if (gTimingEnabled) {
+      if (lazy.gTimingEnabled) {
         let end = Cu.now() * 1000;
-        PerformanceCounters.storeExecutionTime(
+        lazy.PerformanceCounters.storeExecutionTime(
           id,
           data.path,
           end - start * 1000
@@ -1088,13 +1102,13 @@ ParentAPIManager = {
           return new StructuredCloneHolder(listenerArgs);
         },
       });
-      let rv = result && result.deserialize(global);
+      let rv = result && result.deserialize(globalThis);
       ChromeUtils.addProfilerMarker(
         "ExtensionParent",
         { startTime },
         `${context.extension.id}, api_event: ${data.path}`
       );
-      ExtensionActivityLog.log(
+      lazy.ExtensionActivityLog.log(
         context.extension.id,
         context.viewType,
         "api_event",
@@ -1126,7 +1140,7 @@ ParentAPIManager = {
     }
     handler.addListener(listener, ...args);
     if (!alreadyLogged) {
-      ExtensionActivityLog.log(
+      lazy.ExtensionActivityLog.log(
         context.extension.id,
         context.viewType,
         "api_call",
@@ -1145,7 +1159,7 @@ ParentAPIManager = {
 
     let { alreadyLogged = false } = data;
     if (!alreadyLogged) {
-      ExtensionActivityLog.log(
+      lazy.ExtensionActivityLog.log(
         context.extension.id,
         context.viewType,
         "api_call",
@@ -1229,7 +1243,7 @@ class HiddenXULWindow {
     let chromeShell = windowlessBrowser.docShell;
     chromeShell.QueryInterface(Ci.nsIWebNavigation);
 
-    if (PrivateBrowsingUtils.permanentPrivateBrowsing) {
+    if (lazy.PrivateBrowsingUtils.permanentPrivateBrowsing) {
       let attrs = chromeShell.getOriginAttributes();
       attrs.privateBrowsingId = 1;
       chromeShell.setOriginAttributes(attrs);
@@ -1971,16 +1985,20 @@ StartupCache = {
   ),
 
   async _saveNow() {
-    let data = new Uint8Array(aomStartup.encodeBlob(this._data));
+    let data = new Uint8Array(lazy.aomStartup.encodeBlob(this._data));
     await this._ensureDirectoryPromise;
     await IOUtils.write(this.file, data, { tmpPath: `${this.file}.tmp` });
+    Services.telemetry.scalarSet(
+      "extensions.startupCache.write_byteLength",
+      data.byteLength
+    );
   },
 
   save() {
     this._ensureDirectory();
 
     if (!this._saveTask) {
-      this._saveTask = new DeferredTask(() => this._saveNow(), 5000);
+      this._saveTask = new lazy.DeferredTask(() => this._saveNow(), 5000);
 
       IOUtils.profileBeforeChange.addBlocker(
         "Flush WebExtension StartupCache",
@@ -1998,13 +2016,22 @@ StartupCache = {
   async _readData() {
     let result = new Map();
     try {
+      Glean.extensions.startupCacheLoadTime.start();
       let { buffer } = await IOUtils.read(this.file);
 
-      result = aomStartup.decodeBlob(buffer);
+      result = lazy.aomStartup.decodeBlob(buffer);
+      Glean.extensions.startupCacheLoadTime.stop();
     } catch (e) {
+      Glean.extensions.startupCacheLoadTime.cancel();
       if (!DOMException.isInstance(e) || e.name !== "NotFoundError") {
         Cu.reportError(e);
       }
+
+      Services.telemetry.keyedScalarAdd(
+        "extensions.startupCache.read_errors",
+        lazy.getErrorNameForTelemetry(e),
+        1
+      );
     }
 
     this._data = result;

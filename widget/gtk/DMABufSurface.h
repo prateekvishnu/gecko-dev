@@ -29,7 +29,7 @@ typedef void* EGLSyncKHR;
 
 namespace mozilla {
 namespace gfx {
-class SourceSurface;
+class DataSourceSurface;
 }
 namespace layers {
 class SurfaceDescriptor;
@@ -94,6 +94,10 @@ class DMABufSurface {
 
   virtual DMABufSurfaceRGBA* GetAsDMABufSurfaceRGBA() { return nullptr; }
   virtual DMABufSurfaceYUV* GetAsDMABufSurfaceYUV() { return nullptr; }
+  virtual already_AddRefed<mozilla::gfx::DataSourceSurface>
+  GetAsSourceSurface() {
+    return nullptr;
+  }
 
   virtual mozilla::gfx::YUVColorSpace GetYUVColorSpace() {
     return mozilla::gfx::YUVColorSpace::Default;
@@ -148,7 +152,12 @@ class DMABufSurface {
  protected:
   virtual bool Create(const mozilla::layers::SurfaceDescriptor& aDesc) = 0;
 
+  // Import global ref count from IPC by file descriptor.
   void GlobalRefCountImport(int aFd);
+  // Export global ref count by file descriptor. This adds global ref count
+  // reference to the surface.
+  // It's used when dmabuf surface is shared with another process via. IPC.
+  int GlobalRefCountExport();
   void GlobalRefCountDelete();
 
   void ReleaseDMABuf();
@@ -277,11 +286,12 @@ class DMABufSurfaceYUV : public DMABufSurface {
       int* aLineSizes = nullptr);
 
   static already_AddRefed<DMABufSurfaceYUV> CreateYUVSurface(
-      const VADRMPRIMESurfaceDescriptor& aDesc);
+      const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth, int aHeight);
 
   bool Serialize(mozilla::layers::SurfaceDescriptor& aOutDescriptor);
 
   DMABufSurfaceYUV* GetAsDMABufSurfaceYUV() { return this; };
+  already_AddRefed<mozilla::gfx::DataSourceSurface> GetAsSourceSurface();
 
   int GetWidth(int aPlane = 0) { return mWidth[aPlane]; }
   int GetHeight(int aPlane = 0) { return mHeight[aPlane]; }
@@ -306,7 +316,8 @@ class DMABufSurfaceYUV : public DMABufSurface {
   DMABufSurfaceYUV();
 
   bool UpdateYUVData(void** aPixelData, int* aLineSizes);
-  bool UpdateYUVData(const VADRMPRIMESurfaceDescriptor& aDesc);
+  bool UpdateYUVData(const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth,
+                     int aHeight);
 
   bool VerifyTextureCreation();
 
@@ -331,6 +342,11 @@ class DMABufSurfaceYUV : public DMABufSurface {
 
   int mWidth[DMABUF_BUFFER_PLANES];
   int mHeight[DMABUF_BUFFER_PLANES];
+  // Aligned size of the surface imported from VADRMPRIMESurfaceDescriptor.
+  // It's used only internally to create EGLImage as some GL drivers
+  // needs that (Bug 1724385).
+  int mWidthAligned[DMABUF_BUFFER_PLANES];
+  int mHeightAligned[DMABUF_BUFFER_PLANES];
   EGLImageKHR mEGLImage[DMABUF_BUFFER_PLANES];
   GLuint mTexture[DMABUF_BUFFER_PLANES];
   mozilla::gfx::YUVColorSpace mColorSpace =

@@ -304,6 +304,12 @@ gfxPlatformFontList::gfxPlatformFontList(bool aNeedFullnamePostscriptNames)
 }
 
 gfxPlatformFontList::~gfxPlatformFontList() {
+  // We take the lock here because it's possible the InitFontList thread is
+  // still running, in which case we need to wait for it to finish; this will
+  // block until the lock becomes available, ensuring we don't destroy things
+  // the initialization thread is using.
+  AutoLock lock(mLock);
+
   mSharedCmaps.Clear();
   ClearLangGroupPrefFontsLocked();
 
@@ -441,17 +447,20 @@ bool gfxPlatformFontList::AddWithLegacyFamilyName(const nsACString& aLegacyName,
   nsAutoCString key;
   ToLowerCase(aLegacyName, key);
   mOtherFamilyNames
-      .LookupOrInsertWith(
-          key,
-          [&] {
-            RefPtr<gfxFontFamily> family =
-                CreateFontFamily(aLegacyName, aVisibility);
-            family->SetHasStyles(
-                true);  // we don't want the family to search for
-                        // faces, we're adding them directly here
-            added = true;
-            return family;
-          })
+      .LookupOrInsertWith(key,
+                          [&] {
+                            RefPtr<gfxFontFamily> family =
+                                CreateFontFamily(aLegacyName, aVisibility);
+                            // We don't want the family to search for faces,
+                            // we're adding them directly here.
+                            family->SetHasStyles(true);
+                            // And we don't want it to attempt to search for
+                            // legacy names, because we've already done that
+                            // (and this is the result).
+                            family->SetCheckedForLegacyFamilyNames(true);
+                            added = true;
+                            return family;
+                          })
       ->AddFontEntry(aFontEntry->Clone());
   return added;
 }
@@ -1437,7 +1446,7 @@ gfxFontFamily* gfxPlatformFontList::CheckFamily(gfxFontFamily* aFamily) {
     aFamily->FindStyleVariations();
   }
 
-  if (aFamily && aFamily->GetFontList().Length() == 0) {
+  if (aFamily && aFamily->FontListLength() == 0) {
     // Failed to load any faces for this family, so discard it.
     nsAutoCString key;
     GenerateFontListKey(aFamily->Name(), key);

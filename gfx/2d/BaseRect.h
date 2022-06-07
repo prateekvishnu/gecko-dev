@@ -14,6 +14,7 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/gfx/ScaleFactors2D.h"
 #include "Types.h"
 
 namespace mozilla {
@@ -312,6 +313,39 @@ struct BaseRect {
     height = aSize.height;
   }
 
+  // Variant of MoveBy that ensures that even after translation by a point that
+  // the rectangle coordinates will still fit within numeric limits. The origin
+  // and size will be clipped within numeric limits to ensure this.
+  void SafeMoveByX(T aDx) {
+    T x2 = XMost();
+    if (aDx >= T(0)) {
+      T limit = std::numeric_limits<T>::max();
+      x = limit - aDx < x ? limit : x + aDx;
+      width = (limit - aDx < x2 ? limit : x2 + aDx) - x;
+    } else {
+      T limit = std::numeric_limits<T>::min();
+      x = limit - aDx > x ? limit : x + aDx;
+      width = (limit - aDx > x2 ? limit : x2 + aDx) - x;
+    }
+  }
+  void SafeMoveByY(T aDy) {
+    T y2 = YMost();
+    if (aDy >= T(0)) {
+      T limit = std::numeric_limits<T>::max();
+      y = limit - aDy < y ? limit : y + aDy;
+      height = (limit - aDy < y2 ? limit : y2 + aDy) - y;
+    } else {
+      T limit = std::numeric_limits<T>::min();
+      y = limit - aDy > y ? limit : y + aDy;
+      height = (limit - aDy > y2 ? limit : y2 + aDy) - y;
+    }
+  }
+  void SafeMoveBy(T aDx, T aDy) {
+    SafeMoveByX(aDx);
+    SafeMoveByY(aDy);
+  }
+  void SafeMoveBy(const Point& aPoint) { SafeMoveBy(aPoint.x, aPoint.y); }
+
   void Inflate(T aD) { Inflate(aD, aD); }
   void Inflate(T aDx, T aDy) {
     x -= aDx;
@@ -551,6 +585,11 @@ struct BaseRect {
     height = y1 - y0;
   }
 
+  // Scale 'this' by aScale.xScale and aScale.yScale without doing any rounding.
+  template <class Src, class Dst>
+  void Scale(const BaseScaleFactors2D<Src, Dst, T>& aScale) {
+    Scale(aScale.xScale, aScale.yScale);
+  }
   // Scale 'this' by aScale without doing any rounding.
   void Scale(T aScale) { Scale(aScale, aScale); }
   // Scale 'this' by aXScale and aYScale, without doing any rounding.

@@ -10,7 +10,6 @@ const { ContentTaskUtils } = ChromeUtils.import(
   "resource://testing-common/ContentTaskUtils.jsm"
 );
 const { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const Telemetry = Services.telemetry;
 const { TelemetryTestUtils } = ChromeUtils.import(
   "resource://testing-common/TelemetryTestUtils.jsm"
@@ -35,7 +34,7 @@ function keyedScalarValue(aScalarName, aProcessName) {
     : undefined;
 }
 
-add_task({ skip_if: () => !runningInParent }, function test_setup() {
+add_setup({ skip_if: () => !runningInParent }, function test_setup() {
   // Give FOG a temp profile to init within.
   do_get_profile();
 

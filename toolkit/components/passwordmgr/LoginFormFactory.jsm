@@ -15,22 +15,24 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FormLikeFactory",
   "resource://gre/modules/FormLikeFactory.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LoginHelper",
   "resource://gre/modules/LoginHelper.jsm"
 );
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  return LoginHelper.createLogger("LoginFormFactory");
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  return lazy.LoginHelper.createLogger("LoginFormFactory");
 });
 
-this.LoginFormFactory = {
+const LoginFormFactory = {
   /**
    * WeakMap of the root element of a LoginForm to the LoginForm representing its fields.
    *
@@ -58,14 +60,14 @@ this.LoginFormFactory = {
    * @throws Error if aForm isn't an HTMLFormElement
    */
   createFromForm(aForm) {
-    let formLike = FormLikeFactory.createFromForm(aForm);
-    formLike.action = LoginHelper.getFormActionOrigin(aForm);
+    let formLike = lazy.FormLikeFactory.createFromForm(aForm);
+    formLike.action = lazy.LoginHelper.getFormActionOrigin(aForm);
 
     let rootElementsSet = this.getRootElementsWeakSetForDocument(
       formLike.ownerDocument
     );
     rootElementsSet.add(formLike.rootElement);
-    log.debug(
+    lazy.log.debug(
       "adding",
       formLike.rootElement,
       "to root elements for",
@@ -94,9 +96,9 @@ this.LoginFormFactory = {
    */
   createFromField(aField) {
     if (
-      ChromeUtils.getClassName(aField) !== "HTMLInputElement" ||
+      !HTMLInputElement.isInstance(aField) ||
       (!aField.hasBeenTypePassword &&
-        !LoginHelper.isUsernameFieldType(aField)) ||
+        !lazy.LoginHelper.isUsernameFieldType(aField)) ||
       !aField.ownerDocument
     ) {
       throw new Error(
@@ -105,19 +107,22 @@ this.LoginFormFactory = {
     }
 
     let form =
-      aField.form || FormLikeFactory.closestFormIgnoringShadowRoots(aField);
+      aField.form ||
+      lazy.FormLikeFactory.closestFormIgnoringShadowRoots(aField);
     if (form) {
       return this.createFromForm(form);
     } else if (aField.hasAttribute("form")) {
-      log.debug(
+      lazy.log.debug(
         "createFromField: field has form attribute but no form: ",
         aField.getAttribute("form")
       );
     }
 
-    let formLike = FormLikeFactory.createFromField(aField);
-    formLike.action = LoginHelper.getLoginOrigin(aField.ownerDocument.baseURI);
-    log.debug(
+    let formLike = lazy.FormLikeFactory.createFromField(aField);
+    formLike.action = lazy.LoginHelper.getLoginOrigin(
+      aField.ownerDocument.baseURI
+    );
+    lazy.log.debug(
       "Created non-form LoginForm for rootElement:",
       aField.ownerDocument.documentElement
     );
@@ -126,7 +131,7 @@ this.LoginFormFactory = {
       formLike.ownerDocument
     );
     rootElementsSet.add(formLike.rootElement);
-    log.debug(
+    lazy.log.debug(
       "adding",
       formLike.rootElement,
       "to root elements for",

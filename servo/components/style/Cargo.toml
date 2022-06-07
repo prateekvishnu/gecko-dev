@@ -28,7 +28,7 @@ gecko_refcount_logging = []
 
 [dependencies]
 app_units = "0.7"
-arrayvec = "0.5"
+arrayvec = "0.7"
 atomic_refcell = "0.1"
 bitflags = "1.0"
 byteorder = "1.0"
@@ -63,6 +63,7 @@ servo_atoms = {path = "../atoms", optional = true}
 servo_config = {path = "../config", optional = true}
 smallbitvec = "2.3.0"
 smallvec = "1.0"
+static_assertions = "1.1"
 static_prefs = { path = "../../../modules/libpref/init/static_prefs" }
 string_cache = { version = "0.8", optional = true }
 style_derive = {path = "../style_derive"}
@@ -71,7 +72,7 @@ servo_url = {path = "../url", optional = true}
 to_shmem = {path = "../to_shmem"}
 to_shmem_derive = {path = "../to_shmem_derive"}
 time = "0.1"
-uluru = "1.1"
+uluru = "3.0"
 unicode-bidi = "0.3"
 unicode-segmentation = "1.0"
 void = "1.0.2"
@@ -80,7 +81,7 @@ gecko-profiler = { path = "../../../tools/profiler/rust-api" }
 [build-dependencies]
 lazy_static = "1"
 log = { version = "0.4", features = ["std"] }
-bindgen = {version = "0.56", optional = true, default-features = false}
+bindgen = {version = "0.59", optional = true, default-features = false}
 regex = {version = "1.0", optional = true, default-features = false, features = ["perf", "std"]}
 walkdir = "2.1.4"
 toml = {version = "0.4.5", optional = true, default-features = false}

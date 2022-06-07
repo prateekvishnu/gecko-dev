@@ -9,6 +9,7 @@
 #include "mozilla/a11y/Platform.h"
 #include "mozilla/dom/BrowserBridgeParent.h"
 #include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/StaticPrefs_accessibility.h"
 #include "xpcAccessibleDocument.h"
 #include "xpcAccEvents.h"
@@ -52,6 +53,36 @@ struct VTableSizer<IAccessible> {
 
 namespace a11y {
 uint64_t DocAccessibleParent::sMaxDocID = 0;
+
+DocAccessibleParent::DocAccessibleParent()
+    : RemoteAccessible(this),
+      mParentDoc(kNoParentDoc),
+#if defined(XP_WIN)
+      mEmulatedWindowHandle(nullptr),
+#endif  // defined(XP_WIN)
+      mTopLevel(false),
+      mTopLevelInContentProcess(false),
+      mShutdown(false),
+      mFocus(0),
+      mCaretId(0),
+      mCaretOffset(-1),
+      mIsCaretAtEndOfLine(false) {
+  sMaxDocID++;
+  mActorID = sMaxDocID;
+  MOZ_ASSERT(!LiveDocs().Get(mActorID));
+  LiveDocs().InsertOrUpdate(mActorID, this);
+}
+
+DocAccessibleParent::~DocAccessibleParent() {
+  LiveDocs().Remove(mActorID);
+  MOZ_ASSERT(mChildDocs.Length() == 0);
+  MOZ_ASSERT(!ParentDoc());
+}
+
+void DocAccessibleParent::SetBrowsingContext(
+    dom::CanonicalBrowsingContext* aBrowsingContext) {
+  mBrowsingContext = aBrowsingContext;
+}
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvShowEvent(
     const ShowEventData& aData, const bool& aFromUser) {
@@ -283,45 +314,45 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvEvent(
     return IPC_OK();
   }
 
-  RemoteAccessible* proxy = GetAccessible(aID);
-  if (!proxy) {
+  RemoteAccessible* remote = GetAccessible(aID);
+  if (!remote) {
     NS_ERROR("no proxy for event!");
     return IPC_OK();
   }
 
+  FireEvent(remote, aEventType);
+  return IPC_OK();
+}
+
+void DocAccessibleParent::FireEvent(RemoteAccessible* aAcc,
+                                    const uint32_t& aEventType) {
   if (aEventType == nsIAccessibleEvent::EVENT_FOCUS) {
-    mFocus = aID;
+    mFocus = aAcc->ID();
   }
 
   if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
     if (aEventType == nsIAccessibleEvent::EVENT_REORDER ||
         aEventType == nsIAccessibleEvent::EVENT_INNER_REORDER) {
-      if (proxy->IsHyperText()) {
-        // Invalidate the HyperText offset cache.
-        proxy->InvalidateCachedHyperTextOffsets();
-      }
-      for (RemoteAccessible* child = proxy->RemoteFirstChild(); child;
+      for (RemoteAccessible* child = aAcc->RemoteFirstChild(); child;
            child = child->RemoteNextSibling()) {
         child->InvalidateGroupInfo();
       }
     }
   }
 
-  ProxyEvent(proxy, aEventType);
+  ProxyEvent(aAcc, aEventType);
 
   if (!nsCoreUtils::AccEventObserversExist()) {
-    return IPC_OK();
+    return;
   }
 
-  xpcAccessibleGeneric* xpcAcc = GetXPCAccessible(proxy);
+  xpcAccessibleGeneric* xpcAcc = GetXPCAccessible(aAcc);
   xpcAccessibleDocument* doc = GetAccService()->GetXPCDocument(this);
   nsINode* node = nullptr;
   bool fromUser = true;  // XXX fix me
   RefPtr<xpcAccEvent> event =
       new xpcAccEvent(aEventType, xpcAcc, doc, node, fromUser);
   nsCoreUtils::DispatchAccEvent(std::move(event));
-
-  return IPC_OK();
 }
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvStateChangeEvent(
@@ -578,13 +609,6 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCache(
     }
 
     remote->ApplyCache(aUpdateType, entry.Fields());
-    if (aUpdateType == CacheUpdateType::Update && remote->IsTextLeaf()) {
-      // Invalidate the HyperText offset cache.
-      RemoteAccessible* parent = remote->RemoteParent();
-      if (parent && parent->IsHyperText()) {
-        parent->InvalidateCachedHyperTextOffsets();
-      }
-    }
   }
 
   if (nsCOMPtr<nsIObserverService> obsService =
@@ -694,6 +718,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvRoleChangedEvent(
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvBindChildDoc(
     PDocAccessibleParent* aChildDoc, const uint64_t& aID) {
+  ACQUIRE_ANDROID_LOCK
   // One document should never directly be the child of another.
   // We should always have at least an outer doc accessible in between.
   MOZ_ASSERT(aID);
@@ -833,8 +858,8 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
       // For same-process documents, this is fired by the content process, but
       // this isn't possible when the document is in a different process to its
       // embedder.
-      // RecvEvent fires both OS and XPCOM events.
-      Unused << RecvEvent(aParentID, nsIAccessibleEvent::EVENT_REORDER);
+      // FireEvent fires both OS and XPCOM events.
+      FireEvent(outerDoc, nsIAccessibleEvent::EVENT_REORDER);
     }
   }
 
@@ -902,8 +927,12 @@ void DocAccessibleParent::Destroy() {
   }
 
   for (auto iter = mAccessibles.Iter(); !iter.Done(); iter.Next()) {
-    MOZ_ASSERT(iter.Get()->mProxy != this);
-    ProxyDestroyed(iter.Get()->mProxy);
+    RemoteAccessible* acc = iter.Get()->mProxy;
+    MOZ_ASSERT(acc != this);
+    if (acc->IsTable()) {
+      CachedTableAccessible::Invalidate(acc);
+    }
+    ProxyDestroyed(acc);
     iter.Remove();
   }
 
@@ -936,6 +965,14 @@ void DocAccessibleParent::Destroy() {
     parentDoc->RemoveChildDoc(thisDoc);
   } else if (IsTopLevel()) {
     GetAccService()->RemoteDocShutdown(this);
+  }
+}
+
+void DocAccessibleParent::ActorDestroy(ActorDestroyReason aWhy) {
+  MOZ_ASSERT(CheckDocTree());
+  if (!mShutdown) {
+    ACQUIRE_ANDROID_LOCK
+    Destroy();
   }
 }
 
@@ -1160,6 +1197,19 @@ void DocAccessibleParent::SelectionRanges(nsTArray<TextRange>* aRanges) const {
                   const_cast<RemoteAccessible*>(GetAccessible(data.EndID())),
                   data.EndOffset()));
   }
+}
+
+void DocAccessibleParent::URL(nsAString& aURL) const {
+  if (!mBrowsingContext) {
+    return;
+  }
+  nsAutoCString url;
+  nsCOMPtr<nsIURI> uri = mBrowsingContext->GetCurrentURI();
+  if (!uri) {
+    return;
+  }
+  uri->GetSpec(url);
+  CopyUTF8toUTF16(url, aURL);
 }
 
 }  // namespace a11y

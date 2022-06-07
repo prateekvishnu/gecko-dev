@@ -510,7 +510,8 @@ void MacroAssembler::createArrayWithFixedElements(
   storePtr(temp, Address(result, NativeObject::offsetOfElements()));
 
   // Initialize elements header.
-  store32(Imm32(0), Address(temp, ObjectElements::offsetOfFlags()));
+  store32(Imm32(ObjectElements::FIXED),
+          Address(temp, ObjectElements::offsetOfFlags()));
   store32(Imm32(0), Address(temp, ObjectElements::offsetOfInitializedLength()));
   store32(Imm32(arrayCapacity),
           Address(temp, ObjectElements::offsetOfCapacity()));
@@ -942,7 +943,7 @@ void MacroAssembler::initGCThing(Register obj, Register temp,
                                ObjectElements::offsetOfInitializedLength()));
       store32(Imm32(ntemplate.getArrayLength()),
               Address(obj, elementsOffset + ObjectElements::offsetOfLength()));
-      store32(Imm32(0),
+      store32(Imm32(ObjectElements::FIXED),
               Address(obj, elementsOffset + ObjectElements::offsetOfFlags()));
     } else if (ntemplate.isArgumentsObject()) {
       // The caller will initialize the reserved slots.
@@ -1777,7 +1778,7 @@ void MacroAssembler::switchToObjectRealm(Register obj, Register scratch) {
 }
 
 void MacroAssembler::switchToBaselineFrameRealm(Register scratch) {
-  Address envChain(BaselineFrameReg,
+  Address envChain(FramePointer,
                    BaselineFrame::reverseOffsetOfEnvironmentChain());
   loadPtr(envChain, scratch);
   switchToObjectRealm(scratch, scratch);
@@ -2083,11 +2084,11 @@ void MacroAssembler::generateBailoutTail(Register scratch,
 
     // Restore values where they need to be and resume execution.
     AllocatableGeneralRegisterSet enterRegs(GeneralRegisterSet::All());
-    enterRegs.take(BaselineFrameReg);
+    MOZ_ASSERT(!enterRegs.has(FramePointer));
     Register jitcodeReg = enterRegs.takeAny();
 
     pop(jitcodeReg);
-    pop(BaselineFrameReg);
+    pop(FramePointer);
 
     // Discard exit frame.
     addToStackPtr(Imm32(ExitFrameLayout::SizeWithFooter()));
@@ -3752,7 +3753,8 @@ void MacroAssembler::wasmTrap(wasm::Trap trap,
 }
 
 [[nodiscard]] bool MacroAssembler::wasmStartTry(size_t* tryNoteIndex) {
-  wasm::WasmTryNote tryNote = wasm::WasmTryNote(currentOffset(), 0, 0);
+  wasm::WasmTryNote tryNote = wasm::WasmTryNote();
+  tryNote.setTryBodyBegin(currentOffset());
   return append(tryNote, tryNoteIndex);
 }
 

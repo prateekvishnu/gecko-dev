@@ -58,20 +58,14 @@
 
 var EXPORTED_SYMBOLS = ["BookmarkHTMLUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 const { FileUtils } = ChromeUtils.import(
   "resource://gre/modules/FileUtils.jsm"
 );
 const { PlacesUtils } = ChromeUtils.import(
   "resource://gre/modules/PlacesUtils.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["XMLHttpRequest"]);
 
 ChromeUtils.defineModuleGetter(
   this,
@@ -210,7 +204,7 @@ var BookmarkHTMLUtils = Object.freeze({
         );
       }
       let importer = new BookmarkImporter(aInitialImport, aSource);
-      await importer.importFromURL(OS.Path.toFileURI(aFilePath));
+      await importer.importFromURL(PathUtils.toFileURI(aFilePath));
 
       notifyObservers(
         PlacesUtils.TOPIC_BOOKMARKS_RESTORE_SUCCESS,
@@ -261,7 +255,7 @@ var BookmarkHTMLUtils = Object.freeze({
     try {
       return Services.prefs.getCharPref("browser.bookmarks.file");
     } catch (ex) {}
-    return OS.Path.join(OS.Constants.Path.profileDir, "bookmarks.html");
+    return PathUtils.join(PathUtils.profileDir, "bookmarks.html");
   },
 });
 

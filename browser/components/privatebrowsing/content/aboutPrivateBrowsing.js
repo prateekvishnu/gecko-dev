@@ -116,10 +116,20 @@ async function renderPromo({
     linkEl.addEventListener("click", () => {
       window.PrivateBrowsingRecordClick("promo_link");
     });
-  } else if (promoButton?.action?.type === "SHOW_SPOTLIGHT") {
+  } else if (promoButton?.action) {
     linkEl.addEventListener("click", async event => {
       event.preventDefault();
-      window.PrivateBrowsingRecordClick("promo_link");
+      // Record promo click telemetry and set metrics as allow for spotlight
+      // modal opened on promo click if user is enrolled in an experiment
+      let isExperiment = window.PrivateBrowsingRecordClick("promo_link");
+      const promoButtonData = promoButton?.action?.data;
+      if (
+        promoButton?.action?.type === "SHOW_SPOTLIGHT" &&
+        promoButtonData?.content
+      ) {
+        promoButtonData.content.metrics = isExperiment ? "allow" : "block";
+      }
+
       await RPMSendQuery("SpecialMessageActionDispatch", promoButton.action);
     });
   } else {
@@ -238,14 +248,17 @@ async function handlePromoOnPreload(message) {
 async function setupFeatureConfig() {
   let config = null;
   let message = null;
+
   try {
     config = window.PrivateBrowsingFeatureConfig();
   } catch (e) {}
+
   if (!Object.keys(config).length) {
+    let hideDefault = window.PrivateBrowsingShouldHideDefault();
     try {
       let response = await window.ASRouterMessage({
         type: "PBNEWTAB_MESSAGE_REQUEST",
-        data: {},
+        data: { hideDefault: !!hideDefault },
       });
       message = response?.message;
       config = message?.content;

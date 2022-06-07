@@ -454,6 +454,13 @@ bool ClientWebGLContext::UpdateWebRenderCanvasData(
     return true;
   }
 
+  if (!IsContextLost() && !renderer && mNotLost->mCanvasRenderer &&
+      aCanvasData->SetCanvasRenderer(mNotLost->mCanvasRenderer)) {
+    mNotLost->mCanvasRenderer->SetDirty();
+    mResetLayer = false;
+    return true;
+  }
+
   renderer = aCanvasData->CreateCanvasRenderer();
   if (!InitializeCanvasRenderer(aBuilder, renderer)) {
     // Clear CanvasRenderer of WebRenderCanvasData
@@ -461,8 +468,11 @@ bool ClientWebGLContext::UpdateWebRenderCanvasData(
     return false;
   }
 
+  mNotLost->mCanvasRenderer = renderer;
+
   MOZ_ASSERT(renderer);
   mResetLayer = false;
+
   return true;
 }
 
@@ -4209,6 +4219,15 @@ void ClientWebGLContext::TexImage(uint8_t funcDims, GLenum imageTarget,
         }
       }
 
+      if (sdType == layers::SurfaceDescriptor::TSurfaceDescriptorD3D10) {
+        const auto& sdD3D = sd.get_SurfaceDescriptorD3D10();
+        const auto& inProcess = mNotLost->inProcess;
+        if (sdD3D.gpuProcessTextureId().isSome() && inProcess) {
+          return Some(
+              std::string{"gpuProcessTextureId works only in GPU process."});
+        }
+      }
+
       if (StaticPrefs::webgl_disable_DOM_blit_uploads()) {
         return Some(std::string{"DOM blit uploads are disabled."});
       }
@@ -4451,7 +4470,7 @@ void ClientWebGLContext::GetVertexAttrib(JSContext* cx, GLuint index,
 
   switch (pname) {
     case LOCAL_GL_CURRENT_VERTEX_ATTRIB: {
-      JS::RootedObject obj(cx);
+      JS::Rooted<JSObject*> obj(cx);
 
       const auto& attrib = genericAttribs[index];
       switch (attrib.type) {
@@ -5755,8 +5774,9 @@ void ClientWebGLContext::GetActiveUniformBlockParameter(
 
       case LOCAL_GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES: {
         const auto& indices = block.activeUniformIndices;
-        JS::RootedObject obj(cx, dom::Uint32Array::Create(
-                                     cx, this, indices.size(), indices.data()));
+        JS::Rooted<JSObject*> obj(
+            cx,
+            dom::Uint32Array::Create(cx, this, indices.size(), indices.data()));
         if (!obj) {
           rv = NS_ERROR_OUT_OF_MEMORY;
         }
@@ -5801,7 +5821,7 @@ void ClientWebGLContext::GetActiveUniforms(
     }
     const auto& uniform = list[index];
 
-    JS::RootedValue value(cx);
+    JS::Rooted<JS::Value> value(cx);
     switch (pname) {
       case LOCAL_GL_UNIFORM_TYPE:
         value = JS::NumberValue(uniform.elemType);

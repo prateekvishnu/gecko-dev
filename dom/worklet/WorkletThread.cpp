@@ -21,8 +21,7 @@
 #include "js/Initialization.h"
 #include "XPCSelfHostedShmem.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -38,15 +37,15 @@ const uint32_t kWorkletStackSize = 256 * sizeof(size_t) * 1024;
 
 // Helper functions
 
-bool PreserveWrapper(JSContext* aCx, JS::HandleObject aObj) {
+bool PreserveWrapper(JSContext* aCx, JS::Handle<JSObject*> aObj) {
   MOZ_ASSERT(aCx);
   MOZ_ASSERT(aObj);
   MOZ_ASSERT(mozilla::dom::IsDOMObject(aObj));
   return mozilla::dom::TryPreserveWrapper(aObj);
 }
 
-JSObject* Wrap(JSContext* aCx, JS::HandleObject aExisting,
-               JS::HandleObject aObj) {
+JSObject* Wrap(JSContext* aCx, JS::Handle<JSObject*> aExisting,
+               JS::Handle<JSObject*> aObj) {
   if (aExisting) {
     js::Wrapper::Renew(aExisting, aObj,
                        &js::OpaqueCrossCompartmentWrapper::singleton);
@@ -462,5 +461,4 @@ WorkletThread::Observe(nsISupports* aSubject, const char* aTopic,
 
 NS_IMPL_ISUPPORTS_INHERITED(WorkletThread, nsThread, nsIObserver)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

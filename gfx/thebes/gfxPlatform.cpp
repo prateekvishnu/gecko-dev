@@ -29,6 +29,7 @@
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/StaticPrefs_layers.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StaticPrefs_webgl.h"
 #include "mozilla/StaticPrefs_widget.h"
 #include "mozilla/Telemetry.h"
@@ -442,6 +443,7 @@ gfxPlatform::gfxPlatform()
       mFrameStatsCollector(this, &gfxPlatform::GetFrameStats),
       mCMSInfoCollector(this, &gfxPlatform::GetCMSSupportInfo),
       mDisplayInfoCollector(this, &gfxPlatform::GetDisplayInfo),
+      mOverlayInfoCollector(this, &gfxPlatform::GetOverlayInfo),
       mCompositorBackend(layers::LayersBackend::LAYERS_NONE),
       mScreenDepth(0) {
   mAllowDownloadableFonts = UNINITIALIZED_VALUE;
@@ -941,6 +943,10 @@ void gfxPlatform::Init() {
     Preferences::RegisterCallback(
         gfxPlatform::ReInitFrameRate,
         nsDependentCString(StaticPrefs::GetPrefName_layout_frame_rate()));
+    Preferences::RegisterCallback(
+        gfxPlatform::ReInitFrameRate,
+        nsDependentCString(
+            StaticPrefs::GetPrefName_privacy_resistFingerprinting()));
   }
 
   // Create the sRGB to output display profile transforms. They can be accessed
@@ -2697,45 +2703,45 @@ void gfxPlatform::InitWebRenderConfig() {
     gfxVars::SetUseWebRenderDCompVideoOverlayWin(true);
   }
 
-  bool useHwVideoNoCopy = false;
-  if (StaticPrefs::media_wmf_no_copy_nv12_textures_AtStartup()) {
+  bool useHwVideoZeroCopy = false;
+  if (StaticPrefs::media_wmf_zero_copy_nv12_textures_AtStartup()) {
     // XXX relax limitation to Windows 8.1
     if (IsWin10OrLater() && hasHardware) {
-      useHwVideoNoCopy = true;
+      useHwVideoZeroCopy = true;
     }
 
-    if (useHwVideoNoCopy &&
+    if (useHwVideoZeroCopy &&
         !StaticPrefs::
-            media_wmf_no_copy_nv12_textures_force_enabled_AtStartup()) {
+            media_wmf_zero_copy_nv12_textures_force_enabled_AtStartup()) {
       nsCString failureId;
       int32_t status;
       const nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
       if (NS_FAILED(gfxInfo->GetFeatureStatus(
-              nsIGfxInfo::FEATURE_HW_DECODED_VIDEO_NO_COPY, failureId,
+              nsIGfxInfo::FEATURE_HW_DECODED_VIDEO_ZERO_COPY, failureId,
               &status))) {
         FeatureState& feature =
-            gfxConfig::GetFeature(Feature::HW_DECODED_VIDEO_NO_COPY);
+            gfxConfig::GetFeature(Feature::HW_DECODED_VIDEO_ZERO_COPY);
         feature.DisableByDefault(FeatureStatus::BlockedNoGfxInfo,
                                  "gfxInfo is broken",
                                  "FEATURE_FAILURE_WR_NO_GFX_INFO"_ns);
-        useHwVideoNoCopy = false;
+        useHwVideoZeroCopy = false;
       } else {
         if (status != nsIGfxInfo::FEATURE_ALLOW_ALWAYS) {
           FeatureState& feature =
-              gfxConfig::GetFeature(Feature::HW_DECODED_VIDEO_NO_COPY);
+              gfxConfig::GetFeature(Feature::HW_DECODED_VIDEO_ZERO_COPY);
           feature.DisableByDefault(FeatureStatus::Blocked,
                                    "Blocklisted by gfxInfo", failureId);
-          useHwVideoNoCopy = false;
+          useHwVideoZeroCopy = false;
         }
       }
     }
   }
 
-  if (useHwVideoNoCopy) {
+  if (useHwVideoZeroCopy) {
     FeatureState& feature =
-        gfxConfig::GetFeature(Feature::HW_DECODED_VIDEO_NO_COPY);
+        gfxConfig::GetFeature(Feature::HW_DECODED_VIDEO_ZERO_COPY);
     feature.EnableByDefault();
-    gfxVars::SetHwDecodedVideoNoCopy(true);
+    gfxVars::SetHwDecodedVideoZeroCopy(true);
   }
 
   if (Preferences::GetBool("gfx.webrender.flip-sequential", false)) {
@@ -3023,17 +3029,26 @@ bool gfxPlatform::IsInLayoutAsapMode() {
   // the second is that the compositor goes ASAP and the refresh driver
   // goes at whatever the configurated rate is. This only checks the version
   // talos uses, which is the refresh driver and compositor are in lockstep.
+  // Ignore privacy_resistFingerprinting to preserve ASAP mode there.
   return StaticPrefs::layout_frame_rate() == 0;
+}
+
+static int LayoutFrameRateFromPrefs() {
+  auto val = StaticPrefs::layout_frame_rate();
+  if (StaticPrefs::privacy_resistFingerprinting()) {
+    val = 60;
+  }
+  return val;
 }
 
 /* static */
 bool gfxPlatform::ForceSoftwareVsync() {
-  return StaticPrefs::layout_frame_rate() > 0;
+  return LayoutFrameRateFromPrefs() > 0;
 }
 
 /* static */
 int gfxPlatform::GetSoftwareVsyncRate() {
-  int preferenceRate = StaticPrefs::layout_frame_rate();
+  int preferenceRate = LayoutFrameRateFromPrefs();
   if (preferenceRate <= 0) {
     return gfxPlatform::GetDefaultFrameRate();
   }
@@ -3224,6 +3239,36 @@ void gfxPlatform::GetDisplayInfo(mozilla::widget::InfoObject& aObj) {
   if (XRE_IsParentProcess()) {
     GetPlatformDisplayInfo(aObj);
   }
+}
+
+void gfxPlatform::GetOverlayInfo(mozilla::widget::InfoObject& aObj) {
+  if (mOverlayInfo.isNothing()) {
+    return;
+  }
+
+  auto toString = [](mozilla::layers::OverlaySupportType aType) -> const char* {
+    switch (aType) {
+      case mozilla::layers::OverlaySupportType::None:
+        return "None";
+      case mozilla::layers::OverlaySupportType::Software:
+        return "Software";
+      case mozilla::layers::OverlaySupportType::Direct:
+        return "Direct";
+      case mozilla::layers::OverlaySupportType::Scaling:
+        return "Scaling";
+      default:
+        MOZ_ASSERT_UNREACHABLE("Unexpected to be called");
+    }
+    MOZ_CRASH("Incomplete switch");
+  };
+
+  nsPrintfCString value("NV12=%s YUV2=%s BGRA8=%s RGB10A2=%s",
+                        toString(mOverlayInfo.ref().mNv12Overlay),
+                        toString(mOverlayInfo.ref().mYuy2Overlay),
+                        toString(mOverlayInfo.ref().mBgra8Overlay),
+                        toString(mOverlayInfo.ref().mRgb10a2Overlay));
+
+  aObj.DefineProperty("OverlaySupport", NS_ConvertUTF8toUTF16(value));
 }
 
 class FrameStatsComparator {

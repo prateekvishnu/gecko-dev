@@ -10,8 +10,6 @@
 #include "nsPIDOMWindow.h"
 
 #include "nsHashKeys.h"
-#include "nsRefPtrHashtable.h"
-#include "nsInterfaceHashtable.h"
 
 // Local Includes
 // Helper Classes
@@ -36,14 +34,10 @@
 #include "mozilla/dom/DebuggerNotificationManager.h"
 #include "mozilla/dom/GamepadHandle.h"
 #include "mozilla/dom/Location.h"
-#include "mozilla/dom/NavigatorBinding.h"
 #include "mozilla/dom/StorageEvent.h"
-#include "mozilla/dom/StorageEventBinding.h"
-#include "mozilla/dom/UnionTypes.h"
 #include "mozilla/CallState.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/LinkedList.h"
-#include "mozilla/OwningNonNull.h"
 #include "mozilla/StorageAccess.h"
 #include "mozilla/TimeStamp.h"
 #include "nsWrapperCacheInlines.h"
@@ -53,12 +47,10 @@
 #include "mozilla/glean/bindings/Glean.h"
 #include "mozilla/glean/bindings/GleanPings.h"
 #include "Units.h"
-#include "nsComponentManagerUtils.h"
 #include "nsCheapSets.h"
 #include "mozilla/dom/ImageBitmapBinding.h"
 #include "mozilla/dom/ImageBitmapSource.h"
 #include "mozilla/UniquePtr.h"
-#include "nsRefreshObservers.h"
 #include "nsThreadUtils.h"
 
 class nsIArray;
@@ -468,8 +460,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 #endif
 
   virtual bool TakeFocus(bool aFocus, uint32_t aFocusMethod) override;
-  virtual void SetReadyForFocus() override;
-  virtual void PageHidden() override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void SetReadyForFocus() override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void PageHidden() override;
   virtual nsresult DispatchAsyncHashchange(nsIURI* aOldURI,
                                            nsIURI* aNewURI) override;
   virtual nsresult DispatchSyncPopState() override;
@@ -883,7 +875,6 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   bool Find(const nsAString& aString, bool aCaseSensitive, bool aBackwards,
             bool aWrapAround, bool aWholeWord, bool aSearchInFrames,
             bool aShowDialog, mozilla::ErrorResult& aError);
-  uint64_t GetMozPaintCount(mozilla::ErrorResult& aError);
 
   bool DidFireDocElemInserted() const { return mDidFireDocElemInserted; }
   void SetDidFireDocElemInserted() { mDidFireDocElemInserted = true; }

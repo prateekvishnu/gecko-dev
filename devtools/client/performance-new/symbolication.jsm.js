@@ -4,6 +4,9 @@
 // @ts-check
 "use strict";
 
+/** @type {any} */
+const lazy = {};
+
 /**
  * @typedef {import("./@types/perf").Library} Library
  * @typedef {import("./@types/perf").PerfFront} PerfFront
@@ -18,18 +21,18 @@
  */
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "clearTimeout",
   "resource://gre/modules/Timer.jsm"
 );
 
 /** @type {any} */
-const global = this;
+const global = globalThis;
 
 // This module obtains symbol tables for binaries.
 // It does so with the help of a WASM module which gets pulled in from the
@@ -81,8 +84,8 @@ function getWASMProfilerGetSymbolsModule() {
   }
 
   // Reset expiry timer.
-  clearTimeout(gCachedWASMModuleExpiryTimer);
-  gCachedWASMModuleExpiryTimer = setTimeout(
+  lazy.clearTimeout(gCachedWASMModuleExpiryTimer);
+  gCachedWASMModuleExpiryTimer = lazy.setTimeout(
     clearCachedWASMModule,
     EXPIRY_TIME_IN_MS
   );
@@ -355,7 +358,8 @@ function createLocalSymbolicationService(sharedLibraries, objdirs, perfFront) {
 }
 
 // Provide an exports object for the JSM to be properly read by TypeScript.
-/** @type {any} */ (this).module = {};
+/** @type {any} */
+var module = {};
 
 module.exports = {
   createLocalSymbolicationService,

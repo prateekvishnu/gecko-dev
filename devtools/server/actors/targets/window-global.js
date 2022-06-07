@@ -598,6 +598,7 @@ const windowGlobalTargetPrototype = {
     const response = {
       actor: this.actorID,
       browsingContextID,
+      processID: Services.appinfo.processID,
       // True for targets created by JSWindowActors, see constructor JSDoc.
       followWindowGlobalLifeCycle: this.followWindowGlobalLifeCycle,
       innerWindowId,
@@ -970,7 +971,11 @@ const windowGlobalTargetPrototype = {
       // If the original top level document we connected to is removed,
       // we try to switch to any other top level document
       const rootDocShells = this.docShells.filter(d => {
-        return d != this.docShell && this._isRootDocShell(d);
+        // Ignore docshells without a working DOM Window.
+        // When we close firefox we have a chrome://extensions/content/dummy.xhtml
+        // which is in process of being destroyed and we might try to fallback to it.
+        // Unfortunately docshell.isBeingDestroyed() doesn't return true...
+        return d != this.docShell && this._isRootDocShell(d) && d.DOMWindow;
       });
       if (rootDocShells.length > 0) {
         const newRoot = rootDocShells[0];

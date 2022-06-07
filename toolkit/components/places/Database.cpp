@@ -1261,6 +1261,18 @@ nsresult Database::InitSchema(bool* aDatabaseMigrated) {
 
       // Firefox 100 uses schema version 66
 
+      if (currentSchemaVersion < 67) {
+        rv = MigrateV67Up();
+        NS_ENSURE_SUCCESS(rv, rv);
+      }
+
+      if (currentSchemaVersion < 68) {
+        rv = MigrateV68Up();
+        NS_ENSURE_SUCCESS(rv, rv);
+      }
+
+      // Firefox 103 uses schema version 68
+
       // Schema Upgrades must add migration code here.
       // >>> IMPORTANT! <<<
       // NEVER MIX UP SYNC AND ASYNC EXECUTION IN MIGRATORS, YOU MAY LOCK THE
@@ -2514,6 +2526,48 @@ nsresult Database::MigrateV66Up() {
         "ADD COLUMN title TEXT"_ns);
     NS_ENSURE_SUCCESS(rv, rv);
   }
+  return NS_OK;
+}
+
+nsresult Database::MigrateV67Up() {
+  // Align all input field in moz_inputhistory to lowercase. If there are
+  // multiple records that expresses the same input, use maximum use_count from
+  // them to carry on the experience of the past.
+  nsCOMPtr<mozIStorageStatement> stmt;
+  nsresult rv = mMainConn->ExecuteSimpleSQL(
+      "INSERT INTO moz_inputhistory "
+      "SELECT place_id, LOWER(input), use_count FROM moz_inputhistory "
+      "  WHERE LOWER(input) <> input "
+      "ON CONFLICT DO "
+      "  UPDATE SET use_count = MAX(use_count, EXCLUDED.use_count)"_ns);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = mMainConn->ExecuteSimpleSQL(
+      "DELETE FROM moz_inputhistory WHERE LOWER(input) <> input"_ns);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+nsresult Database::MigrateV68Up() {
+  // Add removed_reason column to snapshots table if necessary.
+  nsCOMPtr<mozIStorageStatement> stmt;
+  nsresult rv = mMainConn->CreateStatement(
+      "SELECT removed_reason FROM moz_places_metadata_snapshots"_ns,
+      getter_AddRefs(stmt));
+  if (NS_FAILED(rv)) {
+    rv = mMainConn->ExecuteSimpleSQL(
+        "ALTER TABLE moz_places_metadata_snapshots "
+        "ADD COLUMN removed_reason INTEGER"_ns);
+    NS_ENSURE_SUCCESS(rv, rv);
+  }
+
+  // Update any entry that has removed_at but not a removed_reason to the
+  // default 0 value, since we don't have better info about the actual reason.
+  rv = mMainConn->ExecuteSimpleSQL(
+      "UPDATE moz_places_metadata_snapshots SET removed_reason = 0 "
+      "WHERE removed_at IS NOT NULL AND removed_reason IS NULL"_ns);
+  NS_ENSURE_SUCCESS(rv, rv);
+
   return NS_OK;
 }
 

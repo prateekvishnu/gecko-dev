@@ -9,11 +9,7 @@ var EXPORTED_SYMBOLS = ["Log"];
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const INTERNAL_FIELDS = new Set(["_level", "_message", "_time", "_namespace"]);
 
 /*
@@ -98,6 +94,9 @@ var Log = {
   },
 
   stackTrace(e) {
+    if (!e) {
+      return Components.stack.caller.formattedStack.trim();
+    }
     // Wrapped nsIException
     if (e.location) {
       let frame = e.location;
@@ -137,6 +136,9 @@ var Log = {
       );
     }
 
+    if (e instanceof Ci.nsIStackFrame) {
+      return e.formattedStack.trim();
+    }
     return "No traceback available";
   },
 };

@@ -7,10 +7,8 @@
 #include "CubebUtils.h"
 
 #include "audio_thread_priority.h"
-#include "MediaInfo.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/AudioDeviceInfo.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
@@ -20,7 +18,6 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/UnderrunHandler.h"
-#include "nsAutoRef.h"
 #include "nsDebug.h"
 #include "nsIStringBundle.h"
 #include "nsString.h"
@@ -393,6 +390,23 @@ uint32_t PreferredSampleRate() {
   }
   MOZ_ASSERT(sPreferredSampleRate);
   return sPreferredSampleRate;
+}
+
+int CubebStreamInit(cubeb* context, cubeb_stream** stream,
+                    char const* stream_name, cubeb_devid input_device,
+                    cubeb_stream_params* input_stream_params,
+                    cubeb_devid output_device,
+                    cubeb_stream_params* output_stream_params,
+                    uint32_t latency_frames, cubeb_data_callback data_callback,
+                    cubeb_state_callback state_callback, void* user_ptr) {
+  uint32_t ms = StaticPrefs::media_cubeb_slow_stream_init_ms();
+  if (ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  }
+  return cubeb_stream_init(context, stream, stream_name, input_device,
+                           input_stream_params, output_device,
+                           output_stream_params, latency_frames, data_callback,
+                           state_callback, user_ptr);
 }
 
 void InitBrandName() {

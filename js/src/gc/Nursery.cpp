@@ -683,6 +683,7 @@ void* js::Nursery::allocateZeroedBuffer(
 void* js::Nursery::reallocateBuffer(Zone* zone, Cell* cell, void* oldBuffer,
                                     size_t oldBytes, size_t newBytes) {
   if (!IsInsideNursery(cell)) {
+    MOZ_ASSERT(!isInside(oldBuffer));
     return zone->pod_realloc<uint8_t>((uint8_t*)oldBuffer, oldBytes, newBytes);
   }
 
@@ -928,7 +929,7 @@ void js::Nursery::printProfileHeader() {
   fprintf(
       file,
       "MinorGC: PID     Runtime        Timestamp  Reason               PRate  "
-      "OldSz  NewSz  Dedup ");
+      "OldKB  NewKB  Dedup ");
 #define PRINT_HEADER(name, text) fprintf(file, " %-6.6s", text);
   FOR_EACH_NURSERY_PROFILE_TIME(PRINT_HEADER)
 #undef PRINT_HEADER
@@ -1221,7 +1222,7 @@ void js::Nursery::printDeduplicationData(js::StringStats& prev,
 js::Nursery::CollectionResult js::Nursery::doCollection(JS::GCReason reason) {
   JSRuntime* rt = runtime();
   AutoGCSession session(gc, JS::HeapState::MinorCollecting);
-  AutoSetThreadIsPerformingGC performingGC;
+  AutoSetThreadIsPerformingGC performingGC(rt->gcContext());
   AutoStopVerifyingBarriers av(rt, false);
   AutoDisableProxyCheck disableStrictProxyChecking;
   mozilla::DebugOnly<AutoEnterOOMUnsafeRegion> oomUnsafeRegion;
@@ -1448,6 +1449,11 @@ bool js::Nursery::registerMallocedBuffer(void* buffer, size_t nbytes) {
 }
 
 void js::Nursery::sweep() {
+  // It's important that the context's GCUse is not Finalizing at this point,
+  // otherwise we will miscount memory attached to nursery objects with
+  // CellAllocPolicy.
+  AutoSetThreadIsSweeping setThreadSweeping(runtime()->gcContext());
+
   MinorSweepingTracer trc(runtime());
 
   // Sweep unique IDs first before we sweep any tables that may be keyed based

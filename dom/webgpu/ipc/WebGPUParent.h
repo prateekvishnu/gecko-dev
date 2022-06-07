@@ -34,6 +34,8 @@ class WebGPUParent final : public PWebGPUParent {
       AdapterRequestDeviceResolver&& resolver);
   ipc::IPCResult RecvAdapterDestroy(RawId aSelfId);
   ipc::IPCResult RecvDeviceDestroy(RawId aSelfId);
+  ipc::IPCResult RecvCreateBuffer(RawId aSelfId, RawId aBufferId,
+                                  dom::GPUBufferDescriptor&& aDesc);
   ipc::IPCResult RecvBufferReturnShmem(RawId aSelfId, Shmem&& aShmem);
   ipc::IPCResult RecvBufferMap(RawId aSelfId, ffi::WGPUHostMap aHostMap,
                                uint64_t aOffset, uint64_t size,
@@ -88,6 +90,7 @@ class WebGPUParent final : public PWebGPUParent {
   ipc::IPCResult RecvDevicePushErrorScope(RawId aSelfId);
   ipc::IPCResult RecvDevicePopErrorScope(
       RawId aSelfId, DevicePopErrorScopeResolver&& aResolver);
+  ipc::IPCResult RecvGenerateError(RawId aDeviceId, const nsCString& message);
 
   ipc::IPCResult GetFrontBufferSnapshot(IProtocol* aProtocol,
                                         const CompositableHandle& aHandle,
@@ -100,6 +103,7 @@ class WebGPUParent final : public PWebGPUParent {
   virtual ~WebGPUParent();
   void MaintainDevices();
   bool ForwardError(RawId aDeviceID, ErrorBuffer& aError);
+  void ReportError(RawId aDeviceId, const nsCString& message);
 
   UniquePtr<ffi::WGPUGlobal> mContext;
   base::RepeatingTimer<WebGPUParent> mTimer;

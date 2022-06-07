@@ -13,7 +13,6 @@
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
 #include "jit/mips-shared/SharedICHelpers-mips-shared.h"
-#include "jit/mips64/Bailouts-mips64.h"
 #ifdef JS_ION_PERF
 #  include "jit/PerfSpewer.h"
 #endif
@@ -173,7 +172,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   masm.movePtr(StackPointer, s4);
 
   // Save stack pointer as baseline frame.
-  masm.movePtr(StackPointer, BaselineFrameReg);
+  masm.movePtr(StackPointer, FramePointer);
 
   // Load the number of actual arguments into s3.
   masm.unboxInt32(Address(reg_vp, 0), s3);
@@ -238,15 +237,14 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   masm.push(s4);  // descriptor
 
   CodeLabel returnLabel;
-  CodeLabel oomReturnLabel;
+  Label oomReturnLabel;
   {
     // Handle Interpreter -> Baseline OSR.
     AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
+    MOZ_ASSERT(!regs.has(FramePointer));
     regs.take(OsrFrameReg);
-    regs.take(BaselineFrameReg);
     regs.take(reg_code);
     regs.take(ReturnReg);
-    regs.take(JSReturnOperand);
 
     Label notOsr;
     masm.ma_b(OsrFrameReg, OsrFrameReg, &notOsr, Assembler::Zero, ShortJump);
@@ -262,10 +260,10 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     // Push previous frame pointer.
     masm.subPtr(Imm32(sizeof(uintptr_t)), StackPointer);
-    masm.storePtr(BaselineFrameReg, Address(StackPointer, 0));
+    masm.storePtr(FramePointer, Address(StackPointer, 0));
 
     // Reserve frame.
-    Register framePtr = BaselineFrameReg;
+    Register framePtr = FramePointer;
     masm.subPtr(Imm32(BaselineFrame::Size()), StackPointer);
     masm.movePtr(StackPointer, framePtr);
 
@@ -298,8 +296,8 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     using Fn = bool (*)(BaselineFrame * frame, InterpreterFrame * interpFrame,
                         uint32_t numStackValues);
     masm.setupUnalignedABICall(scratch);
-    masm.passABIArg(BaselineFrameReg);  // BaselineFrame
-    masm.passABIArg(OsrFrameReg);       // InterpreterFrame
+    masm.passABIArg(FramePointer);  // BaselineFrame
+    masm.passABIArg(OsrFrameReg);   // InterpreterFrame
     masm.passABIArg(numStackValues);
     masm.callWithABI<Fn, jit::InitBaselineFrameForOsr>(
         MoveOp::GENERAL, CheckUnsafeCallWithABI::DontCheckHasExitFrame);
@@ -337,8 +335,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.movePtr(framePtr, StackPointer);
     masm.addPtr(Imm32(2 * sizeof(uintptr_t)), StackPointer);
     masm.moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
-    masm.ma_li(scratch, &oomReturnLabel);
-    masm.jump(scratch);
+    masm.jump(&oomReturnLabel);
 
     masm.bind(&notOsr);
     // Load the scope chain in R1.
@@ -358,7 +355,6 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.bind(&returnLabel);
     masm.addCodeLabel(returnLabel);
     masm.bind(&oomReturnLabel);
-    masm.addCodeLabel(oomReturnLabel);
   }
 
   // s0 <- 8*argc (size of all arguments we pushed on the stack)
@@ -451,6 +447,8 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
 
   // Caller:
   // [arg2] [arg1] [this] [[argc] [callee] [descr] [raddr]] <- sp
+
+#error "Port changes from bug 1772506"
 
   // Add |this|, in the counter of known arguments.
   masm.loadPtr(
@@ -636,9 +634,7 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
  * Frame size is stored in $ra (look at
  * CodeGeneratorMIPS64::generateOutOfLineCode()) and thunk code should save it
  * on stack. Other difference is that members snapshotOffset_ and padding_ are
- * pushed to the stack by CodeGeneratorMIPS64::visitOutOfLineBailout(). Field
- * frameClassId_ is forced to be NO_FRAME_SIZE_CLASS_ID
- * (See: JitRuntime::generateBailoutHandler).
+ * pushed to the stack by CodeGeneratorMIPS64::visitOutOfLineBailout().
  */
 static void PushBailoutFrame(MacroAssembler& masm, Register spArg) {
   // Push the frameSize_ stored in ra
@@ -652,8 +648,7 @@ static void PushBailoutFrame(MacroAssembler& masm, Register spArg) {
   masm.movePtr(StackPointer, spArg);
 }
 
-static void GenerateBailoutThunk(MacroAssembler& masm, uint32_t frameClass,
-                                 Label* bailoutTail) {
+static void GenerateBailoutThunk(MacroAssembler& masm, Label* bailoutTail) {
   PushBailoutFrame(masm, a0);
 
   // Put pointer to BailoutInfo
@@ -692,19 +687,13 @@ static void GenerateBailoutThunk(MacroAssembler& masm, uint32_t frameClass,
   masm.jump(bailoutTail);
 }
 
-JitRuntime::BailoutTable JitRuntime::generateBailoutTable(MacroAssembler& masm,
-                                                          Label* bailoutTail,
-                                                          uint32_t frameClass) {
-  MOZ_CRASH("MIPS64 does not use bailout tables");
-}
-
 void JitRuntime::generateBailoutHandler(MacroAssembler& masm,
                                         Label* bailoutTail) {
   AutoCreatedBy acb(masm, "JitRuntime::generateBailoutHandler");
 
   bailoutHandlerOffset_ = startTrampolineCode(masm);
 
-  GenerateBailoutThunk(masm, NO_FRAME_SIZE_CLASS_ID, bailoutTail);
+  GenerateBailoutThunk(masm, bailoutTail);
 }
 
 bool JitRuntime::generateVMWrapper(JSContext* cx, MacroAssembler& masm,

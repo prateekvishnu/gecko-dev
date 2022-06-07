@@ -19,6 +19,8 @@
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "nsCSSColorUtils.h"
 #include "nsCSSRendering.h"
+#include "nsScrollbarFrame.h"
+#include "nsIScrollbarMediator.h"
 #include "nsDeviceContext.h"
 #include "nsLayoutUtils.h"
 #include "nsRangeFrame.h"
@@ -759,17 +761,43 @@ void Theme::PaintMenulist(PaintBackendData& aDrawTarget,
 void Theme::PaintMenulistArrowButton(nsIFrame* aFrame, DrawTarget& aDrawTarget,
                                      const LayoutDeviceRect& aRect,
                                      const EventStates& aState) {
-  const float kPolygonX[] = {-4.0f, -0.5f, 0.5f, 4.0f,  4.0f,
-                             3.0f,  0.0f,  0.0f, -3.0f, -4.0f};
-  const float kPolygonY[] = {-1,    3.0f, 3.0f, -1.0f, -2.0f,
-                             -2.0f, 1.5f, 1.5f, -2.0f, -2.0f};
+  // not const: these may be negated in-place below
+  float polygonX[] = {-4.0f, -0.5f, 0.5f, 4.0f,  4.0f,
+                      3.0f,  0.0f,  0.0f, -3.0f, -4.0f};
+  float polygonY[] = {-1,    3.0f, 3.0f, -1.0f, -2.0f,
+                      -2.0f, 1.5f, 1.5f, -2.0f, -2.0f};
 
   const float kPolygonSize = kMinimumDropdownArrowButtonWidth;
 
+  auto const [xs, ys] = [&] {
+    using Pair = std::pair<const float*, const float*>;
+    switch (aFrame->GetWritingMode().GetBlockDir()) {
+      case WritingMode::BlockDir::eBlockRL:
+        // rotate 90°: [[0,1],[-1,0]]
+        for (float& f : polygonY) {
+          f = -f;
+        }
+        return Pair(polygonY, polygonX);
+
+      case WritingMode::BlockDir::eBlockLR:
+        // rotate 270°: [[0,-1],[1,0]]
+        for (float& f : polygonX) {
+          f = -f;
+        }
+        return Pair(polygonY, polygonX);
+
+      case WritingMode::BlockDir::eBlockTB:
+        // rotate 0°: [[1,0],[0,1]]
+        return Pair(polygonX, polygonY);
+    }
+    MOZ_ASSERT_UNREACHABLE("unhandled BlockDir");
+    return Pair(polygonX, polygonY);
+  }();
+
   const auto arrowColor = sRGBColor::FromABGR(
       nsLayoutUtils::GetColor(aFrame, &nsStyleText::mWebkitTextFillColor));
-  ThemeDrawing::PaintArrow(aDrawTarget, aRect, kPolygonX, kPolygonY,
-                           kPolygonSize, ArrayLength(kPolygonX), arrowColor);
+  ThemeDrawing::PaintArrow(aDrawTarget, aRect, xs, ys, kPolygonSize,
+                           ArrayLength(polygonX), arrowColor);
 }
 
 void Theme::PaintSpinnerButton(nsIFrame* aFrame, DrawTarget& aDrawTarget,
@@ -1038,6 +1066,26 @@ static LayoutDeviceRect ToSnappedRect(const nsRect& aRect,
   return LayoutDeviceRect::FromAppUnits(aRect, aTwipsPerPixel);
 }
 
+static ScrollbarDrawing::ScrollbarKind ComputeScrollbarKind(
+    nsIFrame* aFrame, bool aIsHorizontal) {
+  if (aIsHorizontal) {
+    return ScrollbarDrawing::ScrollbarKind::Horizontal;
+  }
+  nsIFrame* scrollbar = ScrollbarDrawing::GetParentScrollbarFrame(aFrame);
+  if (NS_WARN_IF(!scrollbar)) {
+    return ScrollbarDrawing::ScrollbarKind::VerticalRight;
+  }
+  MOZ_ASSERT(scrollbar->IsScrollbarFrame());
+  nsIScrollbarMediator* sm =
+      static_cast<nsScrollbarFrame*>(scrollbar)->GetScrollbarMediator();
+  if (NS_WARN_IF(!sm)) {
+    return ScrollbarDrawing::ScrollbarKind::VerticalRight;
+  }
+  return sm->IsScrollbarOnRight()
+             ? ScrollbarDrawing::ScrollbarKind::VerticalRight
+             : ScrollbarDrawing::ScrollbarKind::VerticalLeft;
+}
+
 template <typename PaintBackendData>
 bool Theme::DoDrawWidgetBackground(PaintBackendData& aPaintData,
                                    nsIFrame* aFrame,
@@ -1159,8 +1207,9 @@ bool Theme::DoDrawWidgetBackground(PaintBackendData& aPaintData,
     case StyleAppearance::ScrollbarthumbVertical: {
       bool isHorizontal =
           aAppearance == StyleAppearance::ScrollbarthumbHorizontal;
+      auto kind = ComputeScrollbarKind(aFrame, isHorizontal);
       return GetScrollbarDrawing().PaintScrollbarThumb(
-          aPaintData, devPxRect, isHorizontal, aFrame,
+          aPaintData, devPxRect, kind, aFrame,
           *nsLayoutUtils::StyleForScrollbar(aFrame), eventState, docState,
           colors, dpiRatio);
     }
@@ -1168,41 +1217,50 @@ bool Theme::DoDrawWidgetBackground(PaintBackendData& aPaintData,
     case StyleAppearance::ScrollbartrackVertical: {
       bool isHorizontal =
           aAppearance == StyleAppearance::ScrollbartrackHorizontal;
+      auto kind = ComputeScrollbarKind(aFrame, isHorizontal);
       return GetScrollbarDrawing().PaintScrollbarTrack(
-          aPaintData, devPxRect, isHorizontal, aFrame,
+          aPaintData, devPxRect, kind, aFrame,
           *nsLayoutUtils::StyleForScrollbar(aFrame), docState, colors,
           dpiRatio);
     }
     case StyleAppearance::ScrollbarHorizontal:
     case StyleAppearance::ScrollbarVertical: {
       bool isHorizontal = aAppearance == StyleAppearance::ScrollbarHorizontal;
+      auto kind = ComputeScrollbarKind(aFrame, isHorizontal);
       return GetScrollbarDrawing().PaintScrollbar(
-          aPaintData, devPxRect, isHorizontal, aFrame,
+          aPaintData, devPxRect, kind, aFrame,
           *nsLayoutUtils::StyleForScrollbar(aFrame), eventState, docState,
           colors, dpiRatio);
     }
-    case StyleAppearance::Scrollcorner:
+    case StyleAppearance::Scrollcorner: {
+      auto kind = ComputeScrollbarKind(aFrame, false);
       return GetScrollbarDrawing().PaintScrollCorner(
-          aPaintData, devPxRect, aFrame,
+          aPaintData, devPxRect, kind, aFrame,
           *nsLayoutUtils::StyleForScrollbar(aFrame), docState, colors,
           dpiRatio);
+    }
     case StyleAppearance::ScrollbarbuttonUp:
     case StyleAppearance::ScrollbarbuttonDown:
     case StyleAppearance::ScrollbarbuttonLeft:
-    case StyleAppearance::ScrollbarbuttonRight:
+    case StyleAppearance::ScrollbarbuttonRight: {
       // For scrollbar-width:thin, we don't display the buttons.
       if (!ScrollbarDrawing::IsScrollbarWidthThin(aFrame)) {
         if constexpr (std::is_same_v<PaintBackendData, WebRenderBackendData>) {
           // TODO: Need to figure out how to best draw this using WR.
           return false;
         } else {
+          bool isHorizontal =
+              aAppearance == StyleAppearance::ScrollbarbuttonLeft ||
+              aAppearance == StyleAppearance::ScrollbarbuttonRight;
+          auto kind = ComputeScrollbarKind(aFrame, isHorizontal);
           GetScrollbarDrawing().PaintScrollbarButton(
-              aPaintData, aAppearance, devPxRect, aFrame,
+              aPaintData, aAppearance, devPxRect, kind, aFrame,
               *nsLayoutUtils::StyleForScrollbar(aFrame), eventState, docState,
               colors, dpiRatio);
         }
       }
       break;
+    }
     case StyleAppearance::Button:
       PaintButton(aFrame, aPaintData, devPxRect, eventState, colors, dpiRatio);
       break;

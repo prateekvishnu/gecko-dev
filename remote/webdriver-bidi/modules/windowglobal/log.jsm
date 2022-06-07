@@ -10,7 +10,9 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ConsoleAPIListener:
     "chrome://remote/content/shared/listeners/ConsoleAPIListener.jsm",
   ConsoleListener:
@@ -20,7 +22,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   serialize: "chrome://remote/content/webdriver-bidi/RemoteValue.jsm",
 });
 
-class LogModule extends Module {
+class LogModule extends lazy.Module {
   #consoleAPIListener;
   #consoleMessageListener;
 
@@ -28,13 +30,13 @@ class LogModule extends Module {
     super(messageHandler);
 
     // Create the console-api listener and listen on "message" events.
-    this.#consoleAPIListener = new ConsoleAPIListener(
+    this.#consoleAPIListener = new lazy.ConsoleAPIListener(
       this.messageHandler.innerWindowId
     );
     this.#consoleAPIListener.on("message", this.#onConsoleAPIMessage);
 
     // Create the console listener and listen on error messages.
-    this.#consoleMessageListener = new ConsoleListener(
+    this.#consoleMessageListener = new lazy.ConsoleListener(
       this.messageHandler.innerWindowId
     );
     this.#consoleMessageListener.on("error", this.#onJavaScriptError);
@@ -45,38 +47,6 @@ class LogModule extends Module {
     this.#consoleAPIListener.destroy();
     this.#consoleMessageListener.off("error", this.#onJavaScriptError);
     this.#consoleMessageListener.destroy();
-  }
-
-  /**
-   * Private methods
-   */
-
-  _applySessionData(params) {
-    // TODO: Bug 1741861. Move this logic to a shared module or the an abstract
-    // class.
-    const { category, added = [], removed = [] } = params;
-    if (category === "event") {
-      for (const event of added) {
-        this._subscribeEvent(event);
-      }
-      for (const event of removed) {
-        this._unsubscribeEvent(event);
-      }
-    }
-  }
-
-  _subscribeEvent(event) {
-    if (event === "log.entryAdded") {
-      this.#consoleAPIListener.startListening();
-      this.#consoleMessageListener.startListening();
-    }
-  }
-
-  _unsubscribeEvent(event) {
-    if (event === "log.entryAdded") {
-      this.#consoleAPIListener.stopListening();
-      this.#consoleMessageListener.stopListening();
-    }
   }
 
   /**
@@ -97,7 +67,7 @@ class LogModule extends Module {
     }
 
     const callFrames = stackTrace
-      .filter(frame => !isChromeFrame(frame))
+      .filter(frame => !lazy.isChromeFrame(frame))
       .map(frame => {
         return {
           columnNumber: frame.columnNumber,
@@ -109,6 +79,22 @@ class LogModule extends Module {
       });
 
     return { callFrames };
+  }
+
+  #getLogEntryLevelFromConsoleMethod(method) {
+    switch (method) {
+      case "assert":
+      case "error":
+        return "error";
+      case "debug":
+      case "trace":
+        return "debug";
+      case "warn":
+      case "warning":
+        return "warning";
+      default:
+        return "info";
+    }
   }
 
   #onConsoleAPIMessage = (eventName, data = {}) => {
@@ -125,7 +111,7 @@ class LogModule extends Module {
     //   https://w3c.github.io/webdriver-bidi/#event-log-entryAdded
 
     // 1. Translate the console message method to a log.LogEntry level
-    const logEntrylevel = this._getLogEntryLevelFromConsoleMethod(method);
+    const logEntrylevel = this.#getLogEntryLevelFromConsoleMethod(method);
 
     // 2. Use the message's timeStamp or fallback on the current time value.
     const timestamp = timeStamp || Date.now();
@@ -146,7 +132,7 @@ class LogModule extends Module {
     // Step 6 and 7: Serialize each arg as remote value.
     const serializedArgs = [];
     for (const arg of args) {
-      serializedArgs.push(serialize(arg /*, null, true, new Set() */));
+      serializedArgs.push(lazy.serialize(arg /*, null, true, new Set() */));
     }
 
     // 8. Bug 1742589: set realm to the current realm id.
@@ -195,19 +181,35 @@ class LogModule extends Module {
     this.emitProtocolEvent("log.entryAdded", entry);
   };
 
-  _getLogEntryLevelFromConsoleMethod(method) {
-    switch (method) {
-      case "assert":
-      case "error":
-        return "error";
-      case "debug":
-      case "trace":
-        return "debug";
-      case "warn":
-      case "warning":
-        return "warning";
-      default:
-        return "info";
+  #subscribeEvent(event) {
+    if (event === "log.entryAdded") {
+      this.#consoleAPIListener.startListening();
+      this.#consoleMessageListener.startListening();
+    }
+  }
+
+  #unsubscribeEvent(event) {
+    if (event === "log.entryAdded") {
+      this.#consoleAPIListener.stopListening();
+      this.#consoleMessageListener.stopListening();
+    }
+  }
+
+  /**
+   * Internal commands
+   */
+
+  _applySessionData(params) {
+    // TODO: Bug 1741861. Move this logic to a shared module or the an abstract
+    // class.
+    const { category, added = [], removed = [] } = params;
+    if (category === "event") {
+      for (const event of added) {
+        this.#subscribeEvent(event);
+      }
+      for (const event of removed) {
+        this.#unsubscribeEvent(event);
+      }
     }
   }
 }

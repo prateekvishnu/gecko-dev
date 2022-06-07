@@ -6887,6 +6887,14 @@ var gCSSProperties = {
     other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
   },
+  "overflow-clip-margin": {
+    domProp: "overflowClipMargin",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["0px"],
+    other_values: ["1px", "2em", "calc(10px + 1vh)"],
+    invalid_values: ["-10px"],
+  },
   padding: {
     domProp: "padding",
     inherited: false,
@@ -7213,6 +7221,14 @@ var gCSSProperties = {
     initial_values: ["auto"],
     other_values: ["smooth"],
     invalid_values: ["none", "1px"],
+  },
+  "scroll-snap-stop": {
+    domProp: "scrollSnapStop",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: ["always"],
+    invalid_values: ["auto", "none", "1px"],
   },
   "scroll-snap-type": {
     domProp: "scrollSnapType",

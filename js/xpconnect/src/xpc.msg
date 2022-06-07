@@ -79,7 +79,6 @@ XPC_MSG_DEF(NS_ERROR_FAILURE                       , "Failure")
 XPC_MSG_DEF(NS_ERROR_UNEXPECTED                    , "Unexpected error")
 XPC_MSG_DEF(NS_ERROR_OUT_OF_MEMORY                 , "Out of Memory")
 XPC_MSG_DEF(NS_ERROR_INVALID_ARG                   , "Invalid argument")
-XPC_MSG_DEF(NS_ERROR_NO_AGGREGATION                , "Component does not support aggregation")
 XPC_MSG_DEF(NS_ERROR_NOT_AVAILABLE                 , "Component is not available")
 XPC_MSG_DEF(NS_ERROR_FACTORY_NOT_REGISTERED        , "Factory not registered")
 XPC_MSG_DEF(NS_ERROR_FACTORY_REGISTER_AGAIN        , "Factory not registered (may be tried again)")
@@ -251,4 +250,5 @@ XPC_MSG_DEF(NS_ERROR_SOCIALTRACKING_URI               , "The URI is social track
 XPC_MSG_DEF(NS_ERROR_DATABASE_CHANGED                 , "Flushing the profiles to disk would have overwritten changes made elsewhere.")
 
 /* Codes related to URILoader */
-XPC_MSG_DEF(NS_BINDING_CANCELLED_OLD_LOAD           , "The async request has been cancelled by another async request")
+XPC_MSG_DEF(NS_ERROR_PARSED_DATA_CACHED               , "The data from a channel has already been parsed and cached so it doesn't need to be reparsed from the original source.")
+XPC_MSG_DEF(NS_BINDING_CANCELLED_OLD_LOAD             , "The async request has been cancelled by another async request")

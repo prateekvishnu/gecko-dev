@@ -118,6 +118,8 @@ class NativeLayerRootCA : public NativeLayerRoot {
 
   already_AddRefed<NativeLayer> CreateLayerForExternalTexture(
       bool aIsOpaque) override;
+  already_AddRefed<NativeLayer> CreateLayerForColor(
+      gfx::DeviceColor aColor) override;
 
   void SetWindowIsFullscreen(bool aFullscreen);
   void NoteMouseMoveAtTime(const TimeStamp& aTime);
@@ -131,20 +133,13 @@ class NativeLayerRootCA : public NativeLayerRoot {
     ~Representation();
     void Commit(WhichRepresentation aRepresentation,
                 const nsTArray<RefPtr<NativeLayerCA>>& aSublayers,
-                bool aWindowIsFullscreen, bool aMouseMovedRecently);
-    CALayer* FindVideoLayerToIsolate(
-        WhichRepresentation aRepresentation,
-        const nsTArray<RefPtr<NativeLayerCA>>& aSublayers);
+                bool aWindowIsFullscreen);
     CALayer* mRootCALayer = nullptr;  // strong
-    bool mIsIsolatingVideo = false;
     bool mMutatedLayerStructure = false;
-    bool mMutatedMouseMovedRecently = false;
   };
 
   template <typename F>
   void ForAllRepresentations(F aFn);
-
-  void UpdateMouseMovedRecently(const MutexAutoLock& aProofOfLock);
 
   Mutex mMutex MOZ_UNANNOTATED;  // protects all other fields
   Representation mOnscreenRepresentation;
@@ -169,12 +164,6 @@ class NativeLayerRootCA : public NativeLayerRoot {
   // Updated by the layer's view's window to match the fullscreen state
   // of that window.
   bool mWindowIsFullscreen = false;
-
-  // Updated by the layer's view's window call to NoteMouseMoveAtTime().
-  TimeStamp mLastMouseMoveTime;
-
-  // Has the mouse recently moved?
-  bool mMouseMovedRecently = false;
 };
 
 class RenderSourceNLRS;
@@ -259,6 +248,7 @@ class NativeLayerCA : public NativeLayer {
   NativeLayerCA(const gfx::IntSize& aSize, bool aIsOpaque,
                 SurfacePoolHandleCA* aSurfacePoolHandle);
   explicit NativeLayerCA(bool aIsOpaque);
+  explicit NativeLayerCA(gfx::DeviceColor aColor);
   ~NativeLayerCA() override;
 
   // Gets the next surface for drawing from our swap chain and stores it in
@@ -319,6 +309,8 @@ class NativeLayerCA : public NativeLayer {
   bool IsVideo();
   bool IsVideoAndLocked(const MutexAutoLock& aProofOfLock);
   bool ShouldSpecializeVideo(const MutexAutoLock& aProofOfLock);
+  bool HasExtent() const { return mHasExtent; }
+  void SetHasExtent(bool aHasExtent) { mHasExtent = aHasExtent; }
 
   // Wraps one CALayer representation of this NativeLayer.
   struct Representation {
@@ -346,7 +338,8 @@ class NativeLayerCA : public NativeLayer {
                       bool aSurfaceIsFlipped,
                       gfx::SamplingFilter aSamplingFilter,
                       bool aSpecializeVideo,
-                      CFTypeRefPtr<IOSurfaceRef> aFrontSurface);
+                      CFTypeRefPtr<IOSurfaceRef> aFrontSurface,
+                      CFTypeRefPtr<CGColorRef> aColor);
 
     // Return whether any aspects of this layer representation have been mutated
     // since the last call to ApplyChanges, i.e. whether ApplyChanges needs to
@@ -445,9 +438,11 @@ class NativeLayerCA : public NativeLayer {
   gfx::SamplingFilter mSamplingFilter = gfx::SamplingFilter::POINT;
   float mBackingScale = 1.0f;
   bool mSurfaceIsFlipped = false;
+  CFTypeRefPtr<CGColorRef> mColor;
   const bool mIsOpaque = false;
   bool mRootWindowIsFullscreen = false;
   bool mSpecializeVideo = false;
+  bool mHasExtent = false;
 };
 
 }  // namespace layers

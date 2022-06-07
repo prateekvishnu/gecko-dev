@@ -179,7 +179,7 @@ class nsMenuPopupFrame final : public nsBoxFrame,
   void LockMenuUntilClosed(bool aLock) override;
   bool IsMenuLocked() override { return mIsMenuLocked; }
 
-  nsIWidget* GetWidget();
+  nsIWidget* GetWidget() const;
 
   // Overridden methods
   virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
@@ -247,12 +247,10 @@ class nsMenuPopupFrame final : public nsBoxFrame,
            mPopupState == ePopupShowing;
   }
   bool IsNativeMenu() const { return mIsNativeMenu; }
+  bool IsMouseTransparent() const;
 
   // Return true if the popup is for a menulist.
   bool IsMenuList();
-
-  bool IsMouseTransparent(const ComputedStyle&) const;
-  bool IsMouseTransparent() const { return IsMouseTransparent(*Style()); }
 
   static nsIContent* GetTriggerContent(nsMenuPopupFrame* aMenuPopupFrame);
   void ClearTriggerContent() { mTriggerContent = nullptr; }
@@ -416,6 +414,8 @@ class nsMenuPopupFrame final : public nsBoxFrame,
  protected:
   // returns the popup's level.
   nsPopupLevel PopupLevel(bool aIsNoAutoHide) const;
+
+  void ConstrainSizeForWayland(nsSize&) const;
 
   // redefine to tell the box system not to move the views.
   ReflowChildFlags GetXULLayoutFlags() override;

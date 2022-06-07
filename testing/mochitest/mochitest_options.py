@@ -407,6 +407,15 @@ class MochitestArguments(ArgumentContainer):
             },
         ],
         [
+            ["--conditioned-profile"],
+            {
+                "dest": "conditionedProfile",
+                "action": "store_true",
+                "default": False,
+                "help": "Download and run with a full conditioned profile.",
+            },
+        ],
+        [
             ["--testing-modules-dir"],
             {
                 "dest": "testingModulesDir",
@@ -565,9 +574,9 @@ class MochitestArguments(ArgumentContainer):
         [
             ["--disable-fission"],
             {
-                "action": "store_false",
-                "default": True,
-                "dest": "fission",
+                "action": "store_true",
+                "default": False,
+                "dest": "disable_fission",
                 "help": "Run tests with fission (site isolation) disabled.",
             },
         ],
@@ -1157,13 +1166,8 @@ class MochitestArguments(ArgumentContainer):
             )
 
         # If e10s explicitly disabled and no fission option specified, disable fission
-        if (
-            (not options.e10s)
-            and options.fission
-            and ("fission.autostart=true" not in options.extraPrefs)
-            and ("fission.autostart=false" not in options.extraPrefs)
-        ):
-            options.fission = False
+        if (not options.e10s) and (not options.disable_fission):
+            options.disable_fission = True
 
         options.leakThresholds = {
             "default": options.defaultLeakThreshold,

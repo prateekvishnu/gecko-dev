@@ -9,9 +9,12 @@ var EXPORTED_SYMBOLS = ["UrlbarInput"];
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
 XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   BrowserSearchTelemetry: "resource:///modules/BrowserSearchTelemetry.jsm",
   BrowserUIUtils: "resource:///modules/BrowserUIUtils.jsm",
   CONTEXTUAL_SERVICES_PING_TYPES:
@@ -24,7 +27,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   PartnerLinkAttribution: "resource:///modules/PartnerLinkAttribution.jsm",
   SearchUIUtils: "resource:///modules/SearchUIUtils.jsm",
   SearchUtils: "resource://gre/modules/SearchUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   UrlbarController: "resource:///modules/UrlbarController.jsm",
   UrlbarEventBufferer: "resource:///modules/UrlbarEventBufferer.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
@@ -377,22 +379,39 @@ class UrlbarInput {
     const previousSelectionStart = this.selectionStart;
     const previousSelectionEnd = this.selectionEnd;
 
-    let isDifferentValidValue = valid && value != this.untrimmedValue;
     this.value = value;
     this.valueIsTyped = !valid;
     this.removeAttribute("usertyping");
-    if (isDifferentValidValue) {
-      // If the caret is at the end of the input or its position is beyond the
-      // end of the new value, keep it at the end. Otherwise keep its current
-      // position.
-      const isCaretPositionEnd =
-        previousUntrimmedValue.length === previousSelectionEnd ||
-        value.length <= previousSelectionEnd;
-      if (isCaretPositionEnd) {
-        this.selectionStart = this.selectionEnd = value.length;
-      } else {
+
+    if (!this.focused) {
+      // When setURI is called while the input is not focused, reset the caret.
+      this.selectionStart = this.selectionEnd = 0;
+    } else if (value != previousUntrimmedValue) {
+      if (
+        previousSelectionStart != previousSelectionEnd &&
+        value.substring(previousSelectionStart, previousSelectionEnd) ===
+          previousUntrimmedValue.substring(
+            previousSelectionStart,
+            previousSelectionEnd
+          )
+      ) {
+        // If the same text is in the same place as the previously selected text,
+        // the selection is kept.
         this.selectionStart = previousSelectionStart;
         this.selectionEnd = previousSelectionEnd;
+      } else if (
+        previousSelectionEnd &&
+        (previousUntrimmedValue.length === previousSelectionEnd ||
+          value.length <= previousSelectionEnd)
+      ) {
+        // If the previous end caret is not 0 and the caret is at the end of the
+        // input or its position is beyond the end of the new value, keep the
+        // position at the end.
+        this.selectionStart = this.selectionEnd = value.length;
+      } else {
+        // Otherwise clear selection and set the caret position to the previous
+        // caret end position.
+        this.selectionStart = this.selectionEnd = previousSelectionEnd;
       }
     }
 
@@ -1037,12 +1056,20 @@ class UrlbarInput {
       throw new Error(`Invalid url for result ${JSON.stringify(result)}`);
     }
 
-    if (!this.isPrivate && !result.heuristic) {
-      // We don't await for this, because a rejection should not interrupt
-      // the load. Just reportError it.
-      UrlbarUtils.addToInputHistory(url, this._lastSearchString).catch(
-        Cu.reportError
-      );
+    // Record input history but only in non-private windows.
+    if (!this.isPrivate) {
+      let input;
+      if (!result.heuristic) {
+        input = this._lastSearchString;
+      } else if (result.autofill?.type == "adaptive") {
+        input = result.autofill.adaptiveHistoryInput;
+      }
+      // `input` may be an empty string, so do a strict comparison here.
+      if (input !== undefined) {
+        // We don't await for this, because a rejection should not interrupt
+        // the load. Just reportError it.
+        UrlbarUtils.addToInputHistory(url, input).catch(Cu.reportError);
+      }
     }
 
     this.controller.engagementEvent.record(event, {

@@ -6,15 +6,14 @@
 
 var EXPORTED_SYMBOLS = ["SearchEngineSelector"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   RemoteSettings: "resource://services-settings/remote-settings.js",
   SearchUtils: "resource://gre/modules/SearchUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 const USER_LOCALE = "$USER_LOCALE";

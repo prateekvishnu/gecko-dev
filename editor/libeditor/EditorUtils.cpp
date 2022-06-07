@@ -47,7 +47,7 @@ EditActionResult& EditActionResult::operator|=(
     const MoveNodeResult& aMoveNodeResult) {
   mHandled |= aMoveNodeResult.Handled();
   // When both result are same, keep the result.
-  if (mRv == aMoveNodeResult.Rv()) {
+  if (mRv == aMoveNodeResult.inspectErr()) {
     return *this;
   }
   // If one of the result is NS_ERROR_EDITOR_DESTROYED, use it since it's
@@ -58,11 +58,11 @@ EditActionResult& EditActionResult::operator|=(
   }
   // If aMoveNodeResult hasn't been set explicit nsresult value, keep current
   // result.
-  if (aMoveNodeResult.Rv() == NS_ERROR_NOT_INITIALIZED) {
+  if (aMoveNodeResult.NotInitialized()) {
     return *this;
   }
   // If one of the results is error, use NS_ERROR_FAILURE.
-  if (Failed() || aMoveNodeResult.Failed()) {
+  if (Failed() || aMoveNodeResult.isErr()) {
     mRv = NS_ERROR_FAILURE;
     return *this;
   }
@@ -92,7 +92,7 @@ bool AutoRangeArray::IsEditableRange(const dom::AbstractRange& aRange,
     return false;
   }
 
-  if (!aRange.Collapsed()) {
+  if (aRange.GetStartContainer() != aRange.GetEndContainer()) {
     EditorRawDOMPoint atEnd(aRange.EndRef());
     const bool isEndEditable =
         atEnd.IsInContentNode() &&
@@ -218,7 +218,7 @@ AutoRangeArray::ExtendAnchorFocusRangeFor(
 
   RefPtr<Element> editingHost;
   if (aEditorBase.IsHTMLEditor()) {
-    editingHost = aEditorBase.AsHTMLEditor()->GetActiveEditingHost();
+    editingHost = aEditorBase.AsHTMLEditor()->ComputeEditingHost();
     if (!editingHost) {
       return Err(NS_ERROR_FAILURE);
     }
@@ -542,7 +542,7 @@ bool EditorUtils::IsWhiteSpacePreformatted(const nsIContent& aContent) {
     return false;
   }
 
-  RefPtr<ComputedStyle> elementStyle =
+  RefPtr<const ComputedStyle> elementStyle =
       nsComputedDOMStyle::GetComputedStyleNoFlush(element);
   if (!elementStyle) {
     // Consider nodes without a ComputedStyle to be NOT preformatted:
@@ -563,7 +563,7 @@ bool EditorUtils::IsNewLinePreformatted(const nsIContent& aContent) {
     return false;
   }
 
-  RefPtr<ComputedStyle> elementStyle =
+  RefPtr<const ComputedStyle> elementStyle =
       nsComputedDOMStyle::GetComputedStyleNoFlush(element);
   if (!elementStyle) {
     // Consider nodes without a ComputedStyle to be NOT preformatted:
@@ -584,7 +584,7 @@ bool EditorUtils::IsOnlyNewLinePreformatted(const nsIContent& aContent) {
     return false;
   }
 
-  RefPtr<ComputedStyle> elementStyle =
+  RefPtr<const ComputedStyle> elementStyle =
       nsComputedDOMStyle::GetComputedStyleNoFlush(element);
   if (!elementStyle) {
     // Consider nodes without a ComputedStyle to be NOT preformatted:

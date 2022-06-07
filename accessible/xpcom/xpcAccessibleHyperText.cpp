@@ -215,16 +215,14 @@ xpcAccessibleHyperText::GetCharacterExtents(int32_t aOffset, int32_t* aX,
 
   if (!mIntl) return NS_ERROR_FAILURE;
 
-  LayoutDeviceIntRect rect;
-  if (mIntl->IsLocal()) {
-    rect = IntlLocal()->CharBounds(aOffset, aCoordType);
-  } else {
 #if defined(XP_WIN)
+  if (mIntl->IsRemote() &&
+      !StaticPrefs::accessibility_cache_enabled_AtStartup()) {
     return NS_ERROR_NOT_IMPLEMENTED;
-#else
-    rect = mIntl->AsRemote()->CharBounds(aOffset, aCoordType);
-#endif
   }
+#endif
+
+  LayoutDeviceIntRect rect = Intl()->CharBounds(aOffset, aCoordType);
   rect.GetRect(aX, aY, aWidth, aHeight);
   return NS_OK;
 }
@@ -242,16 +240,15 @@ xpcAccessibleHyperText::GetRangeExtents(int32_t aStartOffset,
 
   if (!mIntl) return NS_ERROR_FAILURE;
 
-  LayoutDeviceIntRect rect;
-  if (mIntl->IsLocal()) {
-    rect = IntlLocal()->TextBounds(aStartOffset, aEndOffset, aCoordType);
-  } else {
 #if defined(XP_WIN)
+  if (mIntl->IsRemote() &&
+      !StaticPrefs::accessibility_cache_enabled_AtStartup()) {
     return NS_ERROR_NOT_IMPLEMENTED;
-#else
-    rect = mIntl->AsRemote()->TextBounds(aStartOffset, aEndOffset, aCoordType);
-#endif
   }
+#endif
+
+  LayoutDeviceIntRect rect =
+      Intl()->TextBounds(aStartOffset, aEndOffset, aCoordType);
   rect.GetRect(aX, aY, aWidth, aHeight);
   return NS_OK;
 }
@@ -280,11 +277,7 @@ xpcAccessibleHyperText::GetCaretOffset(int32_t* aCaretOffset) {
 
   if (!mIntl) return NS_ERROR_FAILURE;
 
-  if (mIntl->IsLocal()) {
-    *aCaretOffset = IntlLocal()->CaretOffset();
-  } else {
-    *aCaretOffset = mIntl->AsRemote()->CaretOffset();
-  }
+  *aCaretOffset = Intl()->CaretOffset();
   return NS_OK;
 }
 
@@ -292,11 +285,7 @@ NS_IMETHODIMP
 xpcAccessibleHyperText::SetCaretOffset(int32_t aCaretOffset) {
   if (!mIntl) return NS_ERROR_FAILURE;
 
-  if (mIntl->IsLocal()) {
-    IntlLocal()->SetCaretOffset(aCaretOffset);
-  } else {
-    mIntl->AsRemote()->SetCaretOffset(aCaretOffset);
-  }
+  Intl()->SetCaretOffset(aCaretOffset);
   return NS_OK;
 }
 

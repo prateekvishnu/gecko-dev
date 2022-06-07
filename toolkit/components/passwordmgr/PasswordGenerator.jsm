@@ -16,7 +16,9 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["crypto"]);
+const lazy = {};
+
+XPCOMUtils.defineLazyGlobalGetters(lazy, ["crypto"]);
 
 const DEFAULT_PASSWORD_LENGTH = 15;
 const MAX_UINT8 = Math.pow(2, 8) - 1;
@@ -48,7 +50,7 @@ DEFAULT_RULES.set(MIN_LENGTH, REQUIRED_CHARACTER_CLASSES.length);
 DEFAULT_RULES.set(MAX_LENGTH, MAX_UINT8);
 DEFAULT_RULES.set(REQUIRED, [UPPER, LOWER, DIGIT]);
 
-this.PasswordGenerator = {
+const PasswordGenerator = {
   /**
    * @param {Object} options
    * @param {number} options.length - length of the generated password if there are no rules that override the length
@@ -167,7 +169,7 @@ this.PasswordGenerator = {
 
     const randomValueArr = new Uint8Array(1);
     do {
-      crypto.getRandomValues(randomValueArr);
+      lazy.crypto.getRandomValues(randomValueArr);
     } while (randomValueArr[0] > MAX_ACCEPTABLE_VALUE);
     return randomValueArr[0] % range;
   },
@@ -181,7 +183,7 @@ this.PasswordGenerator = {
     let arr = Array.from(str);
     // Generate all the random numbers that will be needed.
     const randomValues = new Uint32Array(arr.length - 1);
-    crypto.getRandomValues(randomValues);
+    lazy.crypto.getRandomValues(randomValues);
 
     // Fisher-Yates Shuffle
     // https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle

@@ -9,6 +9,9 @@ import { DiscoveryStreamFeed } from "lib/DiscoveryStreamFeed.jsm";
 import { RecommendationProvider } from "lib/RecommendationProvider.jsm";
 import { reducers } from "common/Reducers.jsm";
 
+import { PersistentCache } from "lib/PersistentCache.jsm";
+import { PersonalityProvider } from "lib/PersonalityProvider/PersonalityProvider.jsm";
+
 const CONFIG_PREF_NAME = "discoverystream.config";
 const DUMMY_ENDPOINT = "https://getpocket.cdn.mozilla.net/dummy";
 const ENDPOINTS_PREF_NAME = "discoverystream.endpoints";
@@ -52,7 +55,11 @@ describe("DiscoveryStreamFeed", () => {
     clock = sinon.useFakeTimers();
 
     globals = new GlobalOverrider();
-    globals.set("gUUIDGenerator", { generateUUID: () => FAKE_UUID });
+    globals.set({
+      gUUIDGenerator: { generateUUID: () => FAKE_UUID },
+      PersistentCache,
+      PersonalityProvider,
+    });
 
     sandbox
       .stub(global.Services.prefs, "getBoolPref")
@@ -226,15 +233,15 @@ describe("DiscoveryStreamFeed", () => {
     });
   });
 
-  describe("#parseSpocPositions", () => {
+  describe("#parseGridPositions", () => {
     it("should return an equivalent array for an array of non negative integers", async () => {
-      assert.deepEqual(feed.parseSpocPositions([0, 2, 3]), [0, 2, 3]);
+      assert.deepEqual(feed.parseGridPositions([0, 2, 3]), [0, 2, 3]);
     });
     it("should return undefined for an array containing negative integers", async () => {
-      assert.equal(feed.parseSpocPositions([-2, 2, 3]), undefined);
+      assert.equal(feed.parseGridPositions([-2, 2, 3]), undefined);
     });
     it("should return undefined for an undefined input", async () => {
-      assert.equal(feed.parseSpocPositions(undefined), undefined);
+      assert.equal(feed.parseGridPositions(undefined), undefined);
     });
   });
 
@@ -465,6 +472,31 @@ describe("DiscoveryStreamFeed", () => {
 
       const { layout } = feed.store.getState().DiscoveryStream;
       assert.equal(layout[0].components[2].properties.items, 24);
+    });
+    it("should create a layout with spoc and widget positions", async () => {
+      feed.config.hardcoded_layout = true;
+      feed.store = createStore(combineReducers(reducers), {
+        Prefs: {
+          values: {
+            pocketConfig: {
+              spocPositions: "1, 2",
+              widgetPositions: "3, 4",
+            },
+          },
+        },
+      });
+
+      await feed.loadLayout(feed.store.dispatch);
+
+      const { layout } = feed.store.getState().DiscoveryStream;
+      assert.deepEqual(layout[0].components[2].spocs.positions, [
+        { index: 1 },
+        { index: 2 },
+      ]);
+      assert.deepEqual(layout[0].components[2].widgets.positions, [
+        { index: 3 },
+        { index: 4 },
+      ]);
     });
   });
 
@@ -2786,6 +2818,8 @@ describe("DiscoveryStreamFeed", () => {
               spocsPersonalized: true,
             },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
         DiscoveryStream: {
@@ -2829,6 +2863,8 @@ describe("DiscoveryStreamFeed", () => {
               spocsPersonalized: true,
             },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
       });
@@ -2869,6 +2905,8 @@ describe("DiscoveryStreamFeed", () => {
               spocsPersonalized: true,
             },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
       });
@@ -2909,6 +2947,8 @@ describe("DiscoveryStreamFeed", () => {
               spocsPersonalized: true,
             },
             "discoverystream.personalization.enabled": true,
+            "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
           },
         },
       });

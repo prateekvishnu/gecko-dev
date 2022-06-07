@@ -148,12 +148,6 @@ void CodeGeneratorARM64::bailoutIf(Assembler::Condition condition,
                                    LSnapshot* snapshot) {
   encode(snapshot);
 
-  // Though the assembler doesn't track all frame pushes, at least make sure
-  // the known value makes sense.
-  MOZ_ASSERT_IF(frameClass_ != FrameSizeClass::None() && deoptTable_,
-                frameClass_.frameSize() == masm.framePushed());
-
-  // ARM64 doesn't use a bailout table.
   InlineScriptTree* tree = snapshot->mir()->block()->trackedTree();
   OutOfLineBailout* ool = new (alloc()) OutOfLineBailout(snapshot);
   addOutOfLineCode(ool,
@@ -168,12 +162,6 @@ void CodeGeneratorARM64::bailoutFrom(Label* label, LSnapshot* snapshot) {
 
   encode(snapshot);
 
-  // Though the assembler doesn't track all frame pushes, at least make sure
-  // the known value makes sense.
-  MOZ_ASSERT_IF(frameClass_ != FrameSizeClass::None() && deoptTable_,
-                frameClass_.frameSize() == masm.framePushed());
-
-  // ARM64 doesn't use a bailout table.
   InlineScriptTree* tree = snapshot->mir()->block()->trackedTree();
   OutOfLineBailout* ool = new (alloc()) OutOfLineBailout(snapshot);
   addOutOfLineCode(ool,
@@ -1290,16 +1278,6 @@ void CodeGenerator::visitWasmBuiltinTruncateFToInt32(
     LWasmBuiltinTruncateFToInt32* lir) {
   emitTruncateFloat32(ToFloatRegister(lir->getOperand(0)),
                       ToRegister(lir->getDef(0)), lir->mir());
-}
-
-FrameSizeClass FrameSizeClass::FromDepth(uint32_t frameDepth) {
-  return FrameSizeClass::None();
-}
-
-FrameSizeClass FrameSizeClass::ClassLimit() { return FrameSizeClass(0); }
-
-uint32_t FrameSizeClass::frameSize() const {
-  MOZ_CRASH("arm64 does not use frame size classes");
 }
 
 ValueOperand CodeGeneratorARM64::ToValue(LInstruction* ins, size_t pos) {
@@ -3057,6 +3035,11 @@ void CodeGenerator::visitWasmTernarySimd128(LWasmTernarySimd128* ins) {
       masm.laneSelectSimd128(maskDest, lhs, rhs, maskDest);
       break;
     }
+    case wasm::SimdOp::I32x4DotI8x16I7x16AddS:
+      masm.dotInt8x16Int7x16ThenAdd(
+          ToFloatRegister(ins->v0()), ToFloatRegister(ins->v1()),
+          ToFloatRegister(ins->v2()), ToFloatRegister(ins->temp()));
+      break;
     default:
       MOZ_CRASH("NYI");
   }
@@ -3452,6 +3435,9 @@ void CodeGenerator::visitWasmBinarySimd128(LWasmBinarySimd128* ins) {
       break;
     case wasm::SimdOp::I16x8RelaxedQ15MulrS:
       masm.q15MulrInt16x8Relaxed(lhs, rhs, dest);
+      break;
+    case wasm::SimdOp::I16x8DotI8x16I7x16S:
+      masm.dotInt8x16Int7x16(lhs, rhs, dest);
       break;
     default:
       MOZ_CRASH("Binary SimdOp not implemented");

@@ -6,7 +6,7 @@ use super::{
 use crate::{
     back,
     proc::{self, NameKey},
-    valid, Handle, Module, ShaderStage, TypeInner,
+    valid, Handle, Module, ScalarKind, ShaderStage, TypeInner,
 };
 use std::{fmt, mem};
 
@@ -603,7 +603,12 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 register
             }
             crate::AddressSpace::Handle => {
-                let register = match *inner {
+                let handle_ty = match *inner {
+                    TypeInner::BindingArray { ref base, .. } => &module.types[*base].inner,
+                    _ => inner,
+                };
+
+                let register = match *handle_ty {
                     TypeInner::Sampler { .. } => "s",
                     // all storage textures are UAV, unconditionally
                     TypeInner::Image {
@@ -624,6 +629,16 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         if let Some(ref binding) = global.binding {
             // this was already resolved earlier when we started evaluating an entry point.
             let bt = self.options.resolve_resource_binding(binding).unwrap();
+
+            // need to write the binding array size if the type was emitted with `write_type`
+            if let TypeInner::BindingArray { base, size, .. } = module.types[global.ty].inner {
+                if let Some(overridden_size) = bt.binding_array_size {
+                    write!(self.out, "[{}]", overridden_size)?;
+                } else {
+                    self.write_array_size(module, base, size)?;
+                }
+            }
+
             write!(self.out, " : register({}{}", register_ty, bt.register)?;
             if bt.space != 0 {
                 write!(self.out, ", space{}", bt.space)?;
@@ -732,7 +747,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 let size = module.constants[const_handle].to_array_length().unwrap();
                 write!(self.out, "{}", size)?;
             }
-            crate::ArraySize::Dynamic => unreachable!(),
+            crate::ArraySize::Dynamic => {}
         }
 
         write!(self.out, "]")?;
@@ -874,7 +889,9 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         match *inner {
             TypeInner::Struct { .. } => write!(self.out, "{}", self.names[&NameKey::Type(ty)])?,
             // hlsl array has the size separated from the base type
-            TypeInner::Array { base, .. } => self.write_type(module, base)?,
+            TypeInner::Array { base, .. } | TypeInner::BindingArray { base, .. } => {
+                self.write_type(module, base)?
+            }
             ref other => self.write_value_type(module, other)?,
         }
 
@@ -933,7 +950,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             // HLSL arrays are written as `type name[size]`
             // Current code is written arrays only as `[size]`
             // Base `type` and `name` should be written outside
-            TypeInner::Array { base, size, .. } => {
+            TypeInner::Array { base, size, .. } | TypeInner::BindingArray { base, size } => {
                 self.write_array_size(module, base, size)?;
             }
             _ => {
@@ -1150,6 +1167,8 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                         // Otherwise, we could accidentally write variable name instead of full expression.
                         // Also, we use sanitized names! It defense backend from generating variable with name from reserved keywords.
                         Some(self.namer.call(name))
+                    } else if info.ref_count == 0 {
+                        Some(self.namer.call(""))
                     } else {
                         let min_ref_count = func_ctx.expressions[handle].bake_ref_count();
                         if min_ref_count <= info.ref_count {
@@ -1778,6 +1797,38 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 self.write_expr(module, left, func_ctx)?;
                 write!(self.out, ")")?;
             }
+
+            // TODO: handle undefined behavior of BinaryOperator::Modulo
+            //
+            // sint:
+            // if right == 0 return 0
+            // if left == min(type_of(left)) && right == -1 return 0
+            // if sign(left) != sign(right) return result as defined by WGSL
+            //
+            // uint:
+            // if right == 0 return 0
+            //
+            // float:
+            // if right == 0 return ? see https://github.com/gpuweb/gpuweb/issues/2798
+
+            // While HLSL supports float operands with the % operator it is only
+            // defined in cases where both sides are either positive or negative.
+            Expression::Binary {
+                op: crate::BinaryOperator::Modulo,
+                left,
+                right,
+            } if func_ctx.info[left]
+                .ty
+                .inner_with(&module.types)
+                .scalar_kind()
+                == Some(crate::ScalarKind::Float) =>
+            {
+                write!(self.out, "fmod(")?;
+                self.write_expr(module, left, func_ctx)?;
+                write!(self.out, ", ")?;
+                self.write_expr(module, right, func_ctx)?;
+                write!(self.out, ")")?;
+            }
             Expression::Binary { op, left, right } => {
                 write!(self.out, "(")?;
                 self.write_expr(module, left, func_ctx)?;
@@ -1793,9 +1844,27 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 {
                     // do nothing, the chain is written on `Load`/`Store`
                 } else {
+                    let base_ty_res = &func_ctx.info[base].ty;
+                    let resolved = base_ty_res.inner_with(&module.types);
+
+                    let non_uniform_qualifier = match *resolved {
+                        TypeInner::BindingArray { .. } => {
+                            let uniformity = &func_ctx.info[index].uniformity;
+
+                            uniformity.non_uniform_result.is_some()
+                        }
+                        _ => false,
+                    };
+
                     self.write_expr(module, base, func_ctx)?;
                     write!(self.out, "[")?;
+                    if non_uniform_qualifier {
+                        write!(self.out, "NonUniformResourceIndex(")?;
+                    }
                     self.write_expr(module, index, func_ctx)?;
+                    if non_uniform_qualifier {
+                        write!(self.out, ")")?;
+                    }
                     write!(self.out, "]")?;
                 }
             }
@@ -1852,6 +1921,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                         }
                         TypeInner::Matrix { .. }
                         | TypeInner::Array { .. }
+                        | TypeInner::BindingArray { .. }
                         | TypeInner::ValuePointer { .. } => write!(self.out, "[{}]", index)?,
                         TypeInner::Struct { .. } => {
                             // This will never panic in case the type is a `Struct`, this is not true
@@ -2071,9 +2141,32 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 convert,
             } => {
                 let inner = func_ctx.info[expr].ty.inner_with(&module.types);
-                let (size_str, src_width) = match *inner {
-                    TypeInner::Vector { size, width, .. } => (back::vector_size_str(size), width),
-                    TypeInner::Scalar { width, .. } => ("", width),
+                let get_width = |src_width| kind.to_hlsl_str(convert.unwrap_or(src_width));
+                match *inner {
+                    TypeInner::Vector { size, width, .. } => {
+                        write!(
+                            self.out,
+                            "{}{}(",
+                            get_width(width)?,
+                            back::vector_size_str(size)
+                        )?;
+                    }
+                    TypeInner::Scalar { width, .. } => {
+                        write!(self.out, "{}(", get_width(width)?,)?;
+                    }
+                    TypeInner::Matrix {
+                        columns,
+                        rows,
+                        width,
+                    } => {
+                        write!(
+                            self.out,
+                            "{}{}x{}(",
+                            get_width(width)?,
+                            back::vector_size_str(columns),
+                            back::vector_size_str(rows)
+                        )?;
+                    }
                     _ => {
                         return Err(Error::Unimplemented(format!(
                             "write_expr expression::as {:?}",
@@ -2081,8 +2174,6 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                         )));
                     }
                 };
-                let kind_str = kind.to_hlsl_str(convert.unwrap_or(src_width))?;
-                write!(self.out, "{}{}(", kind_str, size_str,)?;
                 self.write_expr(module, expr, func_ctx)?;
                 write!(self.out, ")")?;
             }
@@ -2099,6 +2190,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     Asincosh { is_sin: bool },
                     Atanh,
                     Regular(&'static str),
+                    MissingIntOverload(&'static str),
                 }
 
                 let fun = match fun {
@@ -2160,8 +2252,8 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     Mf::Transpose => Function::Regular("transpose"),
                     Mf::Determinant => Function::Regular("determinant"),
                     // bits
-                    Mf::CountOneBits => Function::Regular("countbits"),
-                    Mf::ReverseBits => Function::Regular("reversebits"),
+                    Mf::CountOneBits => Function::MissingIntOverload("countbits"),
+                    Mf::ReverseBits => Function::MissingIntOverload("reversebits"),
                     Mf::FindLsb => Function::Regular("firstbitlow"),
                     Mf::FindMsb => Function::Regular("firstbithigh"),
                     _ => return Err(Error::Unimplemented(format!("write_expr_math {:?}", fun))),
@@ -2203,6 +2295,21 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                             self.write_expr(module, arg, func_ctx)?;
                         }
                         write!(self.out, ")")?
+                    }
+                    Function::MissingIntOverload(fun_name) => {
+                        let scalar_kind = &func_ctx.info[arg]
+                            .ty
+                            .inner_with(&module.types)
+                            .scalar_kind();
+                        if let Some(ScalarKind::Sint) = *scalar_kind {
+                            write!(self.out, "asint({}(asuint(", fun_name)?;
+                            self.write_expr(module, arg, func_ctx)?;
+                            write!(self.out, ")))")?;
+                        } else {
+                            write!(self.out, "{}(", fun_name)?;
+                            self.write_expr(module, arg, func_ctx)?;
+                            write!(self.out, ")")?;
+                        }
                     }
                 }
             }

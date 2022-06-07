@@ -59,12 +59,6 @@
 
 var EXPORTED_SYMBOLS = ["Bookmarks"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
-
 ChromeUtils.defineModuleGetter(
   this,
   "NetUtil",
@@ -1435,7 +1429,7 @@ var Bookmarks = Object.freeze({
     if (numberOfItems === undefined) {
       throw new Error("numberOfItems argument is required");
     }
-    if (!typeof numberOfItems === "number" || numberOfItems % 1 !== 0) {
+    if (typeof numberOfItems !== "number" || numberOfItems % 1 !== 0) {
       throw new Error("numberOfItems argument must be an integer");
     }
     if (numberOfItems <= 0) {

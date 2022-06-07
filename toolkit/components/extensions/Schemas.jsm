@@ -5,8 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const global = this;
-
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -15,49 +13,50 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
-
 const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
 var { DefaultMap, DefaultWeakMap } = ExtensionUtils;
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ExtensionParent",
   "resource://gre/modules/ExtensionParent.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "NetUtil",
   "resource://gre/modules/NetUtil.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ShortcutUtils",
   "resource://gre/modules/ShortcutUtils.jsm"
 );
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "contentPolicyService",
   "@mozilla.org/addons/content-policy;1",
   "nsIAddonContentPolicy"
 );
 
 XPCOMUtils.defineLazyGetter(
-  this,
+  lazy,
   "StartupCache",
-  () => ExtensionParent.StartupCache
+  () => lazy.ExtensionParent.StartupCache
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "treatWarningsAsErrors",
   "extensions.webextensions.warnings-as-errors",
   false
 );
 
-var EXPORTED_SYMBOLS = ["SchemaRoot", "Schemas"];
+const EXPORTED_SYMBOLS = ["SchemaRoot", "Schemas"];
+let Schemas;
 
 const KEY_CONTENT_SCHEMAS = "extensions-framework/schemas/content";
 const KEY_PRIVILEGED_SCHEMAS = "extensions-framework/schemas/privileged";
@@ -72,7 +71,7 @@ const isParentProcess =
 
 function readJSON(url) {
   return new Promise((resolve, reject) => {
-    NetUtil.asyncFetch(
+    lazy.NetUtil.asyncFetch(
       { uri: url, loadUsingSystemPrincipal: true },
       (inputStream, status) => {
         if (!Components.isSuccessCode(status)) {
@@ -82,7 +81,7 @@ function readJSON(url) {
           return;
         }
         try {
-          let text = NetUtil.readInputStreamToString(
+          let text = lazy.NetUtil.readInputStreamToString(
             inputStream,
             inputStream.available()
           );
@@ -397,7 +396,7 @@ class Context {
       }
     }
 
-    let props = ["preprocessors", "isChromeCompat", "manifestVersion"];
+    let props = ["isChromeCompat", "manifestVersion", "preprocessors"];
     for (let prop of props) {
       if (prop in params) {
         if (prop in this && typeof this[prop] == "object") {
@@ -1143,14 +1142,15 @@ const FORMATS = {
   },
 
   contentSecurityPolicy(string, context) {
-    // Manifest V3 extension_pages allows localhost.  When sandbox is
+    // Manifest V3 extension_pages allows localhost and WASM.  When sandbox is
     // implemented, or any other V3 or later directive, the flags
     // logic will need to be updated.
     let flags =
       context.manifestVersion < 3
         ? Ci.nsIAddonContentPolicy.CSP_ALLOW_ANY
-        : Ci.nsIAddonContentPolicy.CSP_ALLOW_LOCALHOST;
-    let error = contentPolicyService.validateAddonCSP(string, flags);
+        : Ci.nsIAddonContentPolicy.CSP_ALLOW_LOCALHOST |
+          Ci.nsIAddonContentPolicy.CSP_ALLOW_WASM;
+    let error = lazy.contentPolicyService.validateAddonCSP(string, flags);
     if (error != null) {
       // The CSP validation error is not reported as part of the "choices" error message,
       // we log the CSP validation error explicitly here to make it easier for the addon developers
@@ -1177,7 +1177,7 @@ const FORMATS = {
   },
 
   manifestShortcutKey(string, context) {
-    if (ShortcutUtils.validate(string) == ShortcutUtils.IS_VALID) {
+    if (lazy.ShortcutUtils.validate(string) == lazy.ShortcutUtils.IS_VALID) {
       return string;
     }
     let errorMessage =
@@ -1313,7 +1313,7 @@ class Entry {
     let error = context.makeError(warningMessage, { warning: true });
     context.logError(error);
 
-    if (treatWarningsAsErrors) {
+    if (lazy.treatWarningsAsErrors) {
       // This pref is false by default, and true by default in tests to
       // discourage the use of deprecated APIs in our unit tests.
       // If a warning is an expected part of a test, temporarily set the pref
@@ -1373,6 +1373,7 @@ class Type extends Entry {
       "deprecated",
       "preprocess",
       "postprocess",
+      "privileged",
       "allowedContexts",
       "min_manifest_version",
       "max_manifest_version",
@@ -2689,7 +2690,7 @@ class CallEntry extends Entry {
         // For Chrome compatibility, use the default value if null or undefined
         // is explicitly passed but is not a valid argument in this position.
         if (parameter.optional && (arg === null || arg === undefined)) {
-          fixedArgs[parameterIndex] = Cu.cloneInto(parameter.default, global);
+          fixedArgs[parameterIndex] = Cu.cloneInto(parameter.default, {});
         } else {
           return false;
         }
@@ -3510,7 +3511,7 @@ class SchemaRoot extends Namespace {
     for (let [key, schema] of this.schemaJSON.entries()) {
       try {
         if (typeof schema.deserialize === "function") {
-          schema = schema.deserialize(global, isParentProcess);
+          schema = schema.deserialize(globalThis, isParentProcess);
 
           // If we're in the parent process, we need to keep the
           // StructuredCloneHolder blob around in order to send to future child
@@ -3605,7 +3606,7 @@ class SchemaRoot extends Namespace {
   }
 }
 
-this.Schemas = {
+Schemas = {
   initialized: false,
 
   REVOKE: Symbol("@@revoke"),
@@ -3672,7 +3673,7 @@ this.Schemas = {
   _loadCachedSchemasPromise: null,
   loadCachedSchemas() {
     if (!this._loadCachedSchemasPromise) {
-      this._loadCachedSchemasPromise = StartupCache.schemas
+      this._loadCachedSchemasPromise = lazy.StartupCache.schemas
         .getAll()
         .then(results => {
           return results;
@@ -3722,7 +3723,7 @@ this.Schemas = {
 
     let blob =
       schemaCache.get(url) ||
-      (await StartupCache.schemas.get(url, readJSONAndBlobbify));
+      (await lazy.StartupCache.schemas.get(url, readJSONAndBlobbify));
 
     if (!this.schemaJSON.has(url)) {
       this.addSchema(url, blob, content);
@@ -3765,6 +3766,7 @@ this.Schemas = {
       "OptionalPermission",
       "PermissionNoPrompt",
       "OptionalPermissionNoPrompt",
+      "PermissionPrivileged",
     ]
   ) {
     const ns = this.getNamespace("manifest");

@@ -426,6 +426,9 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleMargin {
 
   mozilla::StyleRect<mozilla::LengthPercentageOrAuto> mMargin;
   mozilla::StyleRect<mozilla::StyleLength> mScrollMargin;
+  // TODO: Add support for overflow-clip-margin: <visual-box> and maybe
+  // per-axis/side clipping, see https://github.com/w3c/csswg-drafts/issues/7245
+  mozilla::StyleLength mOverflowClipMargin;
 };
 
 struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePadding {
@@ -1260,6 +1263,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay {
   mozilla::StyleOverscrollBehavior mOverscrollBehaviorY;
   mozilla::StyleOverflowAnchor mOverflowAnchor;
   mozilla::StyleScrollSnapAlign mScrollSnapAlign;
+  mozilla::StyleScrollSnapStop mScrollSnapStop;
   mozilla::StyleScrollSnapType mScrollSnapType;
 
   mozilla::StyleBackfaceVisibility mBackfaceVisibility;
@@ -1818,6 +1822,8 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleUIReset {
   mozilla::StyleWindowDragging mWindowDragging;
   mozilla::StyleWindowShadow mWindowShadow;
   float mWindowOpacity;
+  // The margin of the window region that should be transparent to events.
+  mozilla::StyleLength mMozWindowInputRegionMargin;
   mozilla::StyleTransform mMozWindowTransform;
   mozilla::StyleTransformOrigin mWindowTransformOrigin;
 

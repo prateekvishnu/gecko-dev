@@ -6,6 +6,7 @@
 
 #include "OriginTrials.h"
 #include "mozilla/Base64.h"
+#include "mozilla/Span.h"
 #include "nsString.h"
 #include "nsIPrincipal.h"
 #include "nsIURI.h"
@@ -15,51 +16,87 @@
 #include "jsapi.h"
 #include "js/Wrapper.h"
 #include "nsGlobalWindowInner.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkletThread.h"
 #include "mozilla/dom/WebCryptoCommon.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "ScopedNSSTypes.h"
+#include <mutex>
 
 namespace mozilla {
 
 LazyLogModule sOriginTrialsLog("OriginTrials");
 #define LOG(...) MOZ_LOG(sOriginTrialsLog, LogLevel::Debug, (__VA_ARGS__))
 
-// This is the EcdsaP256 public key from this key pair:
+// prod.pub is the EcdsaP256 public key from the production key managed in
+// Google Cloud. See:
 //
-//  * https://github.com/emilio/origin-trial-token/blob/64f03749e2e8c58f811f67044cecc7d6955fd51a/tools/test-keys/test-ecdsa.pkcs8
-//  * https://github.com/emilio/origin-trial-token/blob/64f03749e2e8c58f811f67044cecc7d6955fd51a/tools/test-keys/test-ecdsa.pub
+//   https://github.com/mozilla/origin-trial-token/blob/main/tools/README.md#get-the-public-key
 //
-// See that repo for tools for key and token generation and signing.
-static const unsigned char kTestKey[65] = {
-    0x4,  0x4a, 0xae, 0x76, 0x64, 0x24, 0xa0, 0x55, 0xc4, 0x66, 0xe,
-    0x43, 0x32, 0x4c, 0x1d, 0x85, 0x8,  0x63, 0x6a, 0x93, 0xd4, 0x1d,
-    0xf,  0xfc, 0xb4, 0x2c, 0x77, 0x3d, 0xe6, 0x87, 0xdc, 0xeb, 0x46,
-    0xcd, 0xcf, 0x88, 0xd0, 0xe3, 0x39, 0x8f, 0xe5, 0x17, 0xb8, 0xc8,
-    0xd7, 0xd3, 0xdc, 0x32, 0x7c, 0x4f, 0x8,  0x8b, 0x61, 0x19, 0xdd,
-    0xc0, 0x2,  0x5f, 0x11, 0x20, 0x6b, 0x44, 0xcf, 0x2a, 0x64,
-};
+// for how to get the public key.
+//
+// See also:
+//
+//   https://github.com/mozilla/origin-trial-token/blob/main/tools/README.md#sign-a-token-using-gcloud
+//
+// for how to sign using this key.
+//
+// test.pub is the EcdsaP256 public key from this key pair:
+//
+//  * https://github.com/mozilla/origin-trial-token/blob/64f03749e2e8c58f811f67044cecc7d6955fd51a/tools/test-keys/test-ecdsa.pkcs8
+//  * https://github.com/mozilla/origin-trial-token/blob/64f03749e2e8c58f811f67044cecc7d6955fd51a/tools/test-keys/test-ecdsa.pub
+//
+#include "keys.inc"
 
 constexpr auto kEcAlgorithm =
     NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_NAMED_CURVE_P256);
+
+using RawKeyRef = Span<const unsigned char, sizeof(kProdKey)>;
+
+struct StaticCachedPublicKey {
+  constexpr StaticCachedPublicKey() = default;
+
+  SECKEYPublicKey* Get(const RawKeyRef aRawKey);
+
+ private:
+  std::once_flag mFlag;
+  UniqueSECKEYPublicKey mKey;
+};
+
+SECKEYPublicKey* StaticCachedPublicKey::Get(const RawKeyRef aRawKey) {
+  std::call_once(mFlag, [&] {
+    const SECItem item{siBuffer, const_cast<unsigned char*>(aRawKey.data()),
+                       unsigned(aRawKey.Length())};
+    MOZ_RELEASE_ASSERT(item.data[0] == EC_POINT_FORM_UNCOMPRESSED);
+    mKey = dom::CreateECPublicKey(&item, kEcAlgorithm);
+    if (mKey) {
+      // It's fine to capture [this] by pointer because we are always static.
+      if (NS_IsMainThread()) {
+        RunOnShutdown([this] { mKey = nullptr; });
+      } else {
+        NS_DispatchToMainThread(NS_NewRunnableFunction(
+            "ClearStaticCachedPublicKey",
+            [this] { RunOnShutdown([this] { mKey = nullptr; }); }));
+      }
+    }
+  });
+  return mKey.get();
+}
 
 bool VerifySignature(const uint8_t* aSignature, uintptr_t aSignatureLen,
                      const uint8_t* aData, uintptr_t aDataLen,
                      void* aUserData) {
   MOZ_RELEASE_ASSERT(aSignatureLen == 64);
+  static StaticCachedPublicKey sTestKey;
+  static StaticCachedPublicKey sProdKey;
+
   LOG("VerifySignature()\n");
 
-  if (!StaticPrefs::dom_origin_trials_test_key_enabled()) {
-    // TODO(emilio): Implement.
-    return false;
-  }
-
-  const SECItem rawKey{siBuffer, const_cast<unsigned char*>(kTestKey),
-                       sizeof(kTestKey)};
-  MOZ_RELEASE_ASSERT(rawKey.data[0] == EC_POINT_FORM_UNCOMPRESSED);
-  UniqueSECKEYPublicKey pubKey = dom::CreateECPublicKey(&rawKey, kEcAlgorithm);
+  SECKEYPublicKey* pubKey = StaticPrefs::dom_origin_trials_test_key_enabled()
+                                ? sTestKey.Get(Span(kTestKey))
+                                : sProdKey.Get(Span(kProdKey));
   if (NS_WARN_IF(!pubKey)) {
     LOG("  Failed to create public key?");
     return false;
@@ -77,7 +114,7 @@ bool VerifySignature(const uint8_t* aSignature, uintptr_t aSignatureLen,
 
   // SEC_OID_ANSIX962_ECDSA_SHA256_SIGNATURE
   const SECStatus result = PK11_VerifyWithMechanism(
-      pubKey.get(), CKM_ECDSA_SHA256, nullptr, &signature, &data, nullptr);
+      pubKey, CKM_ECDSA_SHA256, nullptr, &signature, &data, nullptr);
   if (NS_WARN_IF(result != SECSuccess)) {
     LOG("  Failed to verify data.");
     return false;
@@ -173,6 +210,8 @@ static int32_t PrefState(OriginTrial aTrial) {
   switch (aTrial) {
     case OriginTrial::TestTrial:
       return StaticPrefs::dom_origin_trials_test_trial_state();
+    case OriginTrial::OffscreenCanvas:
+      return StaticPrefs::dom_origin_trials_offscreen_canvas_state();
     case OriginTrial::MAX:
       MOZ_ASSERT_UNREACHABLE("Unknown trial!");
       break;

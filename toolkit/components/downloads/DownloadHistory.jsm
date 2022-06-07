@@ -21,13 +21,13 @@ const { DownloadList } = ChromeUtils.import(
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   Downloads: "resource://gre/modules/Downloads.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
   OS: "resource://gre/modules/osfile.jsm",
   PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 // Places query used to retrieve all history downloads for the related list.
@@ -481,6 +481,22 @@ HistoryDownload.prototype = {
     }
 
     this.slot.list._notifyAllViews("onDownloadChanged", this);
+  },
+
+  /**
+   * This method mimicks the "manuallyRemoveData" method of session downloads.
+   */
+  async manuallyRemoveData() {
+    let { path } = this.target;
+    if (this.target.path && this.succeeded) {
+      // Temp files are made "read-only" by DownloadIntegration.downloadDone, so
+      // reset the permission bits to read/write. This won't be necessary after
+      // bug 1733587 since Downloads won't ever be temporary.
+      await IOUtils.setPermissions(path, 0o660);
+      await IOUtils.remove(path, { ignoreAbsent: true });
+    }
+    this.deleted = true;
+    await this.refresh();
   },
 };
 

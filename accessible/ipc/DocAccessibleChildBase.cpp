@@ -51,7 +51,16 @@ void DocAccessibleChildBase::SerializeTree(nsTArray<LocalAccessible*>& aTree,
       // XXX: We need to do this because this requires a state check.
       genericTypes |= eNumericValue;
     }
-    if (acc->ActionCount()) {
+    if (acc->IsTextLeaf() || acc->IsImage()) {
+      // Ideally, we'd set eActionable for any Accessible with an ancedstor
+      // action. However, that requires an ancestor walk which is too expensive
+      // here. eActionable is only used by ATK. For now, we only expose ancestor
+      // actions on text leaf and image Accessibles. This means that we don't
+      // support "click ancestor" for ATK.
+      if (acc->ActionCount()) {
+        genericTypes |= eActionable;
+      }
+    } else if (acc->HasPrimaryAction()) {
       genericTypes |= eActionable;
     }
 
@@ -211,6 +220,15 @@ mozilla::ipc::IPCResult DocAccessibleChildBase::RecvDoActionAsync(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult DocAccessibleChildBase::RecvSetCaretOffset(
+    const uint64_t& aID, const int32_t& aOffset) {
+  HyperTextAccessible* acc = IdToHyperTextAccessible(aID);
+  if (acc && acc->IsTextRole() && acc->IsValidOffset(aOffset)) {
+    acc->SetCaretOffset(aOffset);
+  }
+  return IPC_OK();
+}
+
 LocalAccessible* DocAccessibleChildBase::IdToAccessible(
     const uint64_t& aID) const {
   if (!aID) return mDoc;
@@ -218,6 +236,12 @@ LocalAccessible* DocAccessibleChildBase::IdToAccessible(
   if (!mDoc) return nullptr;
 
   return mDoc->GetAccessibleByUniqueID(reinterpret_cast<void*>(aID));
+}
+
+HyperTextAccessible* DocAccessibleChildBase::IdToHyperTextAccessible(
+    const uint64_t& aID) const {
+  LocalAccessible* acc = IdToAccessible(aID);
+  return acc && acc->IsHyperText() ? acc->AsHyperText() : nullptr;
 }
 
 }  // namespace a11y

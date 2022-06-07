@@ -12,13 +12,14 @@ let AVAILABLE_PIP_OVERRIDES;
   // See PictureInPictureControls.jsm for these values.
   // eslint-disable-next-line no-unused-vars
   const TOGGLE_POLICIES = browser.pictureInPictureChild.getPolicies();
-  const KEYBOARD_CONTROLS = browser.pictureInPictureChild.getKeyboardControls();
 
   AVAILABLE_PIP_OVERRIDES = {
     // The keys of this object are match patterns for URLs, as documented in
     // https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Match_patterns
     //
     // Example:
+    //  const KEYBOARD_CONTROLS = browser.pictureInPictureChild.getKeyboardControls();
+    //
     //
     // "https://*.youtube.com/*": {
     //   policy: TOGGLE_POLICIES.THREE_QUARTERS,
@@ -45,6 +46,15 @@ let AVAILABLE_PIP_OVERRIDES;
       },
     },
 
+    bbc: {
+      "https://*.bbc.com/*": {
+        videoWrapperScriptPath: "video-wrappers/bbc.js",
+      },
+      "https://*.bbc.co.uk/*": {
+        videoWrapperScriptPath: "video-wrappers/bbc.js",
+      },
+    },
+
     dailymotion: {
       "https://*.dailymotion.com/*": {
         videoWrapperScriptPath: "video-wrappers/dailymotion.js",
@@ -57,9 +67,21 @@ let AVAILABLE_PIP_OVERRIDES;
       },
     },
 
+    hbomax: {
+      "https://play.hbomax.com/feature/*": {
+        videoWrapperScriptPath: "video-wrappers/hbomax.js",
+      },
+    },
+
     hotstar: {
       "https://*.hotstar.com/*": {
         videoWrapperScriptPath: "video-wrappers/hotstar.js",
+      },
+    },
+
+    hulu: {
+      "https://www.hulu.com/watch/*": {
+        videoWrapperScriptPath: "video-wrappers/hulu.js",
       },
     },
 
@@ -71,9 +93,14 @@ let AVAILABLE_PIP_OVERRIDES;
       "https://*.laracasts.com/*": { policy: TOGGLE_POLICIES.ONE_QUARTER },
     },
 
+    nebula: {
+      "https://*.nebula.app/*": {
+        videoWrapperScriptPath: "video-wrappers/nebula.js",
+      },
+    },
+
     netflix: {
       "https://*.netflix.com/*": {
-        keyboardControls: ~KEYBOARD_CONTROLS.SEEK,
         videoWrapperScriptPath: "video-wrappers/netflix.js",
       },
       "https://*.netflix.com/browse*": { policy: TOGGLE_POLICIES.HIDDEN },

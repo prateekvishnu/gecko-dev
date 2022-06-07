@@ -14,15 +14,10 @@ const { AppConstants } = ChromeUtils.import(
 const { E10SUtils } = ChromeUtils.import(
   "resource://gre/modules/E10SUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 
 const { FeatureGate } = ChromeUtils.import(
   "resource://featuregates/FeatureGate.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["DOMParser"]);
 
 // We use a list of prefs for display to make sure we only show prefs that
 // are useful for support and won't compromise the user's privacy.  Note that
@@ -34,12 +29,16 @@ const PREFS_FOR_DISPLAY = [
   "browser.cache.",
   "browser.contentblocking.category",
   "browser.display.",
+  "browser.download.always_ask_before_handling_new_types",
+  "browser.download.enable_spam_prevention",
   "browser.download.folderList",
+  "browser.download.improvements_to_download_panel",
   "browser.download.lastDir.savePerSite",
   "browser.download.manager.addToRecentDocs",
   "browser.download.manager.resumeOnWakeDelay",
   "browser.download.preferred.",
   "browser.download.skipConfirmLaunchExecutable",
+  "browser.download.start_downloads_in_tmp_dir",
   "browser.download.useDownloadDir",
   "browser.fixup.",
   "browser.history_expire_",

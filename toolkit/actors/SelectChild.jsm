@@ -10,18 +10,18 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LayoutUtils",
   "resource://gre/modules/LayoutUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["InspectorUtils"]);
 
 const kStateActive = 0x00000001; // NS_EVENT_STATE_ACTIVE
 const kStateHover = 0x00000004; // NS_EVENT_STATE_HOVER
@@ -62,7 +62,7 @@ var SelectContentHelper = function(aElement, aOptions, aActor) {
   this._lockedDescendants = null;
   this.init();
   this.showDropDown();
-  this._updateTimer = new DeferredTask(this._update.bind(this), 0);
+  this._updateTimer = new lazy.DeferredTask(this._update.bind(this), 0);
 };
 
 Object.defineProperty(SelectContentHelper, "open", {
@@ -173,7 +173,7 @@ SelectContentHelper.prototype = {
   },
 
   _getBoundingContentRect() {
-    return LayoutUtils.getElementBoundingScreenRect(this.element);
+    return lazy.LayoutUtils.getElementBoundingScreenRect(this.element);
   },
 
   _buildOptionList() {

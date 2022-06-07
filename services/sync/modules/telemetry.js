@@ -4,7 +4,10 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = ["SyncTelemetry"];
+var EXPORTED_SYMBOLS = [
+  "ErrorSanitizer", // for testing.
+  "SyncTelemetry",
+];
 
 // Support for Sync-and-FxA-related telemetry, which is submitted in a special-purpose
 // telemetry ping called the "sync ping", documented here:
@@ -19,18 +22,19 @@ var EXPORTED_SYMBOLS = ["SyncTelemetry"];
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Async: "resource://services-common/async.js",
   AuthenticationError: "resource://services-sync/sync_auth.js",
-  fxAccounts: "resource://gre/modules/FxAccounts.jsm",
   FxAccounts: "resource://gre/modules/FxAccounts.jsm",
   Log: "resource://gre/modules/Log.jsm",
   ObjectUtils: "resource://gre/modules/ObjectUtils.jsm",
   Observers: "resource://services-common/observers.js",
   OS: "resource://gre/modules/osfile.jsm",
   Resource: "resource://services-sync/resource.js",
-  Services: "resource://gre/modules/Services.jsm",
   Status: "resource://services-sync/status.js",
   Svc: "resource://services-sync/util.js",
   TelemetryController: "resource://gre/modules/TelemetryController.jsm",
@@ -39,14 +43,20 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   Weave: "resource://services-sync/main.js",
 });
 
+XPCOMUtils.defineLazyGetter(lazy, "fxAccounts", () => {
+  return ChromeUtils.import(
+    "resource://gre/modules/FxAccounts.jsm"
+  ).getFxAccountsSingleton();
+});
+
 let constants = ChromeUtils.import("resource://services-sync/constants.js");
 
 XPCOMUtils.defineLazyGetter(
-  this,
+  lazy,
   "WeaveService",
   () => Cc["@mozilla.org/weave/service;1"].getService().wrappedJSObject
 );
-const log = Log.repository.getLogger("Sync.Telemetry");
+const log = lazy.Log.repository.getLogger("Sync.Telemetry");
 
 const TOPICS = [
   // For tracking change to account/device identifiers.
@@ -97,15 +107,6 @@ const ENGINES = new Set([
   "creditcards",
 ]);
 
-// A regex we can use to replace the profile dir in error messages. We use a
-// regexp so we can simply replace all case-insensitive occurences.
-// This escaping function is from:
-// https://developer.mozilla.org/en/docs/Web/JavaScript/Guide/Regular_Expressions
-const reProfileDir = new RegExp(
-  OS.Constants.Path.profileDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-  "gi"
-);
-
 function tryGetMonotonicTimestamp() {
   try {
     return Services.telemetry.msSinceProcessStart();
@@ -123,6 +124,16 @@ function timeDeltaFrom(monotonicStartTime) {
   return -1;
 }
 
+const NS_ERROR_MODULE_BASE_OFFSET = 0x45;
+const NS_ERROR_MODULE_NETWORK = 6;
+
+// A reimplementation of NS_ERROR_GET_MODULE, which surprisingly doesn't seem
+// to exist anywhere in .js code in a way that can be reused.
+// This is taken from DownloadCore.jsm.
+function NS_ERROR_GET_MODULE(code) {
+  return ((code & 0x7fff0000) >> 16) - NS_ERROR_MODULE_BASE_OFFSET;
+}
+
 // Converts extra integer fields to strings, rounds floats to three
 // decimal places (nanosecond precision for timings), and removes profile
 // directory paths and URLs from potential error messages.
@@ -132,7 +143,7 @@ function normalizeExtraTelemetryFields(extra) {
     let value = extra[key];
     let type = typeof value;
     if (type == "string") {
-      result[key] = cleanErrorMessage(value);
+      result[key] = ErrorSanitizer.cleanErrorMessage(value);
     } else if (type == "number") {
       result[key] = Number.isInteger(value)
         ? value.toString(10)
@@ -143,7 +154,95 @@ function normalizeExtraTelemetryFields(extra) {
       );
     }
   }
-  return ObjectUtils.isEmpty(result) ? undefined : result;
+  return lazy.ObjectUtils.isEmpty(result) ? undefined : result;
+}
+
+// The `ErrorSanitizer` has 2 main jobs:
+// * Remove PII from errors, such as the profile dir or URLs the user might
+//   have visited.
+// * Normalize errors so different locales or operating systems etc don't
+//   generate different messages for the same underlying error.
+// * [TODO] Normalize errors so environmental factors don't influence message.
+//   For example, timestamps or GUIDs should be replaced with something static.
+class ErrorSanitizer {
+  // Things we normalize - this isn't exhaustive, but covers the common error messages we see.
+  // Eg:
+  // > Win error 112 during operation write on file [profileDir]\weave\addonsreconciler.json (Espacio en disco insuficiente. )
+  // > Win error 112 during operation write on file [profileDir]\weave\addonsreconciler.json (Diskte yeterli yer yok. )
+  // > <snip many other translations of the error>
+  // > Unix error 28 during operation write on file [profileDir]/weave/addonsreconciler.json (No space left on device)
+  // These tend to crowd out other errors we might care about (eg, top 5 errors for some engines are
+  // variations of the "no space left on device")
+
+  // Note that only errors that have same-but-different errors on Windows and Unix are here - we
+  // still sanitize ones that aren't in these maps to remove the translations etc - eg,
+  // `ERROR_SHARING_VIOLATION` doesn't really have a unix equivalent, so doesn't appear here, but
+  // we still strip the translations to avoid the variants.
+  static E_NO_SPACE_ON_DEVICE = "OS error [No space left on device]";
+  static E_PERMISSION_DENIED = "OS error [Permission denied]";
+  static E_NO_FILE_OR_DIR = "OS error [File/Path not found]";
+  static E_NO_MEM = "OS error [No memory]";
+
+  static WindowsErrorSubstitutions = {
+    "2": this.E_NO_FILE_OR_DIR, // ERROR_FILE_NOT_FOUND
+    "3": this.E_NO_FILE_OR_DIR, // ERROR_PATH_NOT_FOUND
+    "5": this.E_PERMISSION_DENIED, // ERROR_ACCESS_DENIED
+    "8": this.E_NO_MEM, // ERROR_NOT_ENOUGH_MEMORY
+    "112": this.E_NO_SPACE_ON_DEVICE, // ERROR_DISK_FULL
+  };
+
+  static UnixErrorSubstitutions = {
+    "2": this.E_NO_FILE_OR_DIR, // ENOENT
+    "12": this.E_NO_MEM, // ENOMEM
+    "13": this.E_PERMISSION_DENIED, // EACCESS
+    "28": this.E_NO_SPACE_ON_DEVICE, // ENOSPC
+  };
+
+  static reWinError = /^(?<head>Win error (?<errno>\d+))(?<detail>.*) \(.*\r?\n?\)$/m;
+  static reUnixError = /^(?<head>Unix error (?<errno>\d+))(?<detail>.*) \(.*\)$/;
+
+  static #cleanOSErrorMessage(error) {
+    let match = this.reWinError.exec(error);
+    if (match) {
+      let head =
+        this.WindowsErrorSubstitutions[match.groups.errno] || match.groups.head;
+      return head + match.groups.detail.replaceAll("\\", "/");
+    }
+    match = this.reUnixError.exec(error);
+    if (match) {
+      let head =
+        this.UnixErrorSubstitutions[match.groups.errno] || match.groups.head;
+      return head + match.groups.detail;
+    }
+    return error;
+  }
+
+  // A regex we can use to replace the profile dir in error messages. We use a
+  // regexp so we can simply replace all case-insensitive occurences.
+  // This escaping function is from:
+  // https://developer.mozilla.org/en/docs/Web/JavaScript/Guide/Regular_Expressions
+  static reProfileDir = new RegExp(
+    lazy.OS.Constants.Path.profileDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    "gi"
+  );
+
+  // The "public" entry-point.
+  static cleanErrorMessage(error) {
+    // There's a chance the profiledir is in the error string which is PII we
+    // want to avoid including in the ping.
+    error = error.replace(this.reProfileDir, "[profileDir]");
+    // MSG_INVALID_URL from /dom/bindings/Errors.msg -- no way to access this
+    // directly from JS.
+    if (error.endsWith("is not a valid URL.")) {
+      error = "<URL> is not a valid URL.";
+    }
+    // Try to filter things that look somewhat like a URL (in that they contain a
+    // colon in the middle of non-whitespace), in case anything else is including
+    // these in error messages. Note that JSON.stringified stuff comes through
+    // here, so we explicitly ignore double-quotes as well.
+    error = error.replace(/[^\s"]+:[^\s"]+/g, "<URL>");
+    return this.#cleanOSErrorMessage(error);
+  }
 }
 
 // This function validates the payload of a telemetry "event" - this can be
@@ -206,7 +305,7 @@ class EngineRecord {
 
     // This allows cases like bookmarks-buffered to have a separate name from
     // the bookmarks engine.
-    let engineImpl = Weave.Service.engineManager.get(name);
+    let engineImpl = lazy.Weave.Service.engineManager.get(name);
     if (engineImpl && engineImpl.overrideTelemetryName) {
       this.overrideTelemetryName = engineImpl.overrideTelemetryName;
     }
@@ -383,12 +482,12 @@ class SyncRecord {
       this.failureReason = SyncTelemetry.transformError(error);
     }
 
-    this.syncNodeType = Weave.Service.identity.telemetryNodeType;
+    this.syncNodeType = lazy.Weave.Service.identity.telemetryNodeType;
 
     // Check for engine statuses. -- We do this now, and not in engine.finished
     // to make sure any statuses that get set "late" are recorded
     for (let engine of this.engines) {
-      let status = Status.engines[engine.name];
+      let status = lazy.Status.engines[engine.name];
       if (status && status !== constants.ENGINE_SUCCEEDED) {
         engine.status = status;
       }
@@ -396,12 +495,12 @@ class SyncRecord {
 
     let statusObject = {};
 
-    let serviceStatus = Status.service;
+    let serviceStatus = lazy.Status.service;
     if (serviceStatus && serviceStatus !== constants.STATUS_OK) {
       statusObject.service = serviceStatus;
       this.status = statusObject;
     }
-    let syncStatus = Status.sync;
+    let syncStatus = lazy.Status.sync;
     if (syncStatus && syncStatus !== constants.SYNC_SUCCEEDED) {
       statusObject.sync = syncStatus;
       this.status = statusObject;
@@ -523,23 +622,6 @@ class SyncRecord {
   }
 }
 
-function cleanErrorMessage(error) {
-  // There's a chance the profiledir is in the error string which is PII we
-  // want to avoid including in the ping.
-  error = error.replace(reProfileDir, "[profileDir]");
-  // MSG_INVALID_URL from /dom/bindings/Errors.msg -- no way to access this
-  // directly from JS.
-  if (error.endsWith("is not a valid URL.")) {
-    error = "<URL> is not a valid URL.";
-  }
-  // Try to filter things that look somewhat like a URL (in that they contain a
-  // colon in the middle of non-whitespace), in case anything else is including
-  // these in error messages. Note that JSON.stringified stuff comes through
-  // here, so we explicitly ignore double-quotes as well.
-  error = error.replace(/[^\s"]+:[^\s"]+/g, "<URL>");
-  return error;
-}
-
 // The entire "sync ping" - it includes all the syncs, events etc recorded in
 // the ping.
 class SyncTelemetryImpl {
@@ -555,10 +637,10 @@ class SyncTelemetryImpl {
     this.events = [];
     this.histograms = {};
     this.migrations = [];
-    this.maxEventsCount = Svc.Prefs.get("telemetry.maxEventsCount", 1000);
-    this.maxPayloadCount = Svc.Prefs.get("telemetry.maxPayloadCount");
+    this.maxEventsCount = lazy.Svc.Prefs.get("telemetry.maxEventsCount", 1000);
+    this.maxPayloadCount = lazy.Svc.Prefs.get("telemetry.maxPayloadCount");
     this.submissionInterval =
-      Svc.Prefs.get("telemetry.submissionInterval") * 1000;
+      lazy.Svc.Prefs.get("telemetry.submissionInterval") * 1000;
     this.lastSubmissionTime = Services.telemetry.msSinceProcessStart();
     this.lastUID = EMPTY_UID;
     this.lastSyncNodeType = null;
@@ -569,14 +651,14 @@ class SyncTelemetryImpl {
     // but that's OK for now - if it's a problem we'd need to change the
     // telemetry modules to expose what it thinks the sessionStartDate is.
     let sessionStartDate = new Date();
-    this.sessionStartDate = TelemetryUtils.toLocalTimeISOString(
-      TelemetryUtils.truncateToHours(sessionStartDate)
+    this.sessionStartDate = lazy.TelemetryUtils.toLocalTimeISOString(
+      lazy.TelemetryUtils.truncateToHours(sessionStartDate)
     );
-    TelemetryController.registerSyncPingShutdown(() => this.shutdown());
+    lazy.TelemetryController.registerSyncPingShutdown(() => this.shutdown());
   }
 
   sanitizeFxaDeviceId(deviceId) {
-    return fxAccounts.telemetry.sanitizeDeviceId(deviceId);
+    return lazy.fxAccounts.telemetry.sanitizeDeviceId(deviceId);
   }
 
   prepareFxaDevices(devices) {
@@ -614,7 +696,7 @@ class SyncTelemetryImpl {
   }
 
   syncIsEnabled() {
-    return WeaveService.enabled && WeaveService.ready;
+    return lazy.WeaveService.enabled && lazy.WeaveService.ready;
   }
 
   // Separate for testing.
@@ -622,7 +704,7 @@ class SyncTelemetryImpl {
     if (!this.syncIsEnabled()) {
       throw new Error("Bug: syncIsEnabled() must be true, check it first");
     }
-    return Weave.Service.clientsEngine.remoteClients;
+    return lazy.Weave.Service.clientsEngine.remoteClients;
   }
 
   updateFxaDevices(devices) {
@@ -636,13 +718,13 @@ class SyncTelemetryImpl {
   }
 
   getFxaDevices() {
-    return fxAccounts.device.recentDeviceList;
+    return lazy.fxAccounts.device.recentDeviceList;
   }
 
   getPingJSON(reason) {
     let { devices, deviceID } = this.updateFxaDevices(this.getFxaDevices());
     return {
-      os: TelemetryEnvironment.currentEnvironment.system.os,
+      os: lazy.TelemetryEnvironment.currentEnvironment.system.os,
       why: reason,
       devices,
       discarded: this.discarded || undefined,
@@ -692,14 +774,14 @@ class SyncTelemetryImpl {
 
   setupObservers() {
     for (let topic of TOPICS) {
-      Observers.add(topic, this, this);
+      lazy.Observers.add(topic, this, this);
     }
   }
 
   shutdown() {
     this.finish("shutdown");
     for (let topic of TOPICS) {
-      Observers.remove(topic, this, this);
+      lazy.Observers.remove(topic, this, this);
     }
   }
 
@@ -716,7 +798,7 @@ class SyncTelemetryImpl {
         `submitting ${record.syncs.length} sync record(s) and ` +
           `${numEvents} event(s) to telemetry`
       );
-      TelemetryController.submitExternalPing("sync", record, {
+      lazy.TelemetryController.submitExternalPing("sync", record, {
         usePingSender: true,
       }).catch(err => {
         log.error("failed to submit ping", err);
@@ -732,7 +814,7 @@ class SyncTelemetryImpl {
     // need to consider - fxa doesn't consider that as if that's the only
     // pref set, they *are* running a production fxa, just not production sync.
     if (
-      !FxAccounts.config.isProductionConfig() ||
+      !lazy.FxAccounts.config.isProductionConfig() ||
       Services.prefs.prefHasUserValue("services.sync.tokenServerURI")
     ) {
       log.trace(`Not sending telemetry ping for self-hosted Sync user`);
@@ -765,10 +847,12 @@ class SyncTelemetryImpl {
     // Awkwardly async, but no need to await. If the user's account state changes while
     // this promise is in flight, it will reject and we won't record any data in the ping.
     // (And a new notification will trigger us to try again with the new state).
-    fxAccounts.device
+    lazy.fxAccounts.device
       .getLocalId()
       .then(deviceId => {
-        let sanitizedDeviceId = fxAccounts.telemetry.sanitizeDeviceId(deviceId);
+        let sanitizedDeviceId = lazy.fxAccounts.telemetry.sanitizeDeviceId(
+          deviceId
+        );
         // In the past we did not persist the FxA metrics identifiers to disk,
         // so this might be missing until we can fetch it from the server for the
         // first time. There will be a fresh notification tirggered when it's available.
@@ -807,7 +891,7 @@ class SyncTelemetryImpl {
   }
 
   _shouldSubmitForDataChange() {
-    let newID = fxAccounts.telemetry.getSanitizedUID() || EMPTY_UID;
+    let newID = lazy.fxAccounts.telemetry.getSanitizedUID() || EMPTY_UID;
     let oldID = this.lastUID;
     if (
       newID != EMPTY_UID &&
@@ -847,7 +931,7 @@ class SyncTelemetryImpl {
     }
 
     // Only update the last UIDs if we actually know them.
-    let current_uid = fxAccounts.telemetry.getSanitizedUID();
+    let current_uid = lazy.fxAccounts.telemetry.getSanitizedUID();
     if (current_uid) {
       this.lastUID = current_uid;
     }
@@ -918,8 +1002,8 @@ class SyncTelemetryImpl {
     }
     log.debug("recording event", eventDetails);
 
-    if (extra && Resource.serverTime && !extra.serverTime) {
-      extra.serverTime = String(Resource.serverTime);
+    if (extra && lazy.Resource.serverTime && !extra.serverTime) {
+      extra.serverTime = String(lazy.Resource.serverTime);
     }
     let category = "sync";
     let ts = Math.floor(tryGetMonotonicTimestamp());
@@ -1050,7 +1134,7 @@ class SyncTelemetryImpl {
     if (typeof error == "object" && error.code && error.cause) {
       error = error.cause;
     }
-    if (Async.isShutdownException(error)) {
+    if (lazy.Async.isShutdownException(error)) {
       return { name: "shutdownerror" };
     }
 
@@ -1059,11 +1143,11 @@ class SyncTelemetryImpl {
         // This is hacky, but I can't imagine that it's not also accurate.
         return { name: "othererror", error };
       }
-      error = cleanErrorMessage(error);
+      error = ErrorSanitizer.cleanErrorMessage(error);
       return { name: "unexpectederror", error };
     }
 
-    if (error instanceof AuthenticationError) {
+    if (error instanceof lazy.AuthenticationError) {
       return { name: "autherror", from: error.source };
     }
 
@@ -1079,6 +1163,19 @@ class SyncTelemetryImpl {
     }
 
     if (error.result) {
+      // many "nsresult" errors are actually network errors - if they are
+      // associated with the "network" module we assume that's true.
+      // We also assume NS_ERROR_ABORT is such an error - for almost everything
+      // we care about, it acually is (eg, if the connection fails early enough
+      // or if we have a captive portal etc) - we don't lose anything by this
+      // assumption, it's just that the error will no longer be in the "nserror"
+      // category, so our analysis can still find them.
+      if (
+        error.result == Cr.NS_ERROR_ABORT ||
+        NS_ERROR_GET_MODULE(error.result) == NS_ERROR_MODULE_NETWORK
+      ) {
+        return { name: "httperror", code: error.result };
+      }
       return { name: "nserror", code: error.result };
     }
     // It's probably an Error object, but it also could be some
@@ -1096,7 +1193,7 @@ class SyncTelemetryImpl {
     }
     return {
       name: "unexpectederror",
-      error: cleanErrorMessage(msg),
+      error: ErrorSanitizer.cleanErrorMessage(msg),
     };
   }
 }

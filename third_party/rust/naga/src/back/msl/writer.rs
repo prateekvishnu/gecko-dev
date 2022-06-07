@@ -70,15 +70,16 @@ const CLAMPED_LOD_LOAD_PREFIX: &str = "clamped_lod_e";
 
 struct TypeContext<'a> {
     handle: Handle<crate::Type>,
-    arena: &'a crate::UniqueArena<crate::Type>,
+    module: &'a crate::Module,
     names: &'a FastHashMap<NameKey, String>,
     access: crate::StorageAccess,
+    binding: Option<&'a super::ResolvedBinding>,
     first_time: bool,
 }
 
 impl<'a> Display for TypeContext<'a> {
     fn fmt(&self, out: &mut Formatter<'_>) -> Result<(), FmtError> {
-        let ty = &self.arena[self.handle];
+        let ty = &self.module.types[self.handle];
         if ty.needs_alias() && !self.first_time {
             let name = &self.names[&NameKey::Type(self.handle)];
             return write!(out, "{}", name);
@@ -201,6 +202,39 @@ impl<'a> Display for TypeContext<'a> {
             crate::TypeInner::Sampler { comparison: _ } => {
                 write!(out, "{}::sampler", NAMESPACE)
             }
+            crate::TypeInner::BindingArray { base, size } => {
+                let base_tyname = Self {
+                    handle: base,
+                    first_time: false,
+                    ..*self
+                };
+
+                if let Some(&super::ResolvedBinding::Resource(super::BindTarget {
+                    binding_array_size: Some(override_size),
+                    ..
+                })) = self.binding
+                {
+                    write!(
+                        out,
+                        "{}::array<{}, {}>",
+                        NAMESPACE, base_tyname, override_size
+                    )
+                } else if let crate::ArraySize::Constant(size) = size {
+                    let constant_ctx = ConstantContext {
+                        handle: size,
+                        arena: &self.module.constants,
+                        names: self.names,
+                        first_time: false,
+                    };
+                    write!(
+                        out,
+                        "{}::array<{}, {}>",
+                        NAMESPACE, base_tyname, constant_ctx
+                    )
+                } else {
+                    unreachable!("metal requires all arrays be constant sized");
+                }
+            }
         }
     }
 }
@@ -210,6 +244,7 @@ struct TypedGlobalVariable<'a> {
     names: &'a FastHashMap<NameKey, String>,
     handle: Handle<crate::GlobalVariable>,
     usage: valid::GlobalUse,
+    binding: Option<&'a super::ResolvedBinding>,
     reference: bool,
 }
 
@@ -225,14 +260,24 @@ impl<'a> TypedGlobalVariable<'a> {
                     class: crate::ImageClass::Storage { access, .. },
                     ..
                 } => access,
+                crate::TypeInner::BindingArray { base, .. } => {
+                    match self.module.types[base].inner {
+                        crate::TypeInner::Image {
+                            class: crate::ImageClass::Storage { access, .. },
+                            ..
+                        } => access,
+                        _ => crate::StorageAccess::default(),
+                    }
+                }
                 _ => crate::StorageAccess::default(),
             },
         };
         let ty_name = TypeContext {
             handle: var.ty,
-            arena: &self.module.types,
+            module: self.module,
             names: self.names,
             access: storage_access,
+            binding: self.binding,
             first_time: false,
         };
 
@@ -417,7 +462,9 @@ impl crate::AddressSpace {
             // rely on the actual use of a global by functions. This means we
             // may end up with "const" even if the binding is read-write,
             // and that should be OK.
-            Self::Storage { .. } | Self::Private | Self::WorkGroup => true,
+            Self::Storage { .. } => true,
+            // These should always be read-write.
+            Self::Private | Self::WorkGroup => false,
             // These translate to `constant` address space, no need for qualifiers.
             Self::Uniform | Self::PushConstant => false,
             // Not applicable.
@@ -452,7 +499,7 @@ impl crate::Type {
             // composite types are better to be aliased, regardless of the name
             Ti::Struct { .. } | Ti::Array { .. } => true,
             // handle types may be different, depending on the global var access, so we always inline them
-            Ti::Image { .. } | Ti::Sampler { .. } => false,
+            Ti::Image { .. } | Ti::Sampler { .. } | Ti::BindingArray { .. } => false,
         }
     }
 }
@@ -1225,13 +1272,14 @@ impl<W: Write> Writer<W> {
         let expression = &context.function.expressions[expr_handle];
         log::trace!("expression {:?} = {:?}", expr_handle, expression);
         match *expression {
-            crate::Expression::Access { .. } | crate::Expression::AccessIndex { .. } => {
+            crate::Expression::Access { base, .. }
+            | crate::Expression::AccessIndex { base, .. } => {
                 // This is an acceptable place to generate a `ReadZeroSkipWrite` check.
                 // Since `put_bounds_checks` and `put_access_chain` handle an entire
                 // access chain at a time, recursing back through `put_expression` only
                 // for index expressions and the base object, we will never see intermediate
                 // `Access` or `AccessIndex` expressions here.
-                let policy = context.choose_bounds_check_policy(expr_handle);
+                let policy = context.choose_bounds_check_policy(base);
                 if policy == index::BoundsCheckPolicy::ReadZeroSkipWrite
                     && self.put_bounds_checks(
                         expr_handle,
@@ -1436,6 +1484,20 @@ impl<W: Write> Writer<W> {
                     .resolve_type(left)
                     .scalar_kind()
                     .ok_or(Error::UnsupportedBinaryOp(op))?;
+
+                // TODO: handle undefined behavior of BinaryOperator::Modulo
+                //
+                // sint:
+                // if right == 0 return 0
+                // if left == min(type_of(left)) && right == -1 return 0
+                // if sign(left) == -1 || sign(right) == -1 return result as defined by WGSL
+                //
+                // uint:
+                // if right == 0 return 0
+                //
+                // float:
+                // if right == 0 return ? see https://github.com/gpuweb/gpuweb/issues/2798
+
                 if op == crate::BinaryOperator::Modulo && kind == crate::ScalarKind::Float {
                     write!(self.out, "{}::fmod(", NAMESPACE)?;
                     self.put_expression(left, context, true)?;
@@ -1545,21 +1607,6 @@ impl<W: Write> Writer<W> {
                     crate::TypeInner::Scalar { .. } => true,
                     _ => false,
                 };
-                let argument_size_suffix = match *context.resolve_type(arg) {
-                    crate::TypeInner::Vector {
-                        size: crate::VectorSize::Bi,
-                        ..
-                    } => "2",
-                    crate::TypeInner::Vector {
-                        size: crate::VectorSize::Tri,
-                        ..
-                    } => "3",
-                    crate::TypeInner::Vector {
-                        size: crate::VectorSize::Quad,
-                        ..
-                    } => "4",
-                    _ => "",
-                };
 
                 let fun_name = match fun {
                     // comparison
@@ -1659,21 +1706,13 @@ impl<W: Write> Writer<W> {
                     self.put_expression(arg1.unwrap(), context, false)?;
                     write!(self.out, ")")?;
                 } else if fun == Mf::FindLsb {
-                    write!(
-                        self.out,
-                        "(((1 + int{}({}::ctz(",
-                        argument_size_suffix, NAMESPACE
-                    )?;
+                    write!(self.out, "((({}::ctz(", NAMESPACE)?;
                     self.put_expression(arg, context, true)?;
-                    write!(self.out, "))) % 33) - 1)")?;
+                    write!(self.out, ") + 1) % 33) - 1)")?;
                 } else if fun == Mf::FindMsb {
-                    write!(
-                        self.out,
-                        "(((1 + int{}({}::clz(",
-                        argument_size_suffix, NAMESPACE
-                    )?;
+                    write!(self.out, "((({}::clz(", NAMESPACE)?;
                     self.put_expression(arg, context, true)?;
-                    write!(self.out, "))) % 33) - 1)")?;
+                    write!(self.out, ") + 1) % 33) - 1)")?
                 } else if fun == Mf::Unpack2x16float {
                     write!(self.out, "float2(as_type<half2>(")?;
                     self.put_expression(arg, context, false)?;
@@ -1702,33 +1741,45 @@ impl<W: Write> Writer<W> {
                 expr,
                 kind,
                 convert,
-            } => {
-                let (src_kind, src_width) = match *context.resolve_type(expr) {
-                    crate::TypeInner::Scalar { kind, width }
-                    | crate::TypeInner::Vector { kind, width, .. } => (kind, width),
-                    _ => return Err(Error::Validation),
-                };
-                let is_bool_cast =
-                    kind == crate::ScalarKind::Bool || src_kind == crate::ScalarKind::Bool;
-                let op = match convert {
-                    Some(w) if w == src_width || is_bool_cast => "static_cast",
-                    Some(8) if kind == crate::ScalarKind::Float => {
-                        return Err(Error::CapabilityNotSupported(valid::Capabilities::FLOAT64))
-                    }
-                    Some(_) => return Err(Error::Validation),
-                    None => "as_type",
-                };
-                write!(self.out, "{}<", op)?;
-                match *context.resolve_type(expr) {
-                    crate::TypeInner::Vector { size, .. } => {
-                        put_numeric_type(&mut self.out, kind, &[size])?
-                    }
-                    _ => put_numeric_type(&mut self.out, kind, &[])?,
-                };
-                write!(self.out, ">(")?;
-                self.put_expression(expr, context, true)?;
-                write!(self.out, ")")?;
-            }
+            } => match *context.resolve_type(expr) {
+                crate::TypeInner::Scalar {
+                    kind: src_kind,
+                    width: src_width,
+                }
+                | crate::TypeInner::Vector {
+                    kind: src_kind,
+                    width: src_width,
+                    ..
+                } => {
+                    let is_bool_cast =
+                        kind == crate::ScalarKind::Bool || src_kind == crate::ScalarKind::Bool;
+                    let op = match convert {
+                        Some(w) if w == src_width || is_bool_cast => "static_cast",
+                        Some(8) if kind == crate::ScalarKind::Float => {
+                            return Err(Error::CapabilityNotSupported(valid::Capabilities::FLOAT64))
+                        }
+                        Some(_) => return Err(Error::Validation),
+                        None => "as_type",
+                    };
+                    write!(self.out, "{}<", op)?;
+                    match *context.resolve_type(expr) {
+                        crate::TypeInner::Vector { size, .. } => {
+                            put_numeric_type(&mut self.out, kind, &[size])?
+                        }
+                        _ => put_numeric_type(&mut self.out, kind, &[])?,
+                    };
+                    write!(self.out, ">(")?;
+                    self.put_expression(expr, context, true)?;
+                    write!(self.out, ")")?;
+                }
+                crate::TypeInner::Matrix { columns, rows, .. } => {
+                    put_numeric_type(&mut self.out, kind, &[rows, columns])?;
+                    write!(self.out, "(")?;
+                    self.put_expression(expr, context, true)?;
+                    write!(self.out, ")")?;
+                }
+                _ => return Err(Error::Validation),
+            },
             // has to be a named expression
             crate::Expression::CallResult(_) | crate::Expression::AtomicResult { .. } => {
                 unreachable!()
@@ -2269,9 +2320,10 @@ impl<W: Write> Writer<W> {
             TypeResolution::Handle(ty_handle) => {
                 let ty_name = TypeContext {
                     handle: ty_handle,
-                    arena: &context.module.types,
+                    module: context.module,
                     names: &self.names,
                     access: crate::StorageAccess::empty(),
+                    binding: None,
                     first_time: false,
                 };
                 write!(self.out, "{}", ty_name)?;
@@ -2398,6 +2450,8 @@ impl<W: Write> Writer<W> {
                             // Don't assume the names in `named_expressions` are unique,
                             // or even valid. Use the `Namer`.
                             Some(self.namer.call(name))
+                        } else if info.ref_count == 0 {
+                            Some(self.namer.call(""))
                         } else {
                             // If this expression is an index that we're going to first compare
                             // against a limit, and then actually use as an index, then we may
@@ -2863,9 +2917,10 @@ impl<W: Write> Writer<W> {
                 } => {
                     let base_name = TypeContext {
                         handle: base,
-                        arena: &module.types,
+                        module,
                         names: &self.names,
                         access: crate::StorageAccess::empty(),
+                        binding: None,
                         first_time: false,
                     };
 
@@ -2926,9 +2981,10 @@ impl<W: Write> Writer<W> {
                             None => {
                                 let base_name = TypeContext {
                                     handle: member.ty,
-                                    arena: &module.types,
+                                    module,
                                     names: &self.names,
                                     access: crate::StorageAccess::empty(),
+                                    binding: None,
                                     first_time: false,
                                 };
                                 writeln!(
@@ -2956,9 +3012,10 @@ impl<W: Write> Writer<W> {
                 _ => {
                     let ty_name = TypeContext {
                         handle,
-                        arena: &module.types,
+                        module,
                         names: &self.names,
                         access: crate::StorageAccess::empty(),
+                        binding: None,
                         first_time: true,
                     };
                     writeln!(self.out, "typedef {} {};", ty_name, name)?;
@@ -3015,9 +3072,10 @@ impl<W: Write> Writer<W> {
                     let name = &self.names[&NameKey::Constant(handle)];
                     let ty_name = TypeContext {
                         handle: ty,
-                        arena: &module.types,
+                        module,
                         names: &self.names,
                         access: crate::StorageAccess::empty(),
+                        binding: None,
                         first_time: false,
                     };
                     write!(self.out, "constant {} {} = {{", ty_name, name,)?;
@@ -3150,9 +3208,10 @@ impl<W: Write> Writer<W> {
                 Some(ref result) => {
                     let ty_name = TypeContext {
                         handle: result.ty,
-                        arena: &module.types,
+                        module,
                         names: &self.names,
                         access: crate::StorageAccess::empty(),
+                        binding: None,
                         first_time: false,
                     };
                     write!(self.out, "{}", ty_name)?;
@@ -3167,9 +3226,10 @@ impl<W: Write> Writer<W> {
                 let name = &self.names[&NameKey::FunctionArgument(fun_handle, index as u32)];
                 let param_type_name = TypeContext {
                     handle: arg.ty,
-                    arena: &module.types,
+                    module,
                     names: &self.names,
                     access: crate::StorageAccess::empty(),
+                    binding: None,
                     first_time: false,
                 };
                 let separator = separate(
@@ -3192,6 +3252,7 @@ impl<W: Write> Writer<W> {
                     names: &self.names,
                     handle,
                     usage: fun_info[handle],
+                    binding: None,
                     reference: true,
                 };
                 let separator =
@@ -3214,22 +3275,28 @@ impl<W: Write> Writer<W> {
             for (local_handle, local) in fun.local_variables.iter() {
                 let ty_name = TypeContext {
                     handle: local.ty,
-                    arena: &module.types,
+                    module,
                     names: &self.names,
                     access: crate::StorageAccess::empty(),
+                    binding: None,
                     first_time: false,
                 };
                 let local_name = &self.names[&NameKey::FunctionLocal(fun_handle, local_handle)];
                 write!(self.out, "{}{} {}", back::INDENT, ty_name, local_name)?;
-                if let Some(value) = local.init {
-                    let coco = ConstantContext {
-                        handle: value,
-                        arena: &module.constants,
-                        names: &self.names,
-                        first_time: false,
-                    };
-                    write!(self.out, " = {}", coco)?;
-                }
+                match local.init {
+                    Some(value) => {
+                        let coco = ConstantContext {
+                            handle: value,
+                            arena: &module.constants,
+                            names: &self.names,
+                            first_time: false,
+                        };
+                        write!(self.out, " = {}", coco)?;
+                    }
+                    None => {
+                        write!(self.out, " = {{}}")?;
+                    }
+                };
                 writeln!(self.out, ";")?;
             }
 
@@ -3285,11 +3352,19 @@ impl<W: Write> Writer<W> {
                     }
                     if let Some(ref br) = var.binding {
                         let good = match options.per_stage_map[ep.stage].resources.get(br) {
-                            Some(target) => match module.types[var.ty].inner {
-                                crate::TypeInner::Image { .. } => target.texture.is_some(),
-                                crate::TypeInner::Sampler { .. } => target.sampler.is_some(),
-                                _ => target.buffer.is_some(),
-                            },
+                            Some(target) => {
+                                let binding_ty = match module.types[var.ty].inner {
+                                    crate::TypeInner::BindingArray { base, .. } => {
+                                        &module.types[base].inner
+                                    }
+                                    ref ty => ty,
+                                };
+                                match *binding_ty {
+                                    crate::TypeInner::Image { .. } => target.texture.is_some(),
+                                    crate::TypeInner::Sampler { .. } => target.sampler.is_some(),
+                                    _ => target.buffer.is_some(),
+                                }
+                            }
                             None => false,
                         };
                         if !good {
@@ -3377,9 +3452,10 @@ impl<W: Write> Writer<W> {
                     let name = &self.names[name_key];
                     let ty_name = TypeContext {
                         handle: ty,
-                        arena: &module.types,
+                        module,
                         names: &self.names,
                         access: crate::StorageAccess::empty(),
+                        binding: None,
                         first_time: false,
                     };
                     let resolved = options.resolve_local_binding(binding, in_mode)?;
@@ -3420,9 +3496,10 @@ impl<W: Write> Writer<W> {
                     for (name, ty, binding) in result_members {
                         let ty_name = TypeContext {
                             handle: ty,
-                            arena: &module.types,
+                            module,
                             names: &self.names,
                             access: crate::StorageAccess::empty(),
+                            binding: None,
                             first_time: true,
                         };
                         let binding = binding.ok_or(Error::Validation)?;
@@ -3521,9 +3598,10 @@ impl<W: Write> Writer<W> {
                 };
                 let ty_name = TypeContext {
                     handle: ty,
-                    arena: &module.types,
+                    module,
                     names: &self.names,
                     access: crate::StorageAccess::empty(),
+                    binding: None,
                     first_time: false,
                 };
                 let resolved = options.resolve_local_binding(binding, in_mode)?;
@@ -3572,6 +3650,7 @@ impl<W: Write> Writer<W> {
                     names: &self.names,
                     handle,
                     usage,
+                    binding: resolved.as_ref(),
                     reference: true,
                 };
                 let separator = if is_first_argument {
@@ -3632,6 +3711,7 @@ impl<W: Write> Writer<W> {
                         names: &self.names,
                         handle,
                         usage,
+                        binding: None,
                         reference: false,
                     };
                     write!(self.out, "{}", back::INDENT)?;
@@ -3733,21 +3813,27 @@ impl<W: Write> Writer<W> {
                 let name = &self.names[&NameKey::EntryPointLocal(ep_index as _, local_handle)];
                 let ty_name = TypeContext {
                     handle: local.ty,
-                    arena: &module.types,
+                    module,
                     names: &self.names,
                     access: crate::StorageAccess::empty(),
+                    binding: None,
                     first_time: false,
                 };
                 write!(self.out, "{}{} {}", back::INDENT, ty_name, name)?;
-                if let Some(value) = local.init {
-                    let coco = ConstantContext {
-                        handle: value,
-                        arena: &module.constants,
-                        names: &self.names,
-                        first_time: false,
-                    };
-                    write!(self.out, " = {}", coco)?;
-                }
+                match local.init {
+                    Some(value) => {
+                        let coco = ConstantContext {
+                            handle: value,
+                            arena: &module.constants,
+                            names: &self.names,
+                            first_time: false,
+                        };
+                        write!(self.out, " = {}", coco)?;
+                    }
+                    None => {
+                        write!(self.out, " = {{}}")?;
+                    }
+                };
                 writeln!(self.out, ";")?;
             }
 
@@ -3832,7 +3918,7 @@ fn test_stack_size() {
 
     {
         // check expression stack
-        let mut addresses = !0usize..0usize;
+        let mut addresses = usize::MAX..0usize;
         for pointer in writer.put_expression_stack_pointers {
             addresses.start = addresses.start.min(pointer as usize);
             addresses.end = addresses.end.max(pointer as usize);
@@ -3847,7 +3933,7 @@ fn test_stack_size() {
 
     {
         // check block stack
-        let mut addresses = !0usize..0usize;
+        let mut addresses = usize::MAX..0usize;
         for pointer in writer.put_block_stack_pointers {
             addresses.start = addresses.start.min(pointer as usize);
             addresses.end = addresses.end.max(pointer as usize);
@@ -3855,7 +3941,7 @@ fn test_stack_size() {
         let stack_size = addresses.end - addresses.start;
         // check the size (in debug only)
         // last observed macOS value: 19152 (CI)
-        if !(11000..=20000).contains(&stack_size) {
+        if !(9500..=20000).contains(&stack_size) {
             panic!("`put_block` stack size {} has changed!", stack_size);
         }
     }

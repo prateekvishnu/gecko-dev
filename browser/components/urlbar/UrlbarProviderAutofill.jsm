@@ -29,6 +29,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 const QUERYTYPE = {
   AUTOFILL_ORIGIN: 1,
   AUTOFILL_URL: 2,
+  AUTOFILL_ADAPTIVE: 3,
 };
 
 // `WITH` clause for the autofill queries.  autofill_frecency_threshold.value is
@@ -89,6 +90,7 @@ function originQuery(where) {
          OR (host BETWEEN 'www.' || :searchString AND 'www.' || :searchString || X'FFFF')
     )
     SELECT :query_type AS query_type,
+           :searchString AS search_string,
            iif(instr(host, :searchString) = 1, host, fixed) || '/' AS host_fixed,
            ifnull(:prefix, host_prefix) || host || '/' AS url
     FROM origins
@@ -105,6 +107,7 @@ function urlQuery(where1, where2) {
   // types a key when the urlbar value looks like a URL with a path.
   return `/* do not warn (bug no): cannot use an index to sort */
             SELECT :query_type AS query_type,
+                   :searchString AS search_string,
                    url,
                    :strippedURL AS stripped_url,
                    frecency,
@@ -116,6 +119,7 @@ function urlQuery(where1, where2) {
                   ${where1}
             UNION ALL
             SELECT :query_type AS query_type,
+                   :searchString AS search_string,
                    url,
                    :strippedURL AS stripped_url,
                    frecency,
@@ -293,10 +297,6 @@ class ProviderAutofill extends UrlbarProvider {
       queryContext.searchString
     );
     this._strippedPrefix = this._strippedPrefix.toLowerCase();
-
-    if (!this._searchString || !this._searchString.length) {
-      return false;
-    }
 
     // Don't try to autofill if the search term includes any whitespace.
     // This may confuse completeDefaultIndex cause the AUTOCOMPLETE_MATCH
@@ -524,6 +524,7 @@ class ProviderAutofill extends UrlbarProvider {
 
     let opts = {
       query_type: QUERYTYPE.AUTOFILL_URL,
+      searchString: this._searchString,
       revHost,
       strippedURL,
     };
@@ -557,6 +558,56 @@ class ProviderAutofill extends UrlbarProvider {
     throw new Error("Either history or bookmark behavior expected");
   }
 
+  _getAdaptiveHistoryQuery(queryContext) {
+    let additionalCondition;
+    if (
+      queryContext.sources.includes(UrlbarUtils.RESULT_SOURCE.HISTORY) &&
+      queryContext.sources.includes(UrlbarUtils.RESULT_SOURCE.BOOKMARKS)
+    ) {
+      // No additional condition needed.
+    } else if (
+      queryContext.sources.includes(UrlbarUtils.RESULT_SOURCE.HISTORY)
+    ) {
+      additionalCondition = "(h.foreign_count = 0 OR h.visit_count > 0)";
+    } else if (
+      queryContext.sources.includes(UrlbarUtils.RESULT_SOURCE.BOOKMARKS)
+    ) {
+      additionalCondition = "h.foreign_count > 0";
+    } else {
+      return [];
+    }
+
+    const params = {
+      queryType: QUERYTYPE.AUTOFILL_ADAPTIVE,
+      searchString: queryContext.searchString.toLowerCase(),
+      useCountThreshold: UrlbarPrefs.get(
+        "autoFillAdaptiveHistoryUseCountThreshold"
+      ),
+    };
+
+    const query = `
+      SELECT
+        :queryType AS query_type,
+        :searchString AS search_string,
+        i.input AS input,
+        h.url AS url,
+        fixup_url(h.url) AS fixed_url,
+        fixup_url(h.url) COLLATE NOCASE BETWEEN :searchString AND :searchString || X'FFFF' AS fixed_url_match
+      FROM moz_places h
+      JOIN moz_inputhistory i ON i.place_id = h.id
+      WHERE :searchString BETWEEN i.input AND i.input || X'FFFF'
+      AND (
+        fixed_url_match OR (h.url COLLATE NOCASE BETWEEN :searchString AND :searchString || X'FFFF')
+      )
+      AND i.use_count >= :useCountThreshold
+      ${additionalCondition ? `AND ${additionalCondition}` : ""}
+      ORDER BY i.use_count DESC, fixed_url_match DESC, h.frecency DESC, h.id DESC
+      LIMIT 1
+    `;
+
+    return [query, params];
+  }
+
   /**
    * Processes a matched row in the Places database.
    * @param {object} row
@@ -566,11 +617,14 @@ class ProviderAutofill extends UrlbarProvider {
    */
   _processRow(row, queryContext) {
     let queryType = row.getResultByName("query_type");
-    let autofilledValue, finalCompleteValue;
+    let searchString = row.getResultByName("search_string");
+    let autofilledValue, finalCompleteValue, autofilledType;
+    let adaptiveHistoryInput;
     switch (queryType) {
       case QUERYTYPE.AUTOFILL_ORIGIN:
         autofilledValue = row.getResultByName("host_fixed");
         finalCompleteValue = row.getResultByName("url");
+        autofilledType = "origin";
         break;
       case QUERYTYPE.AUTOFILL_URL:
         let url = row.getResultByName("url");
@@ -601,7 +655,44 @@ class ProviderAutofill extends UrlbarProvider {
           autofilledValue = url.substring(strippedURLIndex, nextSlashIndex + 1);
         }
         finalCompleteValue = strippedPrefix + autofilledValue;
+        autofilledType = "url";
         break;
+      case QUERYTYPE.AUTOFILL_ADAPTIVE:
+        finalCompleteValue = row.getResultByName("url");
+        const isFixedUrlMatched = row.getResultByName("fixed_url_match");
+        autofilledValue = isFixedUrlMatched
+          ? row.getResultByName("fixed_url")
+          : finalCompleteValue;
+        adaptiveHistoryInput = row.getResultByName("input");
+        autofilledType = "adaptive";
+        break;
+    }
+
+    // `autofilledValue` is the value that will be set in the input, and it
+    // should respect the case of the characters the user has typed so far.
+    autofilledValue =
+      queryContext.searchString +
+      autofilledValue.substring(searchString.length);
+
+    // If more than an origin was autofilled and the user typed the full
+    // autofilled value, override the final URL by using the exact value the
+    // user typed. This allows the user to visit a URL that differs from the
+    // autofilled URL only in character case (for example "wikipedia.org/RAID"
+    // vs. "wikipedia.org/Raid") by typing the full desired URL.
+    if (
+      queryType != QUERYTYPE.AUTOFILL_ORIGIN &&
+      queryContext.searchString.length == autofilledValue.length
+    ) {
+      finalCompleteValue =
+        finalCompleteValue.substring(
+          0,
+          finalCompleteValue.length - autofilledValue.length
+        ) + autofilledValue;
+      // Make sure the domain is lowercased in the final URL. This isn't
+      // necessary since domains are case insensitive, but it looks nicer
+      // because it means the domain will remain lowercased in the input, and it
+      // also reflects the fact that Firefox will visit the lowercased name.
+      finalCompleteValue = new URL(finalCompleteValue).href;
     }
 
     let [title] = UrlbarUtils.stripPrefixAndTrim(finalCompleteValue, {
@@ -618,13 +709,12 @@ class ProviderAutofill extends UrlbarProvider {
         icon: UrlbarUtils.getIconForUrl(finalCompleteValue),
       })
     );
-    autofilledValue =
-      queryContext.searchString +
-      autofilledValue.substring(this._searchString.length);
     result.autofill = {
+      adaptiveHistoryInput,
       value: autofilledValue,
       selectionStart: queryContext.searchString.length,
       selectionEnd: autofilledValue.length,
+      type: autofilledType,
     };
     return result;
   }
@@ -678,6 +768,7 @@ class ProviderAutofill extends UrlbarProvider {
           queryContext.searchString +
           aboutUrl.substring(queryContext.searchString.length);
         result.autofill = {
+          type: "about",
           value: autofilledValue,
           selectionStart: queryContext.searchString.length,
           selectionEnd: autofilledValue.length,
@@ -693,6 +784,31 @@ class ProviderAutofill extends UrlbarProvider {
     if (!conn) {
       return null;
     }
+
+    // We try to autofill with adaptive history first.
+    if (
+      UrlbarPrefs.get("autoFillAdaptiveHistoryEnabled") &&
+      UrlbarPrefs.get("autoFillAdaptiveHistoryMinCharsThreshold") <=
+        queryContext.searchString.length
+    ) {
+      const [query, params] = this._getAdaptiveHistoryQuery(queryContext);
+      if (query) {
+        const resultSet = await conn.executeCached(query, params);
+        if (resultSet.length) {
+          return this._processRow(resultSet[0], queryContext);
+        }
+      }
+    }
+
+    // The adaptive history query is passed queryContext.searchString (the full
+    // search string), but the origin and URL queries are passed the prefix
+    // (this._strippedPrefix) and the rest of the search string
+    // (this._searchString) separately. The user must specify a non-prefix part
+    // to trigger origin and URL autofill.
+    if (!this._searchString.length) {
+      return null;
+    }
+
     // If search string looks like an origin, try to autofill against origins.
     // Otherwise treat it as a possible URL.  When the string has only one slash
     // at the end, we still treat it as an URL.
@@ -718,7 +834,10 @@ class ProviderAutofill extends UrlbarProvider {
   }
 
   async _matchSearchEngineDomain(queryContext) {
-    if (!UrlbarPrefs.get("autoFill.searchEngines")) {
+    if (
+      !UrlbarPrefs.get("autoFill.searchEngines") ||
+      !this._searchString.length
+    ) {
       return null;
     }
 

@@ -14,8 +14,7 @@
 
 class nsPIDOMWindowInner;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class StorageAccessPermissionRequest final
     : public ContentPermissionRequestBase {
@@ -26,7 +25,7 @@ class StorageAccessPermissionRequest final
 
   // nsIContentPermissionRequest
   NS_IMETHOD Cancel(void) override;
-  NS_IMETHOD Allow(JS::HandleValue choices) override;
+  NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
 
   using AllowCallback = std::function<void()>;
   using CancelCallback = std::function<void()>;
@@ -57,7 +56,6 @@ class StorageAccessPermissionRequest final
   bool mCallbackCalled;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // StorageAccessPermissionRequest_h_

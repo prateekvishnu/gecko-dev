@@ -91,12 +91,11 @@
     box-sizing: border-box;
   }
 
-  /* There are other rules that set direction and cursor on scrollbar,
-   * expecting them to inherit into its children.  Explicitly inherit those,
-   * overriding the 'all: initial; direction: ltr;' declarations above.
+  /* There are other rules that set the cursor on the scrollbar, expecting them
+   * to inherit into its children. Explicitly inherit it, overriding the
+   * 'all: initial;' declaration above.
    */
   :is(scrollbarbutton, slider, thumb):where(:-moz-native-anonymous) {
-    direction: inherit;
     cursor: inherit;
   }
 }
@@ -177,6 +176,7 @@ resizer[dir="topright"] {
 /********** scrollbar **********/
 
 thumb {
+  -moz-box-flex: 1;
   display: -moz-box !important;
 }
 
@@ -222,11 +222,5 @@ scrollbar[value="hidden"] {
 @media (-moz-scrollbar-end-forward: 0) {
   scrollbarbutton[sbattr="scrollbar-down-bottom"] {
     display: none;
-  }
-}
-
-@media (-moz-scrollbar-thumb-proportional) {
-  thumb {
-    -moz-box-flex: 1;
   }
 }

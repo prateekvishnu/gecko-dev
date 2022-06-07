@@ -6,13 +6,14 @@
 
 const EXPORTED_SYMBOLS = ["windowManager"];
 
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
+const lazy = {};
 
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   AppInfo: "chrome://remote/content/marionette/appinfo.js",
   error: "chrome://remote/content/shared/webdriver/Errors.jsm",
   TabManager: "chrome://remote/content/shared/TabManager.jsm",
@@ -66,11 +67,13 @@ class WindowManager {
 
       // Otherwise check if the chrome window has a tab browser, and that it
       // contains a tab with the wanted window handle.
-      const tabBrowser = TabManager.getTabBrowser(win);
+      const tabBrowser = lazy.TabManager.getTabBrowser(win);
       if (tabBrowser && tabBrowser.tabs) {
         for (let i = 0; i < tabBrowser.tabs.length; ++i) {
-          let contentBrowser = TabManager.getBrowserForTab(tabBrowser.tabs[i]);
-          let contentWindowId = TabManager.getIdForBrowser(contentBrowser);
+          let contentBrowser = lazy.TabManager.getBrowserForTab(
+            tabBrowser.tabs[i]
+          );
+          let contentWindowId = lazy.TabManager.getIdForBrowser(contentBrowser);
 
           if (contentWindowId == handle) {
             return this.getWindowProperties(win, { tabIndex: i });
@@ -115,7 +118,7 @@ class WindowManager {
     return {
       win,
       id: this.getIdForWindow(win),
-      hasTabBrowser: !!TabManager.getTabBrowser(win),
+      hasTabBrowser: !!lazy.TabManager.getTabBrowser(win),
       tabIndex: options.tabIndex,
     };
   }
@@ -145,7 +148,7 @@ class WindowManager {
    *     A promise which is resolved when the current window has been closed.
    */
   async closeWindow(win) {
-    const destroyed = waitForObserverTopic("xul-window-destroyed", {
+    const destroyed = lazy.waitForObserverTopic("xul-window-destroyed", {
       checkFn: () => win && win.closed,
     });
 
@@ -164,8 +167,8 @@ class WindowManager {
    */
   async focusWindow(win) {
     if (Services.focus.activeWindow != win) {
-      let activated = new EventPromise(win, "activate");
-      let focused = new EventPromise(win, "focus", { capture: true });
+      let activated = new lazy.EventPromise(win, "activate");
+      let focused = new lazy.EventPromise(win, "focus", { capture: true });
 
       win.focus();
 
@@ -190,7 +193,7 @@ class WindowManager {
   async openBrowserWindow(options = {}) {
     let { focus = false, isPrivate = false, openerWindow = null } = options;
 
-    switch (AppInfo.name) {
+    switch (lazy.AppInfo.name) {
       case "Firefox":
         if (openerWindow === null) {
           // If no opener was provided, fallback to the topmost window.
@@ -198,7 +201,7 @@ class WindowManager {
         }
 
         if (!openerWindow) {
-          throw new error.UnsupportedOperationError(
+          throw new lazy.error.UnsupportedOperationError(
             `openWindow() could not find a valid opener window`
           );
         }
@@ -208,9 +211,9 @@ class WindowManager {
         // race condition when promptly focusing to the original window again.
         const win = openerWindow.OpenBrowserWindow({ private: isPrivate });
 
-        const activated = new EventPromise(win, "activate");
-        const focused = new EventPromise(win, "focus", { capture: true });
-        const startup = waitForObserverTopic(
+        const activated = new lazy.EventPromise(win, "activate");
+        const focused = new lazy.EventPromise(win, "focus", { capture: true });
+        const startup = lazy.waitForObserverTopic(
           "browser-delayed-startup-finished",
           {
             checkFn: subject => subject == win,
@@ -233,8 +236,8 @@ class WindowManager {
         return win;
 
       default:
-        throw new error.UnsupportedOperationError(
-          `openWindow() not supported in ${AppInfo.name}`
+        throw new lazy.error.UnsupportedOperationError(
+          `openWindow() not supported in ${lazy.AppInfo.name}`
         );
     }
   }
@@ -245,58 +248,32 @@ class WindowManager {
    * @return {Promise<WindowProxy>}
    *     A promise that resolved to the application window.
    */
-  waitForInitialApplicationWindow() {
-    return new TimedPromise(
-      resolve => {
-        const waitForWindow = () => {
-          let windowTypes;
-          if (AppInfo.isThunderbird) {
-            windowTypes = ["mail:3pane"];
-          } else {
-            // We assume that an app either has GeckoView windows, or
-            // Firefox/Fennec windows, but not both.
-            windowTypes = ["navigator:browser", "navigator:geckoview"];
-          }
+  waitForInitialApplicationWindowLoaded() {
+    return new lazy.TimedPromise(
+      async resolve => {
+        const windowReadyTopic = lazy.AppInfo.isThunderbird
+          ? "mail-delayed-startup-finished"
+          : "browser-delayed-startup-finished";
 
-          let win;
-          for (const windowType of windowTypes) {
-            win = Services.wm.getMostRecentWindow(windowType);
-            if (win) {
-              break;
-            }
-          }
+        // This call includes a fallback to "mail3:pane" as well.
+        const win = Services.wm.getMostRecentBrowserWindow();
 
-          if (!win) {
-            // if the window isn't even created, just poll wait for it
-            let checkTimer = Cc["@mozilla.org/timer;1"].createInstance(
-              Ci.nsITimer
-            );
-            checkTimer.initWithCallback(
-              waitForWindow,
-              100,
-              Ci.nsITimer.TYPE_ONE_SHOT
-            );
-          } else if (win.document.readyState != "complete") {
-            // otherwise, wait for it to be fully loaded before proceeding
-            let listener = ev => {
-              // ensure that we proceed, on the top level document load event
-              // (not an iframe one...)
-              if (ev.target != win.document) {
-                return;
-              }
-              win.removeEventListener("load", listener);
-              waitForWindow();
-            };
-            win.addEventListener("load", listener, true);
-          } else {
-            resolve(win);
-          }
-        };
+        const windowLoaded = lazy.waitForObserverTopic(windowReadyTopic, {
+          checkFn: subject => (win !== null ? subject == win : true),
+        });
 
-        waitForWindow();
+        // The current window has already been finished loading.
+        if (win && win.document.readyState == "complete") {
+          resolve(win);
+          return;
+        }
+
+        // Wait for the next browser/mail window to open and finished loading.
+        const { subject } = await windowLoaded;
+        resolve(subject);
       },
       {
-        errorMessage: "No applicable application windows found",
+        errorMessage: "No applicable application window found",
       }
     );
   }

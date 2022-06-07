@@ -121,8 +121,6 @@
 using namespace js;
 using namespace js::selfhosted;
 
-using JS::AutoCheckCannotGC;
-using JS::AutoStableStringChars;
 using JS::CompileOptions;
 using mozilla::Maybe;
 
@@ -1147,6 +1145,21 @@ static bool intrinsic_GetTypedArrayKind(JSContext* cx, unsigned argc,
   return true;
 }
 
+#ifdef ENABLE_CHANGE_ARRAY_BY_COPY
+static bool intrinsic_GetTypedArrayConstructorFromKind(JSContext* cx,
+                                                       unsigned argc,
+                                                       Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args[0].isInt32());
+
+  int32_t arrayKind = args[0].toInt32();
+  Scalar::Type type = static_cast<Scalar::Type>(arrayKind);
+  args.rval().setObject(*js::GetTypedArrayConstructorFromKind(cx, type));
+  return true;
+}
+#endif
+
 static bool intrinsic_IsTypedArrayConstructor(JSContext* cx, unsigned argc,
                                               Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -1963,7 +1976,9 @@ static bool intrinsic_ModuleTopLevelCapabilityResolve(JSContext* cx,
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 1);
   RootedModuleObject module(cx, &args[0].toObject().as<ModuleObject>());
-  ModuleObject::topLevelCapabilityResolve(cx, module);
+  if (!ModuleObject::topLevelCapabilityResolve(cx, module)) {
+    return false;
+  }
   args.rval().setUndefined();
   return true;
 }
@@ -1974,7 +1989,9 @@ static bool intrinsic_ModuleTopLevelCapabilityReject(JSContext* cx,
   MOZ_ASSERT(args.length() == 2);
   RootedModuleObject module(cx, &args[0].toObject().as<ModuleObject>());
   HandleValue error = args[1];
-  ModuleObject::topLevelCapabilityReject(cx, module, error);
+  if (!ModuleObject::topLevelCapabilityReject(cx, module, error)) {
+    return false;
+  }
   args.rval().setUndefined();
   return true;
 }
@@ -2208,6 +2225,11 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("GetOwnPropertyDescriptorToArray", GetOwnPropertyDescriptorToArray, 2,
           0),
     JS_FN("GetStringDataProperty", intrinsic_GetStringDataProperty, 2, 0),
+#ifdef ENABLE_CHANGE_ARRAY_BY_COPY
+    JS_FN("GetTypedArrayConstructorFromKind",
+          intrinsic_GetTypedArrayConstructorFromKind, 1, 0),
+#endif
+
     JS_FN("GetTypedArrayKind", intrinsic_GetTypedArrayKind, 1, 0),
     JS_INLINABLE_FN("GuardToArrayBuffer",
                     intrinsic_GuardToBuiltin<ArrayBufferObject>, 1, 0,
@@ -2495,6 +2517,7 @@ static const JSFunctionSpec intrinsic_functions[] = {
 #endif  // JS_HAS_INTL_API
 
     // Standard builtins used by self-hosting.
+    JS_FN("new_List", intrinsic_newList, 0, 0),
     JS_INLINABLE_FN("std_Array", array_construct, 1, 0, Array),
     JS_FN("std_Array_includes", array_includes, 1, 0),
     JS_FN("std_Array_indexOf", array_indexOf, 1, 0),

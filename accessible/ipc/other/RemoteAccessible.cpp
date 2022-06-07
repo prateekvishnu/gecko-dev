@@ -177,10 +177,6 @@ int32_t RemoteAccessible::CaretOffset() const {
   return offset;
 }
 
-void RemoteAccessible::SetCaretOffset(int32_t aOffset) {
-  Unused << mDoc->SendSetCaretOffset(mID, aOffset);
-}
-
 uint32_t RemoteAccessible::CharacterCount() const {
   if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
     return RemoteAccessibleBase<RemoteAccessible>::CharacterCount();
@@ -286,6 +282,12 @@ already_AddRefed<AccAttributes> RemoteAccessible::DefaultTextAttributes() {
 LayoutDeviceIntRect RemoteAccessible::TextBounds(int32_t aStartOffset,
                                                  int32_t aEndOffset,
                                                  uint32_t aCoordType) {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    MOZ_ASSERT(IsHyperText(), "is not hypertext?");
+    return RemoteAccessibleBase<RemoteAccessible>::TextBounds(
+        aStartOffset, aEndOffset, aCoordType);
+  }
+
   LayoutDeviceIntRect rect;
   Unused << mDoc->SendTextBounds(mID, aStartOffset, aEndOffset, aCoordType,
                                  &rect);
@@ -294,6 +296,12 @@ LayoutDeviceIntRect RemoteAccessible::TextBounds(int32_t aStartOffset,
 
 LayoutDeviceIntRect RemoteAccessible::CharBounds(int32_t aOffset,
                                                  uint32_t aCoordType) {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    MOZ_ASSERT(IsHyperText(), "is not hypertext?");
+    return RemoteAccessibleBase<RemoteAccessible>::CharBounds(aOffset,
+                                                              aCoordType);
+  }
+
   LayoutDeviceIntRect rect;
   Unused << mDoc->SendCharBounds(mID, aOffset, aCoordType, &rect);
   return rect;
@@ -993,10 +1001,6 @@ void RemoteAccessible::DocType(nsString& aType) {
 
 void RemoteAccessible::Title(nsString& aTitle) {
   Unused << mDoc->SendTitle(mID, &aTitle);
-}
-
-void RemoteAccessible::URL(nsString& aURL) {
-  Unused << mDoc->SendURL(mID, &aURL);
 }
 
 void RemoteAccessible::MimeType(nsString aMime) {

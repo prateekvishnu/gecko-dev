@@ -70,7 +70,6 @@ void Announce(const nsString& aAnnouncement, uint16_t aPriority);
 
 int32_t CaretLineNumber();
 virtual int32_t CaretOffset() const override;
-void SetCaretOffset(int32_t aOffset);
 
 virtual void TextSubstring(int32_t aStartOffset, int32_t aEndOfset,
                            nsAString& aText) const override;
@@ -90,13 +89,6 @@ virtual void TextBeforeOffset(int32_t aOffset,
                               nsAString& aText) override;
 
 char16_t CharAt(int32_t aOffset);
-
-LayoutDeviceIntRect TextBounds(
-    int32_t aStartOffset, int32_t aEndOffset,
-    uint32_t aCoordType =
-        nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE);
-
-LayoutDeviceIntRect CharBounds(int32_t aOffset, uint32_t aCoordType);
 
 int32_t OffsetAtPoint(int32_t aX, int32_t aY, uint32_t aCoordType);
 
@@ -215,7 +207,6 @@ nsIntRect BoundsInCSSPixels();
 void Language(nsString& aLocale);
 void DocType(nsString& aType);
 void Title(nsString& aTitle);
-void URL(nsString& aURL);
 void MimeType(nsString aMime);
 void URLDocTypeMimeType(nsString& aURL, nsString& aDocType,
                         nsString& aMimeType);

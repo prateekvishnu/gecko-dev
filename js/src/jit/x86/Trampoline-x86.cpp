@@ -164,13 +164,12 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   masm.push(esi);
 
   CodeLabel returnLabel;
-  CodeLabel oomReturnLabel;
+  Label oomReturnLabel;
   {
     // Handle Interpreter -> Baseline OSR.
     AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
-    regs.take(JSReturnOperand);
-    regs.takeUnchecked(OsrFrameReg);
-    regs.take(ebp);
+    MOZ_ASSERT(!regs.has(ebp));
+    regs.take(OsrFrameReg);
     regs.take(ReturnReg);
 
     Register scratch = regs.takeAny();
@@ -188,15 +187,16 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.mov(&returnLabel, scratch);
     masm.push(scratch);
 
-    // Push previous frame pointer.
+    // Frame prologue.
     masm.push(ebp);
+    masm.mov(esp, ebp);
 
     // Reserve frame.
-    Register framePtr = ebp;
     masm.subPtr(Imm32(BaselineFrame::Size()), esp);
 
-    masm.touchFrameValues(numStackValues, scratch, framePtr);
-    masm.mov(esp, framePtr);
+    Register framePtrScratch = regs.takeAny();
+    masm.touchFrameValues(numStackValues, scratch, framePtrScratch);
+    masm.mov(esp, framePtrScratch);
 
     // Reserve space for locals and stack values.
     masm.mov(numStackValues, scratch);
@@ -215,26 +215,23 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.loadJSContext(scratch);
     masm.enterFakeExitFrame(scratch, scratch, ExitFrameType::Bare);
 
-    masm.push(framePtr);
     masm.push(jitcode);
 
     using Fn = bool (*)(BaselineFrame * frame, InterpreterFrame * interpFrame,
                         uint32_t numStackValues);
     masm.setupUnalignedABICall(scratch);
-    masm.passABIArg(framePtr);     // BaselineFrame
-    masm.passABIArg(OsrFrameReg);  // InterpreterFrame
+    masm.passABIArg(framePtrScratch);  // BaselineFrame
+    masm.passABIArg(OsrFrameReg);      // InterpreterFrame
     masm.passABIArg(numStackValues);
     masm.callWithABI<Fn, jit::InitBaselineFrameForOsr>(
         MoveOp::GENERAL, CheckUnsafeCallWithABI::DontCheckHasExitFrame);
 
     masm.pop(jitcode);
-    masm.pop(framePtr);
 
     MOZ_ASSERT(jitcode != ReturnReg);
 
     Label error;
     masm.addPtr(Imm32(ExitFrameLayout::SizeWithFooter()), esp);
-    masm.addPtr(Imm32(BaselineFrame::Size()), framePtr);
     masm.branchIfFalseBool(ReturnReg, &error);
 
     // If OSR-ing, then emit instrumentation for setting lastProfilerFrame
@@ -246,21 +243,20 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
           cx->runtime()->geckoProfiler().addressOfEnabled());
       masm.branch32(Assembler::Equal, addressOfEnabled, Imm32(0),
                     &skipProfilingInstrumentation);
-      masm.lea(Operand(framePtr, sizeof(void*)), realFramePtr);
+      masm.lea(Operand(ebp, sizeof(void*)), realFramePtr);
       masm.profilerEnterFrame(realFramePtr, scratch);
       masm.bind(&skipProfilingInstrumentation);
     }
 
     masm.jump(jitcode);
 
-    // OOM: load error value, discard return address and previous frame
-    // pointer and return.
+    // OOM: frame epilogue, load error value, discard return address and return.
     masm.bind(&error);
-    masm.mov(framePtr, esp);
-    masm.addPtr(Imm32(2 * sizeof(uintptr_t)), esp);
+    masm.mov(ebp, esp);
+    masm.pop(ebp);
+    masm.addPtr(Imm32(sizeof(uintptr_t)), esp);  // Return address.
     masm.moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
-    masm.mov(&oomReturnLabel, scratch);
-    masm.jump(scratch);
+    masm.jump(&oomReturnLabel);
 
     masm.bind(&notOsr);
     masm.loadPtr(Address(ebp, ARG_SCOPECHAIN), R1.scratchReg());
@@ -281,7 +277,6 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
     masm.bind(&returnLabel);
     masm.addCodeLabel(returnLabel);
     masm.bind(&oomReturnLabel);
-    masm.addCodeLabel(oomReturnLabel);
   }
 
   // Pop arguments off the stack.
@@ -414,12 +409,26 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
   // Caller:
   // [arg2] [arg1] [this] [ [argc] [callee] [descr] [raddr] ] <- esp
 
+  // Frame prologue. Push extra padding to ensure proper stack alignment. See
+  // comments and assertions below.
+  //
+  // NOTE: if this changes, fix the Baseline bailout code too!
+  // See BaselineStackBuilder::calculatePrevFramePtr and
+  // BaselineStackBuilder::buildRectifierFrame (in BaselineBailouts.cpp).
+  masm.push(FramePointer);
+  masm.movl(esp, FramePointer);  // Save %esp.
+  masm.push(FramePointer);       // Padding.
+
   // Load argc.
-  masm.loadPtr(Address(esp, RectifierFrameLayout::offsetOfNumActualArgs()),
-               esi);
+  constexpr size_t FrameOffset = 2 * sizeof(void*);  // Frame pointer + padding.
+  constexpr size_t NargsOffset =
+      FrameOffset + RectifierFrameLayout::offsetOfNumActualArgs();
+  masm.loadPtr(Address(esp, NargsOffset), esi);
 
   // Load the number of |undefined|s to push into %ecx.
-  masm.loadPtr(Address(esp, RectifierFrameLayout::offsetOfCalleeToken()), eax);
+  constexpr size_t TokenOffset =
+      FrameOffset + RectifierFrameLayout::offsetOfCalleeToken();
+  masm.loadPtr(Address(esp, TokenOffset), eax);
   masm.mov(eax, ecx);
   masm.andl(Imm32(CalleeTokenMask), ecx);
   masm.loadFunctionArgCount(ecx, ecx);
@@ -458,15 +467,6 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
 
   masm.moveValue(UndefinedValue(), ValueOperand(ebx, edi));
 
-  // NOTE: The fact that x86 ArgumentsRectifier saves the FramePointer
-  // is relied upon by the baseline bailout code.  If this changes,
-  // fix that code!  See the |#if defined(JS_CODEGEN_X86) portions of
-  // BaselineStackBuilder::calculatePrevFramePtr and
-  // BaselineStackBuilder::buildRectifierFrame (in BaselineBailouts.cpp).
-  masm.push(FramePointer);
-  masm.movl(esp, FramePointer);  // Save %esp.
-  masm.push(FramePointer /* padding */);
-
   // Caller:
   // [arg2] [arg1] [this] [ [argc] [callee] [descr] [raddr] ]
   // '-- #esi ---'
@@ -489,7 +489,7 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
   }
 
   // Get the topmost argument. We did a push of %ebp earlier, so be sure to
-  // account for this in the offset
+  // account for this in the offset.
   BaseIndex b(FramePointer, esi, TimesEight,
               sizeof(RectifierFrameLayout) + sizeof(void*));
   masm.lea(Operand(b), ecx);
@@ -577,27 +577,22 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
   masm.ret();
 }
 
-static void PushBailoutFrame(MacroAssembler& masm, uint32_t frameClass,
-                             Register spArg) {
+static void PushBailoutFrame(MacroAssembler& masm, Register spArg) {
   // Push registers such that we can access them from [base + code].
   DumpAllRegs(masm);
-
-  // Push the bailout table number.
-  masm.push(Imm32(frameClass));
 
   // The current stack pointer is the first argument to jit::Bailout.
   masm.movl(esp, spArg);
 }
 
-static void GenerateBailoutThunk(MacroAssembler& masm, uint32_t frameClass,
-                                 Label* bailoutTail) {
-  PushBailoutFrame(masm, frameClass, eax);
+static void GenerateBailoutThunk(MacroAssembler& masm, Label* bailoutTail) {
+  PushBailoutFrame(masm, eax);
 
-  // Make space for Bailout's baioutInfo outparam.
+  // Make space for Bailout's bailoutInfo outparam.
   masm.reserveStack(sizeof(void*));
   masm.movl(esp, ebx);
 
-  // Call the bailout function. This will correct the size of the bailout.
+  // Call the bailout function.
   using Fn = bool (*)(BailoutStack * sp, BaselineBailoutInfo * *info);
   masm.setupUnalignedABICall(ecx);
   masm.passABIArg(eax);
@@ -605,52 +600,22 @@ static void GenerateBailoutThunk(MacroAssembler& masm, uint32_t frameClass,
   masm.callWithABI<Fn, Bailout>(MoveOp::GENERAL,
                                 CheckUnsafeCallWithABI::DontCheckOther);
 
-  masm.pop(ecx);  // Get bailoutInfo outparam.
+  masm.pop(ecx);  // Get the bailoutInfo outparam.
 
-  // Common size of stuff we've pushed.
-  static const uint32_t BailoutDataSize = 0 + sizeof(void*)  // frameClass
-                                          + sizeof(RegisterDump);
-
+  // Stack is:
+  //    [frame]
+  //    snapshotOffset
+  //    frameSize
+  //    [bailoutFrame]
+  //
   // Remove both the bailout frame and the topmost Ion frame's stack.
-  if (frameClass == NO_FRAME_SIZE_CLASS_ID) {
-    // We want the frameSize. Stack is:
-    //    ... frame ...
-    //    snapshotOffset
-    //    frameSize
-    //    ... bailoutFrame ...
-    masm.addl(Imm32(BailoutDataSize), esp);
-    masm.pop(ebx);
-    masm.addl(Imm32(sizeof(uint32_t)), esp);
-    masm.addl(ebx, esp);
-  } else {
-    // Stack is:
-    //    ... frame ...
-    //    bailoutId
-    //    ... bailoutFrame ...
-    uint32_t frameSize = FrameSizeClass::FromClass(frameClass).frameSize();
-    masm.addl(Imm32(BailoutDataSize + sizeof(void*) + frameSize), esp);
-  }
+  static constexpr uint32_t BailoutDataSize = sizeof(RegisterDump);
+  masm.addl(Imm32(BailoutDataSize), esp);
+  masm.pop(ebx);  // frameSize
+  masm.lea(Operand(esp, ebx, TimesOne, sizeof(void*)), esp);
 
   // Jump to shared bailout tail. The BailoutInfo pointer has to be in ecx.
   masm.jmp(bailoutTail);
-}
-
-JitRuntime::BailoutTable JitRuntime::generateBailoutTable(MacroAssembler& masm,
-                                                          Label* bailoutTail,
-                                                          uint32_t frameClass) {
-  AutoCreatedBy acb(masm, "JitRuntime::generateBailoutTable");
-
-  uint32_t offset = startTrampolineCode(masm);
-
-  Label bailout;
-  for (size_t i = 0; i < BAILOUT_TABLE_SIZE; i++) {
-    masm.call(&bailout);
-  }
-  masm.bind(&bailout);
-
-  GenerateBailoutThunk(masm, frameClass, bailoutTail);
-
-  return BailoutTable(offset, masm.currentOffset() - offset);
 }
 
 void JitRuntime::generateBailoutHandler(MacroAssembler& masm,
@@ -659,7 +624,7 @@ void JitRuntime::generateBailoutHandler(MacroAssembler& masm,
 
   bailoutHandlerOffset_ = startTrampolineCode(masm);
 
-  GenerateBailoutThunk(masm, NO_FRAME_SIZE_CLASS_ID, bailoutTail);
+  GenerateBailoutThunk(masm, bailoutTail);
 }
 
 bool JitRuntime::generateVMWrapper(JSContext* cx, MacroAssembler& masm,

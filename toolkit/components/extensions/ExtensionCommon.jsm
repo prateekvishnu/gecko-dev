@@ -19,11 +19,15 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
+const lazy = {};
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ConsoleAPI: "resource://gre/modules/Console.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   Schemas: "resource://gre/modules/Schemas.jsm",
@@ -31,7 +35,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 });
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "styleSheetService",
   "@mozilla.org/content/style-sheet-service;1",
   "nsIStyleSheetService"
@@ -51,13 +55,15 @@ var {
 } = ExtensionUtils;
 
 function getConsole() {
-  return new ConsoleAPI({
+  return new lazy.ConsoleAPI({
     maxLogLevelPref: "extensions.webextensions.log.level",
     prefix: "WebExtensions",
   });
 }
 
-XPCOMUtils.defineLazyGetter(this, "console", getConsole);
+XPCOMUtils.defineLazyGetter(lazy, "console", getConsole);
+
+const BACKGROUND_SCRIPTS_VIEW_TYPES = ["background", "background_worker"];
 
 var ExtensionCommon;
 
@@ -182,10 +188,6 @@ function makeWidgetId(id) {
   id = id.toLowerCase();
   // FIXME: This allows for collisions.
   return id.replace(/[^a-z0-9_-]/g, "_");
-}
-
-function isDeadOrRemote(obj) {
-  return Cu.isDeadWrapper(obj) || Cu.isRemoteProxy(obj);
 }
 
 /**
@@ -429,77 +431,6 @@ class ExtensionAPIPersistent extends ExtensionAPI {
 }
 
 /**
- * A wrapper around a window that returns the window iff the inner window
- * matches the inner window at the construction of this wrapper.
- *
- * This wrapper should not be used after the inner window is destroyed.
- **/
-class InnerWindowReference {
-  constructor(contentWindow, innerWindowID) {
-    this.contentWindow = contentWindow;
-    this.innerWindowID = innerWindowID;
-    this.needWindowIDCheck = false;
-
-    contentWindow.addEventListener(
-      "pagehide",
-      this,
-      { mozSystemGroup: true },
-      false
-    );
-    contentWindow.addEventListener(
-      "pageshow",
-      this,
-      { mozSystemGroup: true },
-      false
-    );
-  }
-
-  get() {
-    // If the pagehide event has fired, the inner window ID needs to be checked,
-    // in case the window ref is dereferenced in a pageshow listener (before our
-    // pageshow listener was dispatched) or during the unload event.
-    if (
-      !this.needWindowIDCheck ||
-      (!isDeadOrRemote(this.contentWindow) &&
-        getInnerWindowID(this.contentWindow) === this.innerWindowID)
-    ) {
-      return this.contentWindow;
-    }
-    return null;
-  }
-
-  invalidate() {
-    // If invalidate() is called while the inner window is in the bfcache, then
-    // we are unable to remove the event listener, and handleEvent will be
-    // called once more if the page is revived from the bfcache.
-    if (this.contentWindow && !isDeadOrRemote(this.contentWindow)) {
-      this.contentWindow.removeEventListener("pagehide", this, {
-        mozSystemGroup: true,
-      });
-      this.contentWindow.removeEventListener("pageshow", this, {
-        mozSystemGroup: true,
-      });
-    }
-    this.contentWindow = null;
-    this.needWindowIDCheck = false;
-  }
-
-  handleEvent(event) {
-    if (this.contentWindow) {
-      this.needWindowIDCheck = event.type === "pagehide";
-    } else {
-      // Remove listener when restoring from the bfcache - see invalidate().
-      event.currentTarget.removeEventListener("pagehide", this, {
-        mozSystemGroup: true,
-      });
-      event.currentTarget.removeEventListener("pageshow", this, {
-        mozSystemGroup: true,
-      });
-    }
-  }
-}
-
-/**
  * This class contains the information we have about an individual
  * extension.  It is never instantiated directly, instead subclasses
  * for each type of process extend this class and add members that are
@@ -545,6 +476,10 @@ class BaseContext {
 
   get privateBrowsingAllowed() {
     return this.extension.privateBrowsingAllowed;
+  }
+
+  get isBackgroundContext() {
+    return BACKGROUND_SCRIPTS_VIEW_TYPES.includes(this.viewType);
   }
 
   /**
@@ -600,30 +535,29 @@ class BaseContext {
     this.messageManager = contentWindow.docShell.messageManager;
 
     if (this.incognito == null) {
-      this.incognito = PrivateBrowsingUtils.isContentWindowPrivate(
+      this.incognito = lazy.PrivateBrowsingUtils.isContentWindowPrivate(
         contentWindow
       );
     }
 
-    let windowRef = new InnerWindowReference(contentWindow, this.innerWindowID);
+    let wgc = contentWindow.windowGlobalChild;
     Object.defineProperty(this, "active", {
       configurable: true,
       enumerable: true,
-      get: () => windowRef.get() !== null,
+      get: () => wgc.isCurrentGlobal && !wgc.windowContext.isInBFCache,
     });
     Object.defineProperty(this, "contentWindow", {
       configurable: true,
       enumerable: true,
-      get: () => windowRef.get(),
+      get: () => (this.active ? wgc.browsingContext.window : null),
     });
     this.callOnClose({
       close: () => {
         // Allow other "close" handlers to use these properties, until the next tick.
         Promise.resolve().then(() => {
-          windowRef.invalidate();
-          windowRef = null;
           Object.defineProperty(this, "contentWindow", { value: null });
           Object.defineProperty(this, "active", { value: false });
+          wgc = null;
         });
       },
     });
@@ -1096,8 +1030,8 @@ class LocalAPIImplementation extends SchemaAPIInterface {
   }
 
   revoke() {
-    if (this.pathObj[this.name][Schemas.REVOKE]) {
-      this.pathObj[this.name][Schemas.REVOKE]();
+    if (this.pathObj[this.name][lazy.Schemas.REVOKE]) {
+      this.pathObj[this.name][lazy.Schemas.REVOKE]();
     }
 
     this.pathObj = null;
@@ -1266,7 +1200,7 @@ class CanOfAPIs {
     }
 
     let { extension } = this.context;
-    if (!Schemas.checkPermissions(name, extension)) {
+    if (!lazy.Schemas.checkPermissions(name, extension)) {
       return;
     }
 
@@ -1460,7 +1394,7 @@ class SchemaAPIManager extends EventEmitter {
   }
 
   async loadModuleJSON(urls) {
-    let promises = urls.map(url => fetch(url).then(resp => resp.json()));
+    let promises = urls.map(url => lazy.fetch(url).then(resp => resp.json()));
 
     return this.initModuleJSON(await Promise.all(promises));
   }
@@ -1769,7 +1703,7 @@ class SchemaAPIManager extends EventEmitter {
       return false;
     }
 
-    if (!Schemas.checkPermissions(module.namespaceName, extension)) {
+    if (!lazy.Schemas.checkPermissions(module.namespaceName, extension)) {
       return false;
     }
 
@@ -1875,7 +1809,7 @@ class LazyAPIManager extends SchemaAPIManager {
 }
 
 defineLazyGetter(LazyAPIManager.prototype, "schema", function() {
-  let root = new SchemaRoot(Schemas.rootSchema, this.schemaURLs);
+  let root = new lazy.SchemaRoot(lazy.Schemas.rootSchema, this.schemaURLs);
   root.parseSchemas();
   return root;
 });
@@ -1940,14 +1874,14 @@ defineLazyGetter(MultiAPIManager.prototype, "schema", function() {
 
   // All API manager schema roots should derive from the global schema root,
   // so it doesn't need its own entry.
-  if (bases[bases.length - 1] === Schemas) {
+  if (bases[bases.length - 1] === lazy.Schemas) {
     bases.pop();
   }
 
   if (bases.length === 1) {
     bases = bases[0];
   }
-  return new SchemaRoot(bases, new Map());
+  return new lazy.SchemaRoot(bases, new Map());
 });
 
 function LocaleData(data) {
@@ -2718,7 +2652,7 @@ class EventManager {
       removeListener: (...args) => this.removeListener(...args),
       hasListener: (...args) => this.hasListener(...args),
       setUserInput: this.inputHandling,
-      [Schemas.REVOKE]: () => this.revoke(),
+      [lazy.Schemas.REVOKE]: () => this.revoke(),
     };
   }
 }
@@ -2751,8 +2685,60 @@ function ignoreEvent(context, name) {
 
 const stylesheetMap = new DefaultMap(url => {
   let uri = Services.io.newURI(url);
-  return styleSheetService.preloadSheet(uri, styleSheetService.AGENT_SHEET);
+  return lazy.styleSheetService.preloadSheet(
+    uri,
+    lazy.styleSheetService.AGENT_SHEET
+  );
 });
+
+/**
+ * Updates the in-memory representation of extension host permissions, i.e.
+ * policy.allowedOrigins.
+ *
+ * @param {WebExtensionPolicy} policy
+ *        A policy. All MatchPattern instances in policy.allowedOrigins are
+ *        expected to have been constructed with ignorePath: true.
+ * @param {string[]} origins
+ *        A list of already-normalized origins, equivalent to using the
+ *        MatchPattern constructor with ignorePath: true.
+ * @param {boolean} isAdd
+ *        Whether to add instead of removing the host permissions.
+ */
+function updateAllowedOrigins(policy, origins, isAdd) {
+  if (!origins.length) {
+    // Nothing to modify.
+    return;
+  }
+  let patternMap = new Map();
+  for (let pattern of policy.allowedOrigins.patterns) {
+    patternMap.set(pattern.pattern, pattern);
+  }
+  if (!isAdd) {
+    for (let origin of origins) {
+      patternMap.delete(origin);
+    }
+  } else {
+    // In the parent process, policy.extension.restrictSchemes is available.
+    // In the content process, we need to check the mozillaAddons permission,
+    // which is only available if approved by the parent.
+    const restrictSchemes =
+      policy.extension?.restrictSchemes ??
+      policy.hasPermission("mozillaAddons");
+    for (let origin of origins) {
+      if (patternMap.has(origin)) {
+        continue;
+      }
+      patternMap.set(
+        origin,
+        new MatchPattern(origin, { restrictSchemes, ignorePath: true })
+      );
+    }
+  }
+  // patternMap contains only MatchPattern instances, so we don't need to set
+  // the options parameter (with restrictSchemes, etc.) since that is only used
+  // if the input is a string.
+  policy.allowedOrigins = new MatchPatternSet(Array.from(patternMap.values()));
+}
 
 ExtensionCommon = {
   BaseContext,
@@ -2775,6 +2761,7 @@ ExtensionCommon = {
   normalizeTime,
   runSafeSyncWithoutClone,
   stylesheetMap,
+  updateAllowedOrigins,
   withHandlingUserInput,
 
   MultiAPIManager,

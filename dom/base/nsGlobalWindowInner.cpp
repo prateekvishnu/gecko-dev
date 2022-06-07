@@ -7,7 +7,6 @@
 #include "nsGlobalWindowInner.h"
 
 #include <inttypes.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +17,6 @@
 #include "AudioChannelService.h"
 #include "AutoplayPolicy.h"
 #include "Crypto.h"
-#include "GeckoProfiler.h"
 #include "MainThreadUtils.h"
 #include "Navigator.h"
 #include "PaintWorkletImpl.h"
@@ -72,8 +70,6 @@
 #include "mozilla/ProcessHangMonitor.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Result.h"
-#include "mozilla/ScopeExit.h"
-#include "mozilla/ScrollOrigin.h"
 #include "mozilla/ScrollTypes.h"
 #include "mozilla/Components.h"
 #include "mozilla/SizeOfState.h"
@@ -151,7 +147,6 @@
 #include "mozilla/dom/PopupBlocker.h"
 #include "mozilla/dom/PrimitiveConversions.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/dom/ProxyHandlerUtils.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/WebTaskSchedulerMainThread.h"
 #include "mozilla/dom/ScriptLoader.h"
@@ -167,7 +162,6 @@
 #include "mozilla/dom/StorageNotifierService.h"
 #include "mozilla/dom/StorageUtils.h"
 #include "mozilla/dom/TabMessageTypes.h"
-#include "mozilla/dom/TestUtils.h"
 #include "mozilla/dom/Timeout.h"
 #include "mozilla/dom/TimeoutHandler.h"
 #include "mozilla/dom/TimeoutManager.h"
@@ -273,7 +267,6 @@
 #include "nsIThread.h"
 #include "nsITimedChannel.h"
 #include "nsIURI.h"
-#include "nsIVariant.h"
 #include "nsIWeakReference.h"
 #include "nsIWebBrowserChrome.h"
 #include "nsIWebNavigation.h"
@@ -292,7 +285,6 @@
 #include "nsPoint.h"
 #include "nsPresContext.h"
 #include "nsQueryObject.h"
-#include "nsRefPtrHashtable.h"
 #include "nsSandboxFlags.h"
 #include "nsScreen.h"
 #include "nsServiceManagerUtils.h"
@@ -317,11 +309,9 @@
 #include "xpcpublic.h"
 
 #include "nsIDOMXULControlElement.h"
-#include "nsMenuPopupFrame.h"
 
 #ifdef NS_PRINTING
 #  include "nsIPrintSettings.h"
-#  include "nsIPrintSettingsService.h"
 #endif
 
 #ifdef MOZ_WEBSPEECH
@@ -569,20 +559,11 @@ class IdleRequestExecutor final : public nsIRunnable,
   Maybe<int32_t> mDelayedExecutorHandle;
 };
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(IdleRequestExecutor)
+NS_IMPL_CYCLE_COLLECTION(IdleRequestExecutor, mWindow,
+                         mDelayedExecutorDispatcher)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(IdleRequestExecutor)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(IdleRequestExecutor)
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(IdleRequestExecutor)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mWindow)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mDelayedExecutorDispatcher)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(IdleRequestExecutor)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mWindow)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDelayedExecutorDispatcher)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(IdleRequestExecutor)
   NS_INTERFACE_MAP_ENTRY(nsIRunnable)
@@ -3617,10 +3598,6 @@ double nsGlobalWindowInner::GetDesktopToDeviceScale(ErrorResult& aError) {
   return presContext->DeviceContext()->GetDesktopToDeviceScale().scale;
 }
 
-uint64_t nsGlobalWindowInner::GetMozPaintCount(ErrorResult& aError) {
-  FORWARD_TO_OUTER_OR_THROW(GetMozPaintCountOuter, (), aError, 0);
-}
-
 int32_t nsGlobalWindowInner::RequestAnimationFrame(
     FrameRequestCallback& aCallback, ErrorResult& aError) {
   if (!mDoc) {
@@ -3866,12 +3843,14 @@ void nsGlobalWindowInner::Print(ErrorResult& aError) {
 Nullable<WindowProxyHolder> nsGlobalWindowInner::PrintPreview(
     nsIPrintSettings* aSettings, nsIWebProgressListener* aListener,
     nsIDocShell* aDocShellToCloneInto, ErrorResult& aError) {
-  FORWARD_TO_OUTER_OR_THROW(Print,
-                            (aSettings, aListener, aDocShellToCloneInto,
-                             nsGlobalWindowOuter::IsPreview::Yes,
-                             nsGlobalWindowOuter::IsForWindowDotPrint::No,
-                             /* aPrintPreviewCallback = */ nullptr, aError),
-                            aError, nullptr);
+  FORWARD_TO_OUTER_OR_THROW(
+      Print,
+      (aSettings,
+       /* aRemotePrintJob = */ nullptr, aListener, aDocShellToCloneInto,
+       nsGlobalWindowOuter::IsPreview::Yes,
+       nsGlobalWindowOuter::IsForWindowDotPrint::No,
+       /* aPrintPreviewCallback = */ nullptr, aError),
+      aError, nullptr);
 }
 
 void nsGlobalWindowInner::MoveTo(int32_t aXPos, int32_t aYPos,
@@ -4573,9 +4552,9 @@ void nsGlobalWindowInner::SetReadyForFocus() {
   bool oldNeedsFocus = mNeedsFocus;
   mNeedsFocus = false;
 
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  if (fm) {
-    fm->WindowShown(GetOuterWindow(), oldNeedsFocus);
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+    nsCOMPtr<nsPIDOMWindowOuter> outerWindow = GetOuterWindow();
+    fm->WindowShown(outerWindow, oldNeedsFocus);
   }
 }
 
@@ -4584,9 +4563,9 @@ void nsGlobalWindowInner::PageHidden() {
   // no longer valid. Use the persisted field to determine if the document
   // is being destroyed.
 
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  if (fm) {
-    fm->WindowHidden(GetOuterWindow(), nsFocusManager::GenerateFocusActionId());
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+    nsCOMPtr<nsPIDOMWindowOuter> outerWindow = GetOuterWindow();
+    fm->WindowHidden(outerWindow, nsFocusManager::GenerateFocusActionId());
   }
 
   mNeedsFocus = true;

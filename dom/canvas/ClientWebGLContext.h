@@ -200,6 +200,8 @@ struct NotLostData final {
              UnderlyingValue(WebGLExtensionID::Max)>
       extensions;
 
+  RefPtr<layers::CanvasRenderer> mCanvasRenderer;
+
   explicit NotLostData(ClientWebGLContext& context);
   ~NotLostData();
 };
@@ -1113,7 +1115,7 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
                                 JS::MutableHandle<JS::Value> retval) const;
 
   void GetIndexedParameter(JSContext* cx, GLenum target, GLuint index,
-                           JS::MutableHandleValue retval,
+                           JS::MutableHandle<JS::Value> retval,
                            ErrorResult& rv) const;
 
   already_AddRefed<WebGLShaderPrecisionFormatJS> GetShaderPrecisionFormat(
@@ -1501,7 +1503,7 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // ----------------------- Renderbuffer objects -----------------------
   void GetInternalformatParameter(JSContext* cx, GLenum target,
                                   GLenum internalformat, GLenum pname,
-                                  JS::MutableHandleValue retval,
+                                  JS::MutableHandle<JS::Value> retval,
                                   ErrorResult& rv);
 
   void BindRenderbuffer(GLenum target, WebGLRenderbufferJS*);
@@ -2098,9 +2100,9 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // ---------------------------------
  public:
   void GetQuery(JSContext*, GLenum target, GLenum pname,
-                JS::MutableHandleValue retval) const;
+                JS::MutableHandle<JS::Value> retval) const;
   void GetQueryParameter(JSContext*, WebGLQueryJS&, GLenum pname,
-                         JS::MutableHandleValue retval) const;
+                         JS::MutableHandle<JS::Value> retval) const;
   void BeginQuery(GLenum target, WebGLQueryJS&);
   void EndQuery(GLenum target);
   void QueryCounter(WebGLQueryJS&, GLenum target) const;
@@ -2108,7 +2110,7 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // -------------------------------- Sampler -------------------------------
 
   void GetSamplerParameter(JSContext*, const WebGLSamplerJS&, GLenum pname,
-                           JS::MutableHandleValue retval) const;
+                           JS::MutableHandle<JS::Value> retval) const;
 
   void BindSampler(GLuint unit, WebGLSamplerJS*);
   void SamplerParameteri(WebGLSamplerJS&, GLenum pname, GLint param) const;
@@ -2118,7 +2120,7 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
 
   GLenum ClientWaitSync(WebGLSyncJS&, GLbitfield flags, GLuint64 timeout) const;
   void GetSyncParameter(JSContext*, WebGLSyncJS&, GLenum pname,
-                        JS::MutableHandleValue retval) const;
+                        JS::MutableHandle<JS::Value> retval) const;
   void WaitSync(const WebGLSyncJS&, GLbitfield flags, GLint64 timeout) const;
 
   // -------------------------- Transform Feedback ---------------------------

@@ -14,27 +14,29 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
+const lazy = {};
+
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gContentSecurityManager",
   "@mozilla.org/contentsecuritymanager;1",
   "nsIContentSecurityManager"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LoginHelper",
   "resource://gre/modules/LoginHelper.jsm"
 );
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  return LoginHelper.createLogger("InsecurePasswordUtils");
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  return lazy.LoginHelper.createLogger("InsecurePasswordUtils");
 });
 
 /*
  * A module that provides utility functions for form security.
  *
  */
-this.InsecurePasswordUtils = {
+const InsecurePasswordUtils = {
   _formRootsWarned: new WeakMap(),
 
   /**
@@ -85,7 +87,7 @@ this.InsecurePasswordUtils = {
   _checkFormSecurity(aForm) {
     let isFormSubmitHTTP = false,
       isFormSubmitSecure = false;
-    if (ChromeUtils.getClassName(aForm.rootElement) === "HTMLFormElement") {
+    if (HTMLFormElement.isInstance(aForm.rootElement)) {
       let uri = Services.io.newURI(
         aForm.rootElement.action || aForm.rootElement.baseURI
       );
@@ -117,7 +119,7 @@ this.InsecurePasswordUtils = {
   _isPrincipalForLocalIPAddress(aPrincipal) {
     let res = aPrincipal.isLocalIpAddress;
     if (res) {
-      log.debug(
+      lazy.log.debug(
         "hasInsecureLoginForms: detected local IP address:",
         aPrincipal.asciispec
       );

@@ -12,18 +12,13 @@ var EXPORTED_SYMBOLS = [
   "WIDEVINE_ID",
 ];
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "UpdateUtils",
   "resource://gre/modules/UpdateUtils.jsm"
 );
@@ -105,11 +100,13 @@ var GMPUtils = {
   },
 
   _isWindowsOnARM64() {
-    return AppConstants.platform == "win" && UpdateUtils.ABI.match(/aarch64/);
+    return (
+      AppConstants.platform == "win" && lazy.UpdateUtils.ABI.match(/aarch64/)
+    );
   },
 
   _expectedABI(aPlugin) {
-    let defaultABI = UpdateUtils.ABI;
+    let defaultABI = lazy.UpdateUtils.ABI;
     if (aPlugin.id == WIDEVINE_ID && this._isWindowsOnARM64()) {
       // On Windows on aarch64, we need the x86 plugin,
       // as there's no native aarch64 plugins yet.
@@ -125,6 +122,11 @@ var GMPUtils = {
 var GMPPrefs = {
   KEY_EME_ENABLED: "media.eme.enabled",
   KEY_PLUGIN_ENABLED: "media.{0}.enabled",
+  KEY_PLUGIN_LAST_DOWNLOAD: "media.{0}.lastDownload",
+  KEY_PLUGIN_LAST_DOWNLOAD_FAILED: "media.{0}.lastDownloadFailed",
+  KEY_PLUGIN_LAST_DOWNLOAD_FAIL_REASON: "media.{0}.lastDownloadFailReason",
+  KEY_PLUGIN_LAST_INSTALL_FAILED: "media.{0}.lastInstallFailed",
+  KEY_PLUGIN_LAST_INSTALL_START: "media.{0}.lastInstallStart",
   KEY_PLUGIN_LAST_UPDATE: "media.{0}.lastUpdate",
   KEY_PLUGIN_VERSION: "media.{0}.version",
   KEY_PLUGIN_AUTOUPDATE: "media.{0}.autoupdate",
@@ -137,6 +139,7 @@ var GMPPrefs = {
   KEY_CERT_REQUIREBUILTIN: "media.gmp-manager.cert.requireBuiltIn",
   KEY_CHECK_CONTENT_SIGNATURE: "media.gmp-manager.checkContentSignature",
   KEY_UPDATE_LAST_CHECK: "media.gmp-manager.lastCheck",
+  KEY_UPDATE_LAST_EMPTY_CHECK: "media.gmp-manager.lastEmptyCheck",
   KEY_SECONDS_BETWEEN_CHECKS: "media.gmp-manager.secondsBetweenChecks",
   KEY_UPDATE_ENABLED: "media.gmp-manager.updateEnabled",
   KEY_APP_DISTRIBUTION: "distribution.id",

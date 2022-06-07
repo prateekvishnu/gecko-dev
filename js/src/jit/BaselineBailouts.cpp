@@ -198,7 +198,6 @@ class MOZ_STACK_CLASS BaselineStackBuilder {
   bool envChainSlotCanBeOptimized();
 #endif
 
-  bool hasLiveStackValueAtDepth(uint32_t stackSlotIndex);
   bool isPrologueBailout();
   jsbytecode* getResumePC();
   void* getStubReturnAddress();
@@ -457,53 +456,11 @@ class MOZ_STACK_CLASS BaselineStackBuilder {
       return virtualPointerAtStackOffset(offset);
     }
 
+    // Rectifier - the FramePointer is pushed as the first value in the frame.
     MOZ_ASSERT(type == FrameType::Rectifier);
-    // Rectifier - behaviour depends on the frame preceding the rectifier frame,
-    // and whether the arch is x86 or not.  The x86 rectifier frame saves the
-    // frame pointer, so we can calculate it directly.  For other archs, the
-    // previous frame pointer is stored on the stack in the frame that precedes
-    // the rectifier frame.
     size_t priorOffset =
-        JitFrameLayout::Size() + topFrame->prevFrameLocalSize();
-#if defined(JS_CODEGEN_X86)
-    // On X86, the FramePointer is pushed as the first value in the Rectifier
-    // frame.
-    static_assert(BaselineFrameReg == FramePointer);
-    priorOffset -= sizeof(void*);
+        JitFrameLayout::Size() + topFrame->prevFrameLocalSize() - sizeof(void*);
     return virtualPointerAtStackOffset(priorOffset);
-#elif defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_ARM64) ||   \
-    defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64) || \
-    defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_LOONG64)
-    // On X64, ARM, ARM64, MIPS and LoongArch, the frame pointer save location
-    // depends on the caller of the rectifier frame.
-    BufferPointer<RectifierFrameLayout> priorFrame =
-        pointerAtStackOffset<RectifierFrameLayout>(priorOffset);
-    FrameType priorType = priorFrame->prevType();
-    MOZ_ASSERT(JSJitFrameIter::isEntry(priorType) ||
-               priorType == FrameType::IonJS ||
-               priorType == FrameType::BaselineStub);
-
-    // If the frame preceding the rectifier is an IonJS or entry frame,
-    // then once again the frame pointer does not matter.
-    if (priorType == FrameType::IonJS || JSJitFrameIter::isEntry(priorType)) {
-      return nullptr;
-    }
-
-    // Otherwise, the frame preceding the rectifier is a BaselineStub frame.
-    //  let X = STACK_START_ADDR + JitFrameLayout::Size() + PREV_FRAME_SIZE
-    //      X + RectifierFrameLayout::Size()
-    //        + ((RectifierFrameLayout*) X)->prevFrameLocalSize()
-    //        - BaselineStubFrameLayout::reverseOffsetOfSavedFramePtr()
-    size_t extraOffset =
-        RectifierFrameLayout::Size() + priorFrame->prevFrameLocalSize() +
-        BaselineStubFrameLayout::reverseOffsetOfSavedFramePtr();
-    return virtualPointerAtStackOffset(priorOffset + extraOffset);
-#elif defined(JS_CODEGEN_NONE)
-    (void)priorOffset;
-    MOZ_CRASH();
-#else
-#  error "Bad architecture!"
-#endif
   }
 };
 
@@ -636,7 +593,7 @@ bool BaselineStackBuilder::buildBaselineFrame() {
     // Get it from the function or script.
     if (fun_) {
       envChain = fun_->environment();
-    } else if (script_->module()) {
+    } else if (script_->isModule()) {
       envChain = script_->module()->environment();
     } else {
       // For global scripts without a non-syntactic env the env
@@ -873,25 +830,18 @@ bool BaselineStackBuilder::buildExpressionStack() {
           exprStackSlots());
   for (uint32_t i = 0; i < exprStackSlots(); i++) {
     Value v;
-    if (propagatingIonExceptionForDebugMode()) {
-      // If we are in the middle of propagating an exception from Ion by
-      // bailing to baseline due to debug mode, we might not have all
-      // the stack if we are at the newest frame.
-      //
-      // For instance, if calling |f()| pushed an Ion frame which threw,
-      // the snapshot expects the return value to be pushed, but it's
-      // possible nothing was pushed before we threw. We can't drop
-      // iterators, however, so read them out. They will be closed by
-      // HandleExceptionBaseline.
-      MOZ_ASSERT(cx_->realm()->isDebuggee() || forcedReturn());
-      if (iter_.moreFrames() || hasLiveStackValueAtDepth(i)) {
-        v = iter_.read();
-      } else {
-        iter_.skip();
-        v = MagicValue(JS_OPTIMIZED_OUT);
-      }
-    } else {
-      v = iter_.read();
+    // If we are in the middle of propagating an exception from Ion by
+    // bailing to baseline due to debug mode, we might not have all
+    // the stack if we are at the newest frame.
+    //
+    // For instance, if calling |f()| pushed an Ion frame which threw,
+    // the snapshot expects the return value to be pushed, but it's
+    // possible nothing was pushed before we threw.
+    //
+    // We therefore use a fallible read here.
+    if (!iter_.tryRead(&v)) {
+      MOZ_ASSERT(propagatingIonExceptionForDebugMode() && !iter_.moreFrames());
+      v = MagicValue(JS_OPTIMIZED_OUT);
     }
     if (!writeValue(v, "StackValue")) {
       return false;
@@ -1159,14 +1109,15 @@ bool BaselineStackBuilder::buildRectifierFrame(uint32_t actualArgc,
 
   size_t startOfRectifierFrame = framePushed();
 
-  // On x86-only, the frame pointer is saved again in the rectifier frame.
-#if defined(JS_CODEGEN_X86)
-  if (!writePtr(prevFramePtr(), "PrevFramePtr-X86Only")) {
+  if (!writePtr(prevFramePtr(), "PrevFramePtr")) {
     return false;
   }
-  // Follow the same logic as in JitRuntime::generateArgumentsRectifier.
   prevFramePtr_ = virtualPointerAtStackOffset(0);
-  if (!writePtr(prevFramePtr(), "Padding-X86Only")) {
+
+#ifdef JS_NUNBOX32
+  // 32-bit platforms push an extra padding word. Follow the same logic as in
+  // JitRuntime::generateArgumentsRectifier.
+  if (!writePtr(prevFramePtr(), "Padding")) {
     return false;
   }
 #endif
@@ -1455,33 +1406,6 @@ jsbytecode* BaselineStackBuilder::getResumePC() {
   }
 
   return slowerPc;
-}
-
-bool BaselineStackBuilder::hasLiveStackValueAtDepth(uint32_t stackSlotIndex) {
-  // Return true iff stackSlotIndex is a stack value that's part of an active
-  // iterator loop instead of a normal expression stack slot.
-
-  MOZ_ASSERT(stackSlotIndex < exprStackSlots());
-
-  for (TryNoteIterAllNoGC tni(script_, pc_); !tni.done(); ++tni) {
-    const TryNote& tn = **tni;
-
-    switch (tn.kind()) {
-      case TryNoteKind::ForIn:
-      case TryNoteKind::ForOf:
-      case TryNoteKind::Destructuring:
-        MOZ_ASSERT(tn.stackDepth <= exprStackSlots());
-        if (stackSlotIndex < tn.stackDepth) {
-          return true;
-        }
-        break;
-
-      default:
-        break;
-    }
-  }
-
-  return false;
 }
 
 bool BaselineStackBuilder::isPrologueBailout() {

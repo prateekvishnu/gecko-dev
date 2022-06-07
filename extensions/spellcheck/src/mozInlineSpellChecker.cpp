@@ -53,6 +53,9 @@
 #include "mozilla/dom/MouseEvent.h"
 #include "mozilla/dom/Selection.h"
 #include "mozInlineSpellWordUtil.h"
+#ifdef ACCESSIBILITY
+#  include "nsAccessibilityService.h"
+#endif
 #include "nsCOMPtr.h"
 #include "nsCRT.h"
 #include "nsGenericHTMLElement.h"
@@ -1771,7 +1774,16 @@ nsresult mozInlineSpellChecker::RemoveRange(Selection* aSpellCheckSelection,
   RefPtr<nsRange> range{aRange};
   RefPtr<Selection> selection{aSpellCheckSelection};
   selection->RemoveRangeAndUnselectFramesAndNotifyListeners(*range, rv);
-  if (!rv.Failed() && mNumWordsInSpellSelection) mNumWordsInSpellSelection--;
+  if (!rv.Failed()) {
+    if (mNumWordsInSpellSelection) {
+      mNumWordsInSpellSelection--;
+    }
+#ifdef ACCESSIBILITY
+    if (nsAccessibilityService* accService = GetAccService()) {
+      accService->SpellCheckRangeChanged(*aRange);
+    }
+#endif
+  }
 
   return rv.StealNSResult();
 }
@@ -1879,6 +1891,11 @@ nsresult mozInlineSpellChecker::AddRange(Selection* aSpellCheckSelection,
       rv = err.StealNSResult();
     } else {
       mNumWordsInSpellSelection++;
+#ifdef ACCESSIBILITY
+      if (nsAccessibilityService* accService = GetAccService()) {
+        accService->SpellCheckRangeChanged(*aRange);
+      }
+#endif
     }
   }
 

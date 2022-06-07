@@ -7,7 +7,6 @@ const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 const { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryTestUtils } = ChromeUtils.import(
   "resource://testing-common/TelemetryTestUtils.jsm"
 );
@@ -29,7 +28,7 @@ function keyedScalarValue(aScalarName) {
   return "parent" in snapshot ? snapshot.parent[aScalarName] : undefined;
 }
 
-add_task(function test_setup() {
+add_setup(function test_setup() {
   // FOG needs a profile directory to put its data in.
   do_get_profile();
 
@@ -119,7 +118,12 @@ add_task(function test_gifft_custom_dist() {
 
 add_task(async function test_gifft_timing_dist() {
   let t1 = Glean.testOnlyIpc.aTimingDist.start();
+  // Interleave some other metric's samples. bug 1768636.
+  let ot1 = Glean.testOnly.whatTimeIsIt.start();
   let t2 = Glean.testOnlyIpc.aTimingDist.start();
+  let ot2 = Glean.testOnly.whatTimeIsIt.start();
+  Glean.testOnly.whatTimeIsIt.cancel(ot1);
+  Glean.testOnly.whatTimeIsIt.cancel(ot2);
 
   await sleep(5);
 

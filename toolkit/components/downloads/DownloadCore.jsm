@@ -25,9 +25,12 @@ const { Integration } = ChromeUtils.import(
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
 XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   DownloadHistory: "resource://gre/modules/DownloadHistory.jsm",
   DownloadPaths: "resource://gre/modules/DownloadPaths.jsm",
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
@@ -35,7 +38,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   NetUtil: "resource://gre/modules/NetUtil.jsm",
   OS: "resource://gre/modules/osfile.jsm",
   PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -623,8 +625,9 @@ Download.prototype = {
         );
       } else if (
         Services.prefs.getBoolPref("browser.helperApps.deleteTempFileOnExit") &&
-        !Services.prefs.getBoolPref(
-          "browser.download.improvements_to_download_panel"
+        Services.prefs.getBoolPref(
+          "browser.download.start_downloads_in_tmp_dir",
+          false
         )
       ) {
         gExternalAppLauncher.deleteTemporaryFileOnExit(
@@ -1437,6 +1440,11 @@ DownloadSource.prototype = {
   url: null,
 
   /**
+   * String containing the original URL for the download source.
+   */
+  originalUrl: null,
+
+  /**
    * Indicates whether the download originated from a private window.  This
    * determines the context of the network request that is made to retrieve the
    * resource.
@@ -1597,6 +1605,9 @@ DownloadSource.fromSerializable = function(aSerializable) {
         source[propName] = aSerializable[propName];
       }
     }
+    if ("originalUrl" in aSerializable) {
+      source.originalUrl = aSerializable.originalUrl;
+    }
     if ("referrerInfo" in aSerializable) {
       // Quick pass, pass directly nsIReferrerInfo, we don't need to serialize
       // and deserialize
@@ -1646,6 +1657,7 @@ DownloadSource.fromSerializable = function(aSerializable) {
       aSerializable,
       property =>
         property != "url" &&
+        property != "originalUrl" &&
         property != "isPrivate" &&
         property != "referrerInfo" &&
         property != "cookieJarSettings" &&
@@ -2853,6 +2865,15 @@ DownloadLegacySaver.prototype = {
     // For legacy downloads, we must update the referrerInfo at this time.
     if (aRequest instanceof Ci.nsIHttpChannel) {
       this.download.source.referrerInfo = aRequest.referrerInfo;
+    }
+
+    // Don't open the download panel when the user initiated to save a
+    // link or document.
+    if (
+      aRequest instanceof Ci.nsIChannel &&
+      aRequest.loadInfo.isUserTriggeredSave
+    ) {
+      this.download.openDownloadsListOnStart = false;
     }
 
     this.addToHistory();

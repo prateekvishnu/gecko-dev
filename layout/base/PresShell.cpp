@@ -2387,10 +2387,12 @@ PresShell::ScrollPage(bool aForward) {
       GetScrollableFrameToScroll(VerticalScrollDirection);
   ScrollMode scrollMode = apz::GetScrollModeForOrigin(ScrollOrigin::Pages);
   if (scrollFrame) {
-    scrollFrame->ScrollBy(
-        nsIntPoint(0, aForward ? 1 : -1), ScrollUnit::PAGES, scrollMode,
-        nullptr, mozilla::ScrollOrigin::NotSpecified,
-        nsIScrollableFrame::NOT_MOMENTUM, nsIScrollableFrame::ENABLE_SNAP);
+    scrollFrame->ScrollBy(nsIntPoint(0, aForward ? 1 : -1), ScrollUnit::PAGES,
+                          scrollMode, nullptr,
+                          mozilla::ScrollOrigin::NotSpecified,
+                          nsIScrollableFrame::NOT_MOMENTUM,
+                          ScrollSnapFlags::IntendedDirection |
+                              ScrollSnapFlags::IntendedEndPosition);
   }
   return NS_OK;
 }
@@ -2407,7 +2409,7 @@ PresShell::ScrollLine(bool aForward) {
     scrollFrame->ScrollBy(
         nsIntPoint(0, aForward ? lineCount : -lineCount), ScrollUnit::LINES,
         scrollMode, nullptr, mozilla::ScrollOrigin::NotSpecified,
-        nsIScrollableFrame::NOT_MOMENTUM, nsIScrollableFrame::ENABLE_SNAP);
+        nsIScrollableFrame::NOT_MOMENTUM, ScrollSnapFlags::IntendedDirection);
   }
   return NS_OK;
 }
@@ -2424,7 +2426,7 @@ PresShell::ScrollCharacter(bool aRight) {
     scrollFrame->ScrollBy(
         nsIntPoint(aRight ? h : -h, 0), ScrollUnit::LINES, scrollMode, nullptr,
         mozilla::ScrollOrigin::NotSpecified, nsIScrollableFrame::NOT_MOMENTUM,
-        nsIScrollableFrame::ENABLE_SNAP);
+        ScrollSnapFlags::IntendedDirection);
   }
   return NS_OK;
 }
@@ -2438,7 +2440,7 @@ PresShell::CompleteScroll(bool aForward) {
     scrollFrame->ScrollBy(
         nsIntPoint(0, aForward ? 1 : -1), ScrollUnit::WHOLE, scrollMode,
         nullptr, mozilla::ScrollOrigin::NotSpecified,
-        nsIScrollableFrame::NOT_MOMENTUM, nsIScrollableFrame::ENABLE_SNAP);
+        nsIScrollableFrame::NOT_MOMENTUM, ScrollSnapFlags::IntendedEndPosition);
   }
   return NS_OK;
 }
@@ -3379,8 +3381,7 @@ static void AccumulateFrameBounds(nsIFrame* aContainerFrame, nsIFrame* aFrame,
                                   bool aUseWholeLineHeightForInlines,
                                   nsRect& aRect, bool& aHaveRect,
                                   nsIFrame*& aPrevBlock,
-                                  nsAutoLineIterator& aLines,
-                                  int32_t& aCurLine) {
+                                  nsILineIterator*& aLines, int32_t& aCurLine) {
   nsIFrame* frame = aFrame;
   nsRect frameBounds = nsRect(nsPoint(0, 0), aFrame->GetSize());
 
@@ -3570,8 +3571,8 @@ static void ScrollToShowRect(nsIScrollableFrame* aFrameAsScrollable,
   AutoWeakFrame weakFrame(frame);
   aFrameAsScrollable->ScrollTo(scrollPt, scrollMode, &allowedRange,
                                aScrollFlags & ScrollFlags::ScrollSnap
-                                   ? nsIScrollbarMediator::ENABLE_SNAP
-                                   : nsIScrollbarMediator::DISABLE_SNAP,
+                                   ? ScrollSnapFlags::IntendedEndPosition
+                                   : ScrollSnapFlags::Disabled,
                                aScrollFlags & ScrollFlags::TriggeredByScript
                                    ? ScrollTriggeredByScript::Yes
                                    : ScrollTriggeredByScript::No);
@@ -3710,10 +3711,11 @@ void PresShell::DoScrollContentIntoView() {
   bool useWholeLineHeightForInlines = data->mContentScrollVAxis.mWhenToScroll !=
                                       WhenToScroll::IfNotFullyVisible;
   {
+    AutoAssertNoDomMutations guard;  // Ensure use of nsILineIterators is safe.
     nsIFrame* prevBlock = nullptr;
     // Reuse the same line iterator across calls to AccumulateFrameBounds.
     // We set it every time we detect a new block (stored in prevBlock).
-    nsAutoLineIterator lines;
+    nsILineIterator* lines = nullptr;
     // The last line we found a continuation on in |lines|.  We assume that
     // later continuations cannot come on earlier lines.
     int32_t curLine = 0;
@@ -5366,14 +5368,37 @@ void PresShell::AddCanvasBackgroundColorItem(
       nsLayoutUtils::UsesAsyncScrolling(aFrame) && NS_GET_A(bgcolor) == 255;
 
   if (!addedScrollingBackgroundColor || forceUnscrolledItem) {
-    nsDisplayItem* item = MakeDisplayItem<nsDisplaySolidColor>(
+    nsDisplaySolidColor* item = MakeDisplayItem<nsDisplaySolidColor>(
         aBuilder, aFrame, aBounds, bgcolor);
+    if (addedScrollingBackgroundColor) {
+      item->SetIsCheckerboardBackground();
+    }
     AddDisplayItemToBottom(aBuilder, aList, item);
   }
 }
 
-static bool IsTransparentContainerElement(nsPresContext* aPresContext) {
-  nsIDocShell* docShell = aPresContext->GetDocShell();
+bool PresShell::IsTransparentContainerElement() const {
+  nsPresContext* pc = GetPresContext();
+  if (!pc->IsRootContentDocumentCrossProcess()) {
+    // Frames are transparent except if their embedder color-scheme is
+    // mismatched, in which case we use an opaque background to avoid
+    // black-on-black or white-on-white text, see
+    // https://github.com/w3c/csswg-drafts/issues/4772
+    if (BrowsingContext* bc = pc->Document()->GetBrowsingContext()) {
+      switch (bc->GetEmbedderColorScheme()) {
+        case dom::PrefersColorSchemeOverride::Light:
+          return DefaultBackgroundColorScheme() == ColorScheme::Light;
+        case dom::PrefersColorSchemeOverride::Dark:
+          return DefaultBackgroundColorScheme() == ColorScheme::Dark;
+        case dom::PrefersColorSchemeOverride::None:
+        case dom::PrefersColorSchemeOverride::EndGuard_:
+          break;
+      }
+    }
+    return true;
+  }
+
+  nsIDocShell* docShell = pc->GetDocShell();
   if (!docShell) {
     return false;
   }
@@ -5387,10 +5412,29 @@ static bool IsTransparentContainerElement(nsPresContext* aPresContext) {
   if (BrowserChild* tab = BrowserChild::GetFrom(docShell)) {
     // Check if presShell is the top PresShell. Only the top can influence the
     // canvas background color.
-    return aPresContext->GetPresShell() == tab->GetTopLevelPresShell() &&
-           tab->IsTransparent();
+    return this == tab->GetTopLevelPresShell() && tab->IsTransparent();
   }
   return false;
+}
+
+ColorScheme PresShell::DefaultBackgroundColorScheme() const {
+  Document* doc = GetDocument();
+  // Use a dark background for top-level about:blank that is inaccessible to
+  // content JS.
+  {
+    BrowsingContext* bc = doc->GetBrowsingContext();
+    if (bc && bc->IsTop() && !bc->HasOpener() && doc->GetDocumentURI() &&
+        NS_IsAboutBlank(doc->GetDocumentURI())) {
+      return doc->PreferredColorScheme(Document::IgnoreRFP::Yes);
+    }
+  }
+  // Prefer the root color-scheme (since generally the default canvas
+  // background comes from the root element's background-color), and fall back
+  // to the default color-scheme if not available.
+  if (auto* frame = mFrameConstructor->GetRootElementStyleFrame()) {
+    return LookAndFeel::ColorSchemeForFrame(frame);
+  }
+  return doc->DefaultColorScheme();
 }
 
 nscolor PresShell::GetDefaultBackgroundColorToDraw() const {
@@ -5398,28 +5442,8 @@ nscolor PresShell::GetDefaultBackgroundColorToDraw() const {
     return NS_RGB(255, 255, 255);
   }
 
-  Document* doc = GetDocument();
-  auto colorScheme = [&] {
-    // Use a dark background for top-level about:blank that is inaccessible to
-    // content JS.
-    {
-      BrowsingContext* bc = doc->GetBrowsingContext();
-      if (bc && bc->IsTop() && !bc->HasOpener() && doc->GetDocumentURI() &&
-          NS_IsAboutBlank(doc->GetDocumentURI())) {
-        return doc->PreferredColorScheme(Document::IgnoreRFP::Yes);
-      }
-    }
-    // Prefer the root color-scheme (since generally the default canvas
-    // background comes from the root element's background-color), and fall back
-    // to the default color-scheme if not available.
-    if (auto* frame = mFrameConstructor->GetRootElementStyleFrame()) {
-      return LookAndFeel::ColorSchemeForFrame(frame);
-    }
-    return doc->DefaultColorScheme();
-  }();
-
   return mPresContext->PrefSheetPrefs()
-      .ColorsFor(colorScheme)
+      .ColorsFor(DefaultBackgroundColorScheme())
       .mDefaultBackground;
 }
 
@@ -5463,8 +5487,7 @@ PresShell::CanvasBackground PresShell::ComputeCanvasBackground() const {
         mPresContext, bgStyle, rootStyleFrame, drawBackgroundImage,
         drawBackgroundColor);
   }
-  if (mPresContext->IsRootContentDocumentCrossProcess() &&
-      !IsTransparentContainerElement(mPresContext)) {
+  if (!IsTransparentContainerElement()) {
     color = NS_ComposeColors(GetDefaultBackgroundColorToDraw(), color);
   }
   return {color, drawBackgroundColor};
@@ -6388,14 +6411,10 @@ void PresShell::PaintInternal(nsView* aViewToPaint, PaintInternalFlags aFlags) {
               (aFlags & PaintInternalFlags::PaintComposite)
                   ? WindowRenderer::END_DEFAULT
                   : WindowRenderer::END_NO_COMPOSITE)) {
-        frame->UpdatePaintCountForPaintedPresShells();
         return;
       }
     }
     frame->RemoveStateBits(NS_FRAME_UPDATE_LAYER_TREE);
-  }
-  if (frame) {
-    frame->ClearPresShellsFromLastPaint();
   }
 
   nscolor bgcolor = ComputeBackstopColor(aViewToPaint);
@@ -8146,10 +8165,11 @@ nsresult PresShell::EventHandler::HandleEventWithCurrentEventInfo(
   }
 
   if (mPresShell->mCurrentEventContent && aEvent->IsTargetedAtFocusedWindow()) {
-    nsFocusManager* fm = nsFocusManager::GetFocusManager();
-    if (fm) {
+    if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
       // This may run script now.  So, mPresShell might be destroyed after here.
-      fm->FlushBeforeEventHandlingIfNeeded(mPresShell->mCurrentEventContent);
+      nsCOMPtr<nsIContent> currentEventContent =
+          mPresShell->mCurrentEventContent;
+      fm->FlushBeforeEventHandlingIfNeeded(currentEventContent);
     }
   }
 

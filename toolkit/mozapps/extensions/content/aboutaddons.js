@@ -2691,11 +2691,13 @@ class AddonDetails extends HTMLElement {
       this.render();
     }
     this.deck.addEventListener("view-changed", this);
+    this.descriptionShowMoreButton.addEventListener("click", this);
   }
 
   disconnectedCallback() {
     this.inlineOptions.destroyBrowser();
     this.deck.removeEventListener("view-changed", this);
+    this.descriptionShowMoreButton.removeEventListener("click", this);
   }
 
   handleEvent(e) {
@@ -2725,6 +2727,11 @@ class AddonDetails extends HTMLElement {
       // unconditionally shown. So if any other tab is selected, do not save
       // the current scroll offset, but start at the top of the page instead.
       ScrollOffsets.canRestore = this.deck.selectedViewName === "details";
+    } else if (
+      e.type == "click" &&
+      e.target == this.descriptionShowMoreButton
+    ) {
+      this.toggleDescription();
     }
   }
 
@@ -2754,6 +2761,23 @@ class AddonDetails extends HTMLElement {
     if (this.deck.selectedViewName === "preferences") {
       this.inlineOptions.ensureBrowserCreated();
     }
+  }
+
+  toggleDescription() {
+    this.descriptionCollapsed = !this.descriptionCollapsed;
+
+    this.descriptionWrapper.classList.toggle(
+      "addon-detail-description-collapse",
+      this.descriptionCollapsed
+    );
+
+    this.descriptionShowMoreButton.hidden = false;
+    document.l10n.setAttributes(
+      this.descriptionShowMoreButton,
+      this.descriptionCollapsed
+        ? "addon-detail-description-expand"
+        : "addon-detail-description-collapse"
+    );
   }
 
   get releaseNotesUri() {
@@ -2808,6 +2832,36 @@ class AddonDetails extends HTMLElement {
     }
   }
 
+  renderDescription(addon) {
+    this.descriptionWrapper = this.querySelector(
+      ".addon-detail-description-wrapper"
+    );
+    this.descriptionContents = this.querySelector(".addon-detail-description");
+    this.descriptionShowMoreButton = this.querySelector(
+      ".addon-detail-description-toggle"
+    );
+
+    if (addon.getFullDescription) {
+      this.descriptionContents.appendChild(addon.getFullDescription(document));
+    } else if (addon.fullDescription) {
+      this.descriptionContents.appendChild(nl2br(addon.fullDescription));
+    }
+
+    this.descriptionCollapsed = false;
+
+    requestAnimationFrame(() => {
+      const remSize = parseFloat(
+        getComputedStyle(document.documentElement).fontSize
+      );
+      const { height } = this.descriptionContents.getBoundingClientRect();
+
+      // collapse description if there are too many lines,i.e. height > (20 rem)
+      if (height > 20 * remSize) {
+        this.toggleDescription();
+      }
+    });
+  }
+
   async render() {
     let { addon } = this;
     if (!addon) {
@@ -2837,13 +2891,7 @@ class AddonDetails extends HTMLElement {
     this.inlineOptions.setAddon(addon);
 
     // Full description.
-    let description = this.querySelector(".addon-detail-description");
-    if (addon.getFullDescription) {
-      description.appendChild(addon.getFullDescription(document));
-    } else if (addon.fullDescription) {
-      description.appendChild(nl2br(addon.fullDescription));
-    }
-
+    this.renderDescription(addon);
     this.querySelector(
       ".addon-detail-contribute"
     ).hidden = !addon.contributionURL;
@@ -3625,6 +3673,59 @@ class AddonCard extends HTMLElement {
 }
 customElements.define("addon-card", AddonCard);
 
+class ColorwayClosetCard extends HTMLElement {
+  render() {
+    let card = importTemplate("card").firstElementChild;
+    let heading = card.querySelector(".addon-name-container");
+    // remove elipsis button
+    heading.textContent = "";
+    heading.append(importTemplate("colorways-card-container"));
+    this.setCardPreviewText(card);
+    this.setCardContent(card);
+    this.append(card);
+  }
+
+  setCardPreviewText(card) {
+    // Create new elements for card preview text
+    let colorwayPreviewHeading = document.createElement("h3");
+    let colorwayPreviewSubHeading = document.createElement("p");
+    let colorwayPreviewTextContainer = document.createElement("div");
+
+    // TODO: Bug 1770465 - insert dynamic localized collection details
+    colorwayPreviewHeading.textContent = "Life in Color";
+    colorwayPreviewSubHeading.textContent =
+      "Make Firefox feel a little more you.";
+
+    colorwayPreviewTextContainer.appendChild(colorwayPreviewHeading);
+    colorwayPreviewTextContainer.appendChild(colorwayPreviewSubHeading);
+    colorwayPreviewTextContainer.id = "colorways-preview-text-container";
+
+    // Insert colorway card preview text
+    let cardHeadingImage = card.querySelector(".card-heading-image");
+    cardHeadingImage.parentNode.insertBefore(
+      colorwayPreviewTextContainer,
+      cardHeadingImage
+    );
+  }
+
+  setCardContent(card) {
+    card.querySelector(".addon-icon").hidden = true;
+
+    let preview = card.querySelector(".card-heading-image");
+    // TODO: Bug 1770465 - set preview.src for colorways card preview
+    preview.hidden = false;
+
+    let colorwayExpiryDateSpan = card.querySelector(
+      "#colorways-expiry-date > span"
+    );
+    // TODO: Bug 1770465 - set dynamic date here
+    colorwayExpiryDateSpan.textContent = "Expires June 2";
+    let colorwaysButton = card.querySelector("[action='open-colorways']");
+    colorwaysButton.hidden = false;
+  }
+}
+customElements.define("colorways-card", ColorwayClosetCard);
+
 /**
  * A child element of `<recommended-addon-list>`. It should be initialized
  * by calling `setDiscoAddon()` first. Call `setAddon(addon)` if it has been
@@ -4368,6 +4469,22 @@ class AddonList extends HTMLElement {
 }
 customElements.define("addon-list", AddonList);
 
+class ColorwayClosetList extends HTMLElement {
+  connectedCallback() {
+    this.appendChild(importTemplate(this.template));
+    let frag = document.createDocumentFragment();
+    let card = document.createElement("colorways-card");
+    card.render();
+    frag.append(card);
+    this.append(frag);
+  }
+
+  get template() {
+    return "colorways-list";
+  }
+}
+customElements.define("colorways-list", ColorwayClosetList);
+
 class RecommendedAddonList extends HTMLElement {
   connectedCallback() {
     if (this.isConnected) {
@@ -4718,6 +4835,14 @@ gViewController.defineView("list", async type => {
       },
     ]);
     frag.appendChild(monochromaticList);
+
+    const colorwayClosetPrefEnabled = Services.prefs.getBoolPref(
+      "browser.theme.colorway-closet"
+    );
+    if (colorwayClosetPrefEnabled) {
+      let colorwayClosetList = document.createElement("colorways-list");
+      frag.appendChild(colorwayClosetList);
+    }
   }
 
   // Show recommendations for themes and extensions.

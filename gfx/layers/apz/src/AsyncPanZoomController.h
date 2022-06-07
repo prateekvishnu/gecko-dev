@@ -299,7 +299,8 @@ class AsyncPanZoomController {
    * processed, this is needed to transform input events properly into a space
    * gecko will understand.
    */
-  Matrix4x4 GetTransformToLastDispatchedPaint() const;
+  Matrix4x4 GetTransformToLastDispatchedPaint(
+      const AsyncTransformComponents& aComponents = LayoutAndVisual) const;
 
   /**
    * Returns the number of CSS pixels of checkerboard according to the metrics
@@ -689,6 +690,11 @@ class AsyncPanZoomController {
 
   CSSPoint GetKeyboardDestination(const KeyboardScrollAction& aAction) const;
 
+  // Returns the corresponding ScrollSnapFlags for the given |aAction|.
+  // See https://drafts.csswg.org/css-scroll-snap/#scroll-types
+  ScrollSnapFlags GetScrollSnapFlagsForKeyboardAction(
+      const KeyboardScrollAction& aAction) const;
+
   /**
    * Helper methods for long press gestures.
    */
@@ -880,7 +886,7 @@ class AsyncPanZoomController {
   /**
    * Register the end of a touch or pan gesture at the given time.
    */
-  void EndTouch(TimeStamp aTimestamp);
+  void EndTouch(TimeStamp aTimestamp, Axis::ClearAxisLock aClearAxisLock);
 
   /**
    * Utility function to send updated FrameMetrics to Gecko so that it can paint
@@ -934,7 +940,7 @@ class AsyncPanZoomController {
 
   enum AxisLockMode {
     FREE,     /* No locking at all */
-    STANDARD, /* Default axis locking mode that remains locked until pan ends*/
+    STANDARD, /* Default axis locking mode that remains locked until pan ends */
     STICKY,   /* Allow lock to be broken, with hysteresis */
   };
 
@@ -1044,9 +1050,6 @@ class AsyncPanZoomController {
   // Groups state variables that are specific to a platform.
   // Initialized on first use.
   UniquePtr<PlatformSpecificStateBase> mPlatformSpecificState;
-
-  AxisX mX;
-  AxisY mY;
 
   // This flag is set to true when we are in a axis-locked pan as a result of
   // the touch-action CSS property.
@@ -1348,6 +1351,9 @@ class AsyncPanZoomController {
   // This is in theory protected by |mRecursiveMutex|; that is, it should be
   // held whenever this is updated. In practice though... see bug 897017.
   PanZoomState mState;
+
+  AxisX mX;
+  AxisY mY;
 
   static bool IsPanningState(PanZoomState aState);
 
@@ -1692,8 +1698,8 @@ class AsyncPanZoomController {
   // its composition bounds.
   bool Contains(const ScreenIntPoint& aPoint) const;
 
-  bool IsInOverscrollGutter(const ScreenPoint& aPoint) const;
-  bool IsInOverscrollGutter(const ParentLayerPoint& aPoint) const;
+  bool IsInOverscrollGutter(const ScreenPoint& aHitTestPoint) const;
+  bool IsInOverscrollGutter(const ParentLayerPoint& aHitTestPoint) const;
 
   bool IsOverscrolled() const;
 
@@ -1785,6 +1791,7 @@ class AsyncPanZoomController {
   // GetSnapPointForDestination).
   // Returns true iff. a target snap point was found.
   bool MaybeAdjustDeltaForScrollSnapping(ScrollUnit aUnit,
+                                         ScrollSnapFlags aFlags,
                                          ParentLayerPoint& aDelta,
                                          CSSPoint& aStartPosition);
 
@@ -1795,17 +1802,18 @@ class AsyncPanZoomController {
       CSSPoint& aStartPosition);
 
   bool MaybeAdjustDestinationForScrollSnapping(const KeyboardInput& aEvent,
-                                               CSSPoint& aDestination);
+                                               CSSPoint& aDestination,
+                                               ScrollSnapFlags aSnapFlags);
 
   // Snap to a snap position nearby the current scroll position, if appropriate.
-  void ScrollSnap();
+  void ScrollSnap(ScrollSnapFlags aSnapFlags);
 
   // Snap to a snap position nearby the destination predicted based on the
   // current velocity, if appropriate.
   void ScrollSnapToDestination();
 
   // Snap to a snap position nearby the provided destination, if appropriate.
-  void ScrollSnapNear(const CSSPoint& aDestination);
+  void ScrollSnapNear(const CSSPoint& aDestination, ScrollSnapFlags aSnapFlags);
 
   // Find a snap point near |aDestination| that we should snap to.
   // Returns the snap point if one was found, or an empty Maybe otherwise.
@@ -1813,7 +1821,8 @@ class AsyncPanZoomController {
   // GetSnapPointForDestination). It should generally be determined by the
   // type of event that's triggering the scroll.
   Maybe<CSSPoint> FindSnapPointNear(const CSSPoint& aDestination,
-                                    ScrollUnit aUnit);
+                                    ScrollUnit aUnit,
+                                    ScrollSnapFlags aSnapFlags);
 
   friend std::ostream& operator<<(
       std::ostream& aOut, const AsyncPanZoomController::PanZoomState& aState);

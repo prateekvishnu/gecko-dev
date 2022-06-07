@@ -53,7 +53,7 @@ void TestGC::Run(int aNumSlices) {
   CCReason neededCCAtStartOfGC =
       mScheduler.IsCCNeeded(Now(), SuspectedCCObjects());
 
-  mScheduler.NoteGCBegin();
+  mScheduler.NoteGCBegin(JS::GCReason::API);
 
   for (int slice = 0; slice < aNumSlices; slice++) {
     EXPECT_TRUE(mScheduler.InIncrementalGC());
@@ -125,7 +125,7 @@ void TestCC::TimerFires(int aNumSlices) {
         mScheduler.AdvanceCCRunner(idleDeadline, Now(), SuspectedCCObjects());
     // Should first see a series of ForgetSkippable actions.
     if (step.mAction != CCRunnerAction::ForgetSkippable ||
-        step.mRemoveChildless != KeepChildless) {
+        step.mParam.mRemoveChildless != KeepChildless) {
       break;
     }
     EXPECT_EQ(step.mYield, Yield);
@@ -138,7 +138,7 @@ void TestCC::TimerFires(int aNumSlices) {
         mScheduler.AdvanceCCRunner(idleDeadline, Now(), SuspectedCCObjects());
   }
   EXPECT_EQ(step.mAction, CCRunnerAction::ForgetSkippable);
-  EXPECT_EQ(step.mRemoveChildless, RemoveChildless);
+  EXPECT_EQ(step.mParam.mRemoveChildless, RemoveChildless);
   ForgetSkippable();
 
   TimeStamp idleDeadline = Now() + kOneSecond;
@@ -147,6 +147,7 @@ void TestCC::TimerFires(int aNumSlices) {
   step = mScheduler.AdvanceCCRunner(idleDeadline, Now(), SuspectedCCObjects());
   EXPECT_EQ(step.mAction, CCRunnerAction::CleanupDeferred);
 
+  mScheduler.NoteCCBegin(CCReason::API, Now(), 0, sSuspected, 0);
   RunSlices(aNumSlices);
 }
 
@@ -177,8 +178,7 @@ void TestCC::EndCycleCollectionCallback() {
   CycleCollectorResults results;
   results.mFreedGCed = 10;
   results.mFreedJSZones = 2;
-  mScheduler.NoteCycleCollected(results);
-  mScheduler.NoteCCEnd(Now());
+  mScheduler.NoteCCEnd(results, Now(), TimeDuration());
 
   // Because > 0 zones were freed.
   EXPECT_TRUE(mScheduler.NeedsGCAfterCC());
@@ -186,7 +186,6 @@ void TestCC::EndCycleCollectionCallback() {
 
 void TestCC::KillCCRunner() {
   // nsJSContext::KillCCRunner
-  mScheduler.NoteCCEnd(Now());
   mScheduler.KillCCRunner();
 }
 

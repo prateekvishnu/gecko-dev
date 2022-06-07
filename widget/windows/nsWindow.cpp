@@ -663,14 +663,9 @@ static bool IsMouseVanishKey(WPARAM aVirtKey) {
     case VK_PRIOR:  // PgUp
     case VK_NEXT:   // PgDn
       return false;
-    case 'A':
-    case 'C':
-    case 'V':
-    case 'X':
-      // Ignore Ctrl-A, Ctrl-C, Ctrl-V, Ctrl-X
-      return (GetKeyState(VK_CONTROL) & 0x8000) != 0x8000;
     default:
-      return true;
+      // Return true unless Ctrl is pressed
+      return (GetKeyState(VK_CONTROL) & 0x8000) != 0x8000;
   }
 }
 
@@ -678,6 +673,18 @@ static bool IsMouseVanishKey(WPARAM aVirtKey) {
  * Hide/unhide the cursor if the correct Windows and Firefox settings are set.
  */
 static void MaybeHideCursor(bool aShouldHide) {
+  static bool sMouseExists = [] {
+    // Before the first call to ShowCursor, the visibility count is 0
+    // if there is a mouse installed and -1 if not.
+    int count = ::ShowCursor(FALSE);
+    ::ShowCursor(TRUE);
+    return count == -1;
+  }();
+
+  if (!sMouseExists) {
+    return;
+  }
+
   static bool sIsHidden = false;
   bool shouldHide = aShouldHide &&
                     StaticPrefs::widget_windows_hide_cursor_when_typing() &&
@@ -963,23 +970,17 @@ nsresult nsWindow::Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
         ShouldUseOffMainThreadCompositing()) {
       extendedStyle |= WS_EX_COMPOSITED;
     }
-
-    if (aInitData->mMouseTransparent) {
-      // This flag makes the window transparent to mouse events
-      mMouseTransparent = true;
-      extendedStyle |= WS_EX_TRANSPARENT;
-    }
   } else if (mWindowType == eWindowType_invisible) {
     // Make sure CreateWindowEx succeeds at creating a toplevel window
     style &= ~0x40000000;  // WS_CHILDWINDOW
   } else {
     // See if the caller wants to explictly set clip children and clip siblings
-    if (aInitData->clipChildren) {
+    if (aInitData->mClipChildren) {
       style |= WS_CLIPCHILDREN;
     } else {
       style &= ~WS_CLIPCHILDREN;
     }
-    if (aInitData->clipSiblings) {
+    if (aInitData->mClipSiblings) {
       style |= WS_CLIPSIBLINGS;
     }
   }
@@ -1803,49 +1804,15 @@ bool nsWindow::IsVisible() const { return mIsVisible; }
  *
  **************************************************************/
 
-static bool ShouldHaveRoundedMenuDropShadow(nsWindow* aWindow) {
-  nsView* view = nsView::GetViewFor(aWindow);
-  return view && view->GetFrame() &&
-         view->GetFrame()->StyleUIReset()->mWindowShadow ==
-             StyleWindowShadow::Cliprounded;
-}
-
 // XP and Vista visual styles sometimes require window clipping regions to be
 // applied for proper transparency. These routines are called on size and move
 // operations.
 // XXX this is apparently still needed in Windows 7 and later
 void nsWindow::ClearThemeRegion() {
-  if (mWindowType == eWindowType_popup &&
-      (mPopupType == ePopupTypeTooltip || mPopupType == ePopupTypeMenu ||
-       mPopupType == ePopupTypePanel) &&
-      ShouldHaveRoundedMenuDropShadow(this)) {
+  if (!HasGlass() &&
+      (mWindowType == eWindowType_popup && !IsPopupWithTitleBar() &&
+       (mPopupType == ePopupTypeTooltip || mPopupType == ePopupTypePanel))) {
     SetWindowRgn(mWnd, nullptr, false);
-  } else if (!HasGlass() &&
-             (mWindowType == eWindowType_popup && !IsPopupWithTitleBar() &&
-              (mPopupType == ePopupTypeTooltip ||
-               mPopupType == ePopupTypePanel))) {
-    SetWindowRgn(mWnd, nullptr, false);
-  }
-}
-
-void nsWindow::SetThemeRegion() {
-  // Clip the window to the rounded rect area of the popup if needed.
-  if (mWindowType == eWindowType_popup &&
-      (mPopupType == ePopupTypeTooltip || mPopupType == ePopupTypeMenu ||
-       mPopupType == ePopupTypePanel)) {
-    if (nsView* view = nsView::GetViewFor(this)) {
-      LayoutDeviceSize size =
-          nsLayoutUtils::GetBorderRadiusForMenuDropShadow(view->GetFrame());
-      if (size.width || size.height) {
-        int32_t width = NSToIntRound(size.width);
-        int32_t height = NSToIntRound(size.height);
-        HRGN region = CreateRoundRectRgn(0, 0, mBounds.Width() + 1,
-                                         mBounds.Height() + 1, width, height);
-        if (!SetWindowRgn(mWnd, region, false)) {
-          DeleteObject(region);  // region setting failed so delete the region.
-        }
-      }
-    }
   }
 }
 
@@ -1879,21 +1846,24 @@ void nsWindow::LockAspectRatio(bool aShouldLock) {
 
 /**************************************************************
  *
- * SECTION: nsIWidget::SetWindowMouseTransparent
+ * SECTION: nsIWidget::SetInputRegion
  *
  * Sets whether the window should ignore mouse events.
  *
  **************************************************************/
-void nsWindow::SetWindowMouseTransparent(bool aIsTransparent) {
+void nsWindow::SetInputRegion(const InputRegion& aInputRegion) {
   if (!mWnd) {
     return;
   }
 
+  // TODO: Implement the input margin on windows (probably handling
+  // WM_NCHITTEST)?
+  const bool transparent = aInputRegion.mFullyTransparent;
   LONG_PTR oldStyle = ::GetWindowLongPtrW(mWnd, GWL_EXSTYLE);
-  LONG_PTR newStyle = aIsTransparent ? (oldStyle | WS_EX_TRANSPARENT)
-                                     : (oldStyle & ~WS_EX_TRANSPARENT);
+  LONG_PTR newStyle = transparent ? (oldStyle | WS_EX_TRANSPARENT)
+                                  : (oldStyle & ~WS_EX_TRANSPARENT);
   ::SetWindowLongPtrW(mWnd, GWL_EXSTYLE, newStyle);
-  mMouseTransparent = aIsTransparent;
+  mMouseTransparent = transparent;
 }
 
 /**************************************************************
@@ -2042,13 +2012,10 @@ void nsWindow::Move(double aX, double aY) {
       if (WinUtils::LogToPhysFactor(mWnd) != oldScale) {
         ChangedDPI();
       }
-
-      SetThemeRegion();
     }
 
     ResizeDirectManipulationViewport();
   }
-  NotifyRollupGeometryChange();
 }
 
 // Resize this component
@@ -2111,15 +2078,12 @@ void nsWindow::Resize(double aWidth, double aHeight, bool aRepaint) {
       if (WinUtils::LogToPhysFactor(mWnd) != oldScale) {
         ChangedDPI();
       }
-      SetThemeRegion();
     }
 
     ResizeDirectManipulationViewport();
   }
 
   if (aRepaint) Invalidate();
-
-  NotifyRollupGeometryChange();
 }
 
 // Resize this component
@@ -2201,15 +2165,12 @@ void nsWindow::Resize(double aX, double aY, double aWidth, double aHeight,
         ::SetWindowPos(mTransitionWnd, HWND_TOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
       }
-      SetThemeRegion();
     }
 
     ResizeDirectManipulationViewport();
   }
 
   if (aRepaint) Invalidate();
-
-  NotifyRollupGeometryChange();
 }
 
 mozilla::Maybe<bool> nsWindow::IsResizingNativeWidget() {
@@ -2620,6 +2581,12 @@ LayoutDeviceIntRect nsWindow::GetBounds() {
     }
   }
   rect.MoveTo(r.left, r.top);
+  if (mCompositorSession &&
+      !wr::WindowSizeSanityCheck(rect.width, rect.height)) {
+    gfxCriticalNoteOnce << "Invalid size" << rect << " size mode "
+                        << mFrameState->GetSizeMode();
+  }
+
   return rect;
 }
 

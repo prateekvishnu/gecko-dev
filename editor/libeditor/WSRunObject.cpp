@@ -250,7 +250,7 @@ EditActionResult WhiteSpaceVisibilityKeeper::
   // Do br adjustment.
   RefPtr<HTMLBRElement> invisibleBRElementAtEndOfLeftBlockElement =
       WSRunScanner::GetPrecedingBRElementUnlessVisibleContentFound(
-          aHTMLEditor.GetActiveEditingHost(),
+          aHTMLEditor.ComputeEditingHost(),
           EditorDOMPoint::AtEndOf(aLeftBlockElement));
   NS_ASSERTION(
       aPrecedingInvisibleBRElement == invisibleBRElementAtEndOfLeftBlockElement,
@@ -276,7 +276,8 @@ EditActionResult WhiteSpaceVisibilityKeeper::
     //     behavior, we should mark as handled.
     ret.MarkAsHandled();
   } else {
-    // XXX Why do we ignore the result of MoveOneHardLineContents()?
+    // XXX Why do we ignore the result of
+    //     MoveOneHardLineContentsWithTransaction()?
     NS_ASSERTION(rightBlockElement == afterRightBlockChild.GetContainer(),
                  "The relation is not guaranteed but assumed");
 #ifdef DEBUG
@@ -284,29 +285,33 @@ EditActionResult WhiteSpaceVisibilityKeeper::
         aHTMLEditor.CanMoveOrDeleteSomethingInHardLine(EditorRawDOMPoint(
             rightBlockElement, afterRightBlockChild.Offset()));
 #endif  // #ifdef DEBUG
-    MoveNodeResult moveNodeResult = aHTMLEditor.MoveOneHardLineContents(
-        EditorDOMPoint(rightBlockElement, afterRightBlockChild.Offset()),
-        EditorDOMPoint(&aLeftBlockElement, 0),
-        HTMLEditor::MoveToEndOfContainer::Yes);
-    if (moveNodeResult.Failed()) {
+    MoveNodeResult moveNodeResult =
+        aHTMLEditor.MoveOneHardLineContentsWithTransaction(
+            EditorDOMPoint(rightBlockElement, afterRightBlockChild.Offset()),
+            EditorDOMPoint(&aLeftBlockElement, 0u),
+            HTMLEditor::MoveToEndOfContainer::Yes);
+    if (moveNodeResult.isErr()) {
       NS_WARNING(
-          "HTMLEditor::MoveOneHardLineContents(MoveToEndOfContainer::Yes) "
-          "failed");
-      return EditActionResult(moveNodeResult.Rv());
+          "HTMLEditor::MoveOneHardLineContentsWithTransaction("
+          "MoveToEndOfContainer::Yes) failed");
+      return EditActionResult(moveNodeResult.unwrapErr());
     }
-    if (moveNodeResult.Succeeded()) {
+
 #ifdef DEBUG
-      MOZ_ASSERT(!firstLineHasContent.isErr());
-      if (firstLineHasContent.inspect()) {
-        NS_ASSERTION(moveNodeResult.Handled(),
-                     "Failed to consider whether moving or not something");
-      } else {
-        NS_ASSERTION(moveNodeResult.Ignored(),
-                     "Failed to consider whether moving or not something");
-      }
-#endif  // #ifdef DEBUG
-      ret |= moveNodeResult;
+    MOZ_ASSERT(!firstLineHasContent.isErr());
+    if (firstLineHasContent.inspect()) {
+      NS_ASSERTION(moveNodeResult.Handled(),
+                   "Failed to consider whether moving or not something");
+    } else {
+      NS_ASSERTION(moveNodeResult.Ignored(),
+                   "Failed to consider whether moving or not something");
     }
+#endif  // #ifdef DEBUG
+
+    // We don't need to update selection here because of dontChangeMySelection
+    // above.
+    moveNodeResult.IgnoreCaretPointSuggestion();
+    ret |= moveNodeResult;
     // Now, all children of rightBlockElement were moved to leftBlockElement.
     // So, afterRightBlockChild is now invalid.
     afterRightBlockChild.Clear();
@@ -318,11 +323,8 @@ EditActionResult WhiteSpaceVisibilityKeeper::
 
   rv = aHTMLEditor.DeleteNodeWithTransaction(
       *invisibleBRElementAtEndOfLeftBlockElement);
-  if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
-    return EditActionResult(NS_ERROR_EDITOR_DESTROYED);
-  }
   if (NS_FAILED(rv)) {
-    NS_WARNING("HTMLEditor::DeleteNodeWithTransaction() failed, but ignored");
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed, but ignored");
     return EditActionResult(rv);
   }
   return EditActionHandled();
@@ -434,7 +436,7 @@ EditActionResult WhiteSpaceVisibilityKeeper::
   // Do br adjustment.
   RefPtr<HTMLBRElement> invisibleBRElementBeforeLeftBlockElement =
       WSRunScanner::GetPrecedingBRElementUnlessVisibleContentFound(
-          aHTMLEditor.GetActiveEditingHost(), atLeftBlockChild);
+          aHTMLEditor.ComputeEditingHost(), atLeftBlockChild);
   NS_ASSERTION(
       aPrecedingInvisibleBRElement == invisibleBRElementBeforeLeftBlockElement,
       "The preceding invisible BR element computation was different");
@@ -456,10 +458,14 @@ EditActionResult WhiteSpaceVisibilityKeeper::
       return EditActionResult(NS_ERROR_EDITOR_DESTROYED);
     }
     NS_WARNING_ASSERTION(
-        moveNodeResult.Succeeded(),
+        moveNodeResult.isOk(),
         "HTMLEditor::MoveChildrenWithTransaction() failed, but ignored");
-    if (moveNodeResult.Succeeded()) {
+    if (moveNodeResult.isOk()) {
+      // We don't need to update selection here because of dontChangeMySelection
+      // above.
+      moveNodeResult.IgnoreCaretPointSuggestion();
       ret |= moveNodeResult;
+
 #ifdef DEBUG
       MOZ_ASSERT(!rightBlockHasContent.isErr());
       if (rightBlockHasContent.inspect()) {
@@ -513,7 +519,7 @@ EditActionResult WhiteSpaceVisibilityKeeper::
 #endif  // #ifdef DEBUG
 
     Element* editingHost =
-        aHTMLEditor.GetActiveEditingHost(HTMLEditor::LimitInBodyElement::No);
+        aHTMLEditor.ComputeEditingHost(HTMLEditor::LimitInBodyElement::No);
     if (MOZ_UNLIKELY(NS_WARN_IF(!editingHost))) {
       return EditActionResult(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
     }
@@ -547,11 +553,12 @@ EditActionResult WhiteSpaceVisibilityKeeper::
       MOZ_DIAGNOSTIC_ASSERT(atPreviousContent.IsSetAndValid());
     }
 
-    MoveNodeResult moveNodeResult = aHTMLEditor.MoveOneHardLineContents(
-        EditorDOMPoint(&aRightBlockElement, 0), atPreviousContent);
-    if (moveNodeResult.Failed()) {
-      NS_WARNING("HTMLEditor::MoveOneHardLineContents() failed");
-      return EditActionResult(moveNodeResult.Rv());
+    MoveNodeResult moveNodeResult =
+        aHTMLEditor.MoveOneHardLineContentsWithTransaction(
+            EditorDOMPoint(&aRightBlockElement, 0u), atPreviousContent);
+    if (moveNodeResult.isErr()) {
+      NS_WARNING("HTMLEditor::MoveOneHardLineContentsWithTransaction() failed");
+      return EditActionResult(moveNodeResult.unwrapErr());
     }
 
 #ifdef DEBUG
@@ -565,6 +572,9 @@ EditActionResult WhiteSpaceVisibilityKeeper::
     }
 #endif  // #ifdef DEBUG
 
+    // We don't need to update selection here because of dontChangeMySelection
+    // above.
+    moveNodeResult.IgnoreCaretPointSuggestion();
     ret |= moveNodeResult;
   }
 
@@ -574,11 +584,8 @@ EditActionResult WhiteSpaceVisibilityKeeper::
 
   rv = aHTMLEditor.DeleteNodeWithTransaction(
       *invisibleBRElementBeforeLeftBlockElement);
-  if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
-    return EditActionResult(NS_ERROR_EDITOR_DESTROYED);
-  }
   if (NS_FAILED(rv)) {
-    NS_WARNING("HTMLEditor::DeleteNodeWithTransaction() failed, but ignored");
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed, but ignored");
     return EditActionResult(rv);
   }
   return EditActionHandled();
@@ -617,7 +624,7 @@ EditActionResult WhiteSpaceVisibilityKeeper::
   // Do br adjustment.
   RefPtr<HTMLBRElement> invisibleBRElementAtEndOfLeftBlockElement =
       WSRunScanner::GetPrecedingBRElementUnlessVisibleContentFound(
-          aHTMLEditor.GetActiveEditingHost(),
+          aHTMLEditor.ComputeEditingHost(),
           EditorDOMPoint::AtEndOf(aLeftBlockElement));
   NS_ASSERTION(
       aPrecedingInvisibleBRElement == invisibleBRElementAtEndOfLeftBlockElement,
@@ -657,15 +664,16 @@ EditActionResult WhiteSpaceVisibilityKeeper::
 #endif  // #ifdef DEBUG
 
     // Nodes are dissimilar types.
-    MoveNodeResult moveNodeResult = aHTMLEditor.MoveOneHardLineContents(
-        EditorDOMPoint(&aRightBlockElement, 0),
-        EditorDOMPoint(&aLeftBlockElement, 0),
-        HTMLEditor::MoveToEndOfContainer::Yes);
-    if (moveNodeResult.Failed()) {
+    MoveNodeResult moveNodeResult =
+        aHTMLEditor.MoveOneHardLineContentsWithTransaction(
+            EditorDOMPoint(&aRightBlockElement, 0u),
+            EditorDOMPoint(&aLeftBlockElement, 0u),
+            HTMLEditor::MoveToEndOfContainer::Yes);
+    if (moveNodeResult.isErr()) {
       NS_WARNING(
-          "HTMLEditor::MoveOneHardLineContents(MoveToEndOfContainer::Yes) "
-          "failed");
-      return EditActionResult(moveNodeResult.Rv());
+          "HTMLEditor::MoveOneHardLineContentsWithTransaction("
+          "MoveToEndOfContainer::Yes) failed");
+      return EditActionResult(moveNodeResult.unwrapErr());
     }
 
 #ifdef DEBUG
@@ -678,6 +686,10 @@ EditActionResult WhiteSpaceVisibilityKeeper::
                    "Failed to consider whether moving or not something");
     }
 #endif  // #ifdef DEBUG
+
+    // We don't need to update selection here because of dontChangeMySelection
+    // above.
+    moveNodeResult.IgnoreCaretPointSuggestion();
     ret |= moveNodeResult;
   }
 
@@ -687,14 +699,11 @@ EditActionResult WhiteSpaceVisibilityKeeper::
 
   rv = aHTMLEditor.DeleteNodeWithTransaction(
       *invisibleBRElementAtEndOfLeftBlockElement);
-  if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
-    return ret.SetResult(NS_ERROR_EDITOR_DESTROYED);
-  }
   // XXX In other top level if blocks, the result of
   //     DeleteNodeWithTransaction() is ignored.  Why does only this result
   //     is respected?
   if (NS_FAILED(rv)) {
-    NS_WARNING("HTMLEditor::DeleteNodeWithTransaction() failed");
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed");
     return EditActionResult(rv);
   }
   return EditActionHandled();
@@ -898,7 +907,7 @@ Result<EditorDOMPoint, nsresult> WhiteSpaceVisibilityKeeper::ReplaceText(
     return EditorDOMPoint(aRangeToBeReplaced.StartRef());
   }
 
-  RefPtr<Element> editingHost = aHTMLEditor.GetActiveEditingHost();
+  RefPtr<Element> editingHost = aHTMLEditor.ComputeEditingHost();
   TextFragmentData textFragmentDataAtStart(aRangeToBeReplaced.StartRef(),
                                            editingHost);
   if (MOZ_UNLIKELY(NS_WARN_IF(!textFragmentDataAtStart.IsInitialized()))) {
@@ -1250,7 +1259,7 @@ Result<EditorDOMPoint, nsresult> WhiteSpaceVisibilityKeeper::ReplaceText(
 // static
 nsresult WhiteSpaceVisibilityKeeper::DeletePreviousWhiteSpace(
     HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPoint) {
-  Element* editingHost = aHTMLEditor.GetActiveEditingHost();
+  Element* editingHost = aHTMLEditor.ComputeEditingHost();
   TextFragmentData textFragmentDataAtDeletion(aPoint, editingHost);
   if (NS_WARN_IF(!textFragmentDataAtDeletion.IsInitialized())) {
     return NS_ERROR_FAILURE;
@@ -1328,7 +1337,7 @@ nsresult WhiteSpaceVisibilityKeeper::DeletePreviousWhiteSpace(
 // static
 nsresult WhiteSpaceVisibilityKeeper::DeleteInclusiveNextWhiteSpace(
     HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPoint) {
-  Element* editingHost = aHTMLEditor.GetActiveEditingHost();
+  Element* editingHost = aHTMLEditor.ComputeEditingHost();
   TextFragmentData textFragmentDataAtDeletion(aPoint, editingHost);
   if (NS_WARN_IF(!textFragmentDataAtDeletion.IsInitialized())) {
     return NS_ERROR_FAILURE;
@@ -1430,11 +1439,8 @@ nsresult WhiteSpaceVisibilityKeeper::DeleteContentNodeAndJoinTextNodesAroundIt(
           aContentToDelete, {WalkTreeOption::IgnoreNonEditableNode});
   // Delete the node, and join like nodes if appropriate
   rv = aHTMLEditor.DeleteNodeWithTransaction(aContentToDelete);
-  if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
-    return NS_ERROR_EDITOR_DESTROYED;
-  }
   if (NS_FAILED(rv)) {
-    NS_WARNING("HTMLEditor::DeleteNodeWithTransaction() failed");
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed");
     return rv;
   }
   // Are they both text nodes?  If so, join them!
@@ -2135,7 +2141,7 @@ nsresult WhiteSpaceVisibilityKeeper::
       NS_EVENT_BITS_MUTATION_NODEREMOVEDFROMDOCUMENT |
       NS_EVENT_BITS_MUTATION_CHARACTERDATAMODIFIED);
 
-  RefPtr<Element> editingHost = aHTMLEditor.GetActiveEditingHost();
+  RefPtr<Element> editingHost = aHTMLEditor.ComputeEditingHost();
   TextFragmentData textFragmentDataAtStart(rangeToDelete.StartRef(),
                                            editingHost);
   if (NS_WARN_IF(!textFragmentDataAtStart.IsInitialized())) {
@@ -2227,7 +2233,7 @@ nsresult WhiteSpaceVisibilityKeeper::
     if (mayBecomeUnexpectedDOMTree) {
       // If focus is changed by mutation event listeners, we should stop
       // handling this edit action.
-      if (editingHost != aHTMLEditor.GetActiveEditingHost()) {
+      if (editingHost != aHTMLEditor.ComputeEditingHost()) {
         NS_WARNING("Active editing host was changed");
         return NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE;
       }
@@ -2425,7 +2431,7 @@ nsresult
 WhiteSpaceVisibilityKeeper::MakeSureToKeepVisibleWhiteSpacesVisibleAfterSplit(
     HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPointToSplit) {
   TextFragmentData textFragmentDataAtSplitPoint(
-      aPointToSplit, aHTMLEditor.GetActiveEditingHost());
+      aPointToSplit, aHTMLEditor.ComputeEditingHost());
   if (NS_WARN_IF(!textFragmentDataAtSplitPoint.IsInitialized())) {
     return NS_ERROR_FAILURE;
   }
@@ -3003,7 +3009,7 @@ nsresult WhiteSpaceVisibilityKeeper::NormalizeVisibleWhiteSpacesAt(
   MOZ_ASSERT(aPoint.IsInContentNode());
   MOZ_ASSERT(EditorUtils::IsEditableContent(*aPoint.ContainerAsContent(),
                                             EditorType::HTML));
-  Element* editingHost = aHTMLEditor.GetActiveEditingHost();
+  Element* editingHost = aHTMLEditor.ComputeEditingHost();
   TextFragmentData textFragmentData(aPoint, editingHost);
   if (NS_WARN_IF(!textFragmentData.IsInitialized())) {
     return NS_ERROR_FAILURE;
@@ -3435,7 +3441,7 @@ EditorDOMPointInText WSRunScanner::TextFragmentData::
 nsresult WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces(
     HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPoint) {
   MOZ_ASSERT(aPoint.IsSet());
-  Element* editingHost = aHTMLEditor.GetActiveEditingHost();
+  Element* editingHost = aHTMLEditor.ComputeEditingHost();
   TextFragmentData textFragmentData(aPoint, editingHost);
   if (NS_WARN_IF(!textFragmentData.IsInitialized())) {
     return NS_ERROR_FAILURE;
@@ -3874,7 +3880,7 @@ EditorDOMRange WSRunScanner::GetRangeForDeletingBlockElementBoundaries(
                     .IsBefore(EditorRawDOMPoint(
                         const_cast<Element*>(&aRightBlockElement))));
 
-  const Element* editingHost = aHTMLEditor.GetActiveEditingHost();
+  const Element* editingHost = aHTMLEditor.ComputeEditingHost();
 
   EditorDOMRange range;
   // Include trailing invisible white-spaces in aLeftBlockElement.

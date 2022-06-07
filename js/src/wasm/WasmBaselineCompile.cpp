@@ -3877,7 +3877,7 @@ void BaseCompiler::emitCatchSetup(LabelKind kind, Control& tryCatch,
   if (kind == LabelKind::Try) {
     WasmTryNoteVector& tryNotes = masm.tryNotes();
     WasmTryNote& tryNote = tryNotes[controlItem().tryNoteIndex];
-    tryNote.end = masm.currentOffset();
+    tryNote.setTryBodyEnd(masm.currentOffset());
   }
 }
 
@@ -4093,9 +4093,8 @@ bool BaseCompiler::emitDelegate() {
 
   WasmTryNoteVector& tryNotes = masm.tryNotes();
   WasmTryNote& tryNote = tryNotes[controlItem().tryNoteIndex];
-  tryNote.end = masm.currentOffset();
-  tryNote.entryPoint = tryNote.end;
-  tryNote.framePushed = masm.framePushed();
+  tryNote.setTryBodyEnd(masm.currentOffset());
+  tryNote.setLandingPad(masm.currentOffset(), masm.framePushed());
 
   // Store the Instance that was left in InstanceReg by the exception
   // handling mechanism, that is this frame's Instance but with the exception
@@ -4176,13 +4175,12 @@ bool BaseCompiler::endTryCatch(ResultType type) {
 
   WasmTryNoteVector& tryNotes = masm.tryNotes();
   WasmTryNote& tryNote = tryNotes[controlItem().tryNoteIndex];
-  tryNote.entryPoint = masm.currentOffset();
-  tryNote.framePushed = masm.framePushed();
+  tryNote.setLandingPad(masm.currentOffset(), masm.framePushed());
 
   // If we are in a catchless try block, then there were no catch blocks to
   // mark the end of the try note, so we need to end it here.
   if (tryKind == LabelKind::Try) {
-    tryNote.end = tryNote.entryPoint;
+    tryNote.setTryBodyEnd(masm.currentOffset());
   }
 
   // Store the Instance that was left in InstanceReg by the exception
@@ -8012,7 +8010,27 @@ static void RelaxedConvertF64x2ToUI32x4(MacroAssembler& masm, RegV128 rs,
 static void RelaxedQ15MulrS(MacroAssembler& masm, RegV128 rs, RegV128 rsd) {
   masm.q15MulrInt16x8Relaxed(rsd, rs, rsd);
 }
-#  endif
+
+static void DotI8x16I7x16S(MacroAssembler& masm, RegV128 rs, RegV128 rsd) {
+  masm.dotInt8x16Int7x16(rsd, rs, rsd);
+}
+
+void BaseCompiler::emitDotI8x16I7x16AddS() {
+  RegV128 rsd = popV128();
+  RegV128 rs0, rs1;
+  pop2xV128(&rs0, &rs1);
+#    if defined(JS_CODEGEN_ARM64)
+  RegV128 temp = needV128();
+  masm.dotInt8x16Int7x16ThenAdd(rs0, rs1, rsd, temp);
+  freeV128(temp);
+#    else
+  masm.dotInt8x16Int7x16ThenAdd(rs0, rs1, rsd);
+#    endif
+  freeV128(rs1);
+  freeV128(rs0);
+  pushV128(rsd);
+}
+#  endif  // ENABLE_WASM_RELAXED_SIMD
 
 void BaseCompiler::emitVectorAndNot() {
   // We want x & ~y but the available operation is ~x & y, so reverse the
@@ -8317,6 +8335,10 @@ bool BaseCompiler::emitBody() {
 #define dispatchUnary2(arg1, arg2, type) \
   iter_.readUnary(type, &unused_a) &&    \
       (deadCode_ || (emitUnop(arg1, arg2), true))
+
+#define dispatchTernary0(doEmit, type)                        \
+  iter_.readTernary(type, &unused_a, &unused_b, &unused_c) && \
+      (deadCode_ || (doEmit(), true))
 
 #define dispatchTernary1(arg1, type)                          \
   iter_.readTernary(type, &unused_a, &unused_b, &unused_c) && \
@@ -9721,6 +9743,16 @@ bool BaseCompiler::emitBody() {
               return iter_.unrecognizedOpcode(&op);
             }
             CHECK_NEXT(dispatchVectorBinary(RelaxedQ15MulrS));
+          case uint32_t(SimdOp::I16x8DotI8x16I7x16S):
+            if (!moduleEnv_.v128RelaxedEnabled()) {
+              return iter_.unrecognizedOpcode(&op);
+            }
+            CHECK_NEXT(dispatchVectorBinary(DotI8x16I7x16S));
+          case uint32_t(SimdOp::I32x4DotI8x16I7x16AddS):
+            if (!moduleEnv_.v128RelaxedEnabled()) {
+              return iter_.unrecognizedOpcode(&op);
+            }
+            CHECK_NEXT(dispatchTernary0(emitDotI8x16I7x16AddS, ValType::V128));
 #  endif
           default:
             break;

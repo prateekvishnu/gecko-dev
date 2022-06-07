@@ -12,11 +12,19 @@ const { GeckoViewUtils } = ChromeUtils.import(
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   GeckoViewPrompter: "resource://gre/modules/GeckoViewPrompter.jsm",
-  Services: "resource://gre/modules/Services.jsm",
 });
+
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "DeferredTask",
+  "resource://gre/modules/DeferredTask.jsm"
+);
 
 const { debug, warn } = GeckoViewUtils.initLogging("GeckoViewPrompt");
 
@@ -86,7 +94,7 @@ class PromptFactory {
     }
   }
 
-  _handleSelect(aElement, aIsDropDown) {
+  _generateSelectItems(aElement) {
     const win = aElement.ownerGlobal;
     let id = 0;
     const map = {};
@@ -118,10 +126,41 @@ class PromptFactory {
       return items;
     })(aElement);
 
+    return [items, map, id];
+  }
+
+  _handleSelect(aElement, aIsDropDown) {
+    const win = aElement.ownerGlobal;
+    const [items] = this._generateSelectItems(aElement);
+
     if (aIsDropDown) {
       aElement.openInParentProcess = true;
     }
-    const prompt = new GeckoViewPrompter(win);
+
+    const prompt = new lazy.GeckoViewPrompter(win);
+
+    // Something changed the <select> while it was open.
+    const deferredUpdate = new lazy.DeferredTask(() => {
+      // Inner contents in choice prompt are updated.
+      const [newItems] = this._generateSelectItems(aElement);
+      prompt.update({
+        type: "choice",
+        mode: aElement.multiple ? "multiple" : "single",
+        choices: newItems,
+      });
+    }, 0);
+    const mut = new win.MutationObserver(() => {
+      deferredUpdate.arm();
+    });
+    mut.observe(aElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+
+    const dismissPrompt = () => prompt.dismiss();
+    aElement.addEventListener("blur", dismissPrompt, { mozSystemGroup: true });
+
     prompt.asyncShowPrompt(
       {
         type: "choice",
@@ -129,6 +168,12 @@ class PromptFactory {
         choices: items,
       },
       result => {
+        deferredUpdate.disarm();
+        mut.disconnect();
+        aElement.removeEventListener("blur", dismissPrompt, {
+          mozSystemGroup: true,
+        });
+
         if (aIsDropDown) {
           aElement.openInParentProcess = false;
         }
@@ -138,6 +183,7 @@ class PromptFactory {
           return;
         }
 
+        const [, map, id] = this._generateSelectItems(aElement);
         let dispatchEvents = false;
         if (!aElement.multiple) {
           const elem = map[result.choices[0]];
@@ -181,7 +227,25 @@ class PromptFactory {
   }
 
   _handleDateTime(aElement) {
-    const prompt = new GeckoViewPrompter(aElement.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(aElement.ownerGlobal);
+
+    const chromeEventHandler = aElement.ownerGlobal.docShell.chromeEventHandler;
+    const dismissPrompt = () => prompt.dismiss();
+    // Some controls don't have UA widget (bug 888320)
+    if (
+      ["month", "week"].includes(aElement.type) &&
+      !aElement.openOrClosedShadowRoot
+    ) {
+      aElement.addEventListener("blur", dismissPrompt, {
+        mozSystemGroup: true,
+      });
+    } else {
+      chromeEventHandler.addEventListener(
+        "MozCloseDateTimePicker",
+        dismissPrompt
+      );
+    }
+
     prompt.asyncShowPrompt(
       {
         type: "datetime",
@@ -192,6 +256,21 @@ class PromptFactory {
         step: aElement.step,
       },
       result => {
+        // Some controls don't have UA widget (bug 888320)
+        if (
+          ["month", "week"].includes(aElement.type) &&
+          !aElement.openOrClosedShadowRoot
+        ) {
+          aElement.removeEventListener("blur", dismissPrompt, {
+            mozSystemGroup: true,
+          });
+        } else {
+          chromeEventHandler.removeEventListener(
+            "MozCloseDateTimePicker",
+            dismissPrompt
+          );
+        }
+
         // OK: result
         // Cancel: !result
         if (
@@ -320,7 +399,7 @@ class PromptFactory {
     menu.sendShowEvent();
     menu.build(builder);
 
-    const prompt = new GeckoViewPrompter(target.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(target.ownerGlobal);
     prompt.asyncShowPrompt(
       {
         type: "choice",
@@ -345,7 +424,7 @@ class PromptFactory {
       ? aEvent.popupWindowURI.displaySpec
       : "about:blank";
 
-    const prompt = new GeckoViewPrompter(aEvent.requestingWindow);
+    const prompt = new lazy.GeckoViewPrompter(aEvent.requestingWindow);
     prompt.asyncShowPrompt(
       {
         type: "popup",
@@ -474,7 +553,7 @@ PromptFactory.prototype.QueryInterface = ChromeUtils.generateQI([
 
 class PromptDelegate {
   constructor(aParent) {
-    this._prompter = new GeckoViewPrompter(aParent);
+    this._prompter = new lazy.GeckoViewPrompter(aParent);
   }
 
   BUTTON_TYPE_POSITIVE = 0;

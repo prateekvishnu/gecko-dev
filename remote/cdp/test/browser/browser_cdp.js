@@ -26,6 +26,11 @@ add_task(async function testCDP({ client }) {
     "Browser.getVersion().userAgent is correct"
   );
 
+  is(
+    version.revision,
+    Services.appinfo.sourceURL.split("/").pop(),
+    "Browser.getVersion().revision is correct"
+  );
   // receive console.log messages and print them
   let result = await Log.enable();
   info("Log domain has been enabled");
@@ -43,7 +48,7 @@ add_task(async function testCDP({ client }) {
   Assert.deepEqual(result, {}, "Got expected result value");
 
   const frameStoppedLoading = Page.frameStoppedLoading();
-  const navigatedWithinDocument = Page.navigatedWithinDocument();
+  const frameNavigated = Page.frameNavigated();
   const loadEventFired = Page.loadEventFired();
   await Page.navigate({
     url: toDataURL(`<script>console.log("foo")</script>`),
@@ -56,6 +61,6 @@ add_task(async function testCDP({ client }) {
   await frameStoppedLoading;
   info("`Page.frameStoppedLoading` fired");
 
-  await navigatedWithinDocument;
-  info("`Page.navigatedWithinDocument` fired");
+  await frameNavigated;
+  info("`Page.frameNavigated` fired");
 });

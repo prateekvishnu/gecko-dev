@@ -29,8 +29,7 @@
 #include "ValidationError.h"
 #include "ipc/WebGPUChild.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 mozilla::LazyLogModule gWebGPULog("WebGPU");
 
@@ -93,6 +92,15 @@ void Device::CleanupUnregisteredInParent() {
     mBridge->FreeUnregisteredInParentDevice(mId);
   }
   mValid = false;
+}
+
+// Generate an error on the Device timeline for this device.
+//
+// aMessage is interpreted as UTF-8.
+void Device::GenerateError(const nsCString& aMessage) {
+  if (mBridge->CanSend()) {
+    mBridge->SendGenerateError(mId, aMessage);
+  }
 }
 
 void Device::GetLabel(nsAString& aValue) const { aValue = mLabel; }
@@ -456,5 +464,4 @@ already_AddRefed<dom::Promise> Device::PopErrorScope(ErrorResult& aRv) {
   return promise.forget();
 }
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu

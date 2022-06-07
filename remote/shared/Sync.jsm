@@ -12,20 +12,21 @@ var EXPORTED_SYMBOLS = [
   "PollPromise",
 ];
 
-var { XPCOMUtils } = ChromeUtils.import(
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
+const lazy = {};
 
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   Log: "chrome://remote/content/shared/Log.jsm",
 });
 
 const { TYPE_REPEATING_SLACK } = Ci.nsITimer;
 
-XPCOMUtils.defineLazyGetter(this, "logger", () =>
-  Log.get(Log.TYPES.REMOTE_AGENT)
+XPCOMUtils.defineLazyGetter(lazy, "logger", () =>
+  lazy.Log.get(lazy.Log.TYPES.REMOTE_AGENT)
 );
 
 /**
@@ -56,16 +57,32 @@ function AnimationFramePromise(win) {
  *
  * @returns {Object}
  *     An object that returns the following properties:
+ *       - fulfilled Flag that indicates that the promise got resolved
+ *       - pending Flag that indicates a not yet fulfilled/rejected promise
  *       - promise The actual promise
  *       - reject Callback to reject the promise
+ *       - rejected Flag that indicates that the promise got rejected
  *       - resolve Callback to resolve the promise
  */
 function Deferred() {
   const deferred = {};
 
   deferred.promise = new Promise((resolve, reject) => {
-    deferred.resolve = resolve;
-    deferred.reject = reject;
+    deferred.fulfilled = false;
+    deferred.pending = true;
+    deferred.rejected = false;
+
+    deferred.resolve = (...args) => {
+      deferred.fulfilled = true;
+      deferred.pending = false;
+      resolve(...args);
+    };
+
+    deferred.reject = (...args) => {
+      deferred.pending = false;
+      deferred.rejected = true;
+      reject(...args);
+    };
   });
 
   return deferred;
@@ -129,14 +146,14 @@ function EventPromise(subject, eventName, options = {}) {
 
   return new Promise((resolve, reject) => {
     function listener(event) {
-      logger.trace(`Received DOM event ${event.type} for ${event.target}`);
+      lazy.logger.trace(`Received DOM event ${event.type} for ${event.target}`);
       try {
         if (checkFn && !checkFn(event)) {
           return;
         }
       } catch (e) {
         // Treat an exception in the callback as a falsy value
-        logger.warn(`Event check failed: ${e.message}`);
+        lazy.logger.warn(`Event check failed: ${e.message}`);
       }
 
       subject.removeEventListener(eventName, listener, capture);

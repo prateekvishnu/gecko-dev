@@ -577,27 +577,6 @@ template <typename T>
 void CodeGeneratorX86Shared::bailout(const T& binder, LSnapshot* snapshot) {
   encode(snapshot);
 
-  // Though the assembler doesn't track all frame pushes, at least make sure
-  // the known value makes sense. We can't use bailout tables if the stack
-  // isn't properly aligned to the static frame size.
-  MOZ_ASSERT_IF(frameClass_ != FrameSizeClass::None() && deoptTable_,
-                frameClass_.frameSize() == masm.framePushed());
-
-#ifdef JS_CODEGEN_X86
-  // On x64, bailout tables are pointless, because 16 extra bytes are
-  // reserved per external jump, whereas it takes only 10 bytes to encode a
-  // a non-table based bailout.
-  if (assignBailoutId(snapshot)) {
-    binder(masm, deoptTable_->value +
-                     snapshot->bailoutId() * BAILOUT_TABLE_ENTRY_SIZE);
-    return;
-  }
-#endif
-
-  // We could not use a jump table, either because all bailout IDs were
-  // reserved, or a jump table is not optimal for this frame size or
-  // platform. Whatever, we will generate a lazy bailout.
-  //
   // All bailout code is associated with the bytecodeSite of the block we are
   // bailing out from.
   InlineScriptTree* tree = snapshot->mir()->block()->trackedTree();
@@ -2297,6 +2276,11 @@ void CodeGenerator::visitWasmTernarySimd128(LWasmTernarySimd128* ins) {
       masm.laneSelectSimd128(mask, lhs, rhs, dest);
       break;
     }
+    case wasm::SimdOp::I32x4DotI8x16I7x16AddS:
+      masm.dotInt8x16Int7x16ThenAdd(ToFloatRegister(ins->v0()),
+                                    ToFloatRegister(ins->v1()),
+                                    ToFloatRegister(ins->v2()));
+      break;
     default:
       MOZ_CRASH("NYI");
   }
@@ -2689,6 +2673,9 @@ void CodeGenerator::visitWasmBinarySimd128(LWasmBinarySimd128* ins) {
       break;
     case wasm::SimdOp::I16x8RelaxedQ15MulrS:
       masm.q15MulrInt16x8Relaxed(lhs, rhs, dest);
+      break;
+    case wasm::SimdOp::I16x8DotI8x16I7x16S:
+      masm.dotInt8x16Int7x16(lhs, rhs, dest);
       break;
 #  ifdef ENABLE_WASM_SIMD_WORMHOLE
     case wasm::SimdOp::MozWHSELFTEST:

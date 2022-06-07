@@ -55,6 +55,9 @@ detail-version =
 detail-last-updated =
     .label = Last Updated
 
+addon-detail-description-expand = Show more
+addon-detail-description-collapse = Show less
+
 detail-contributions-description = The developer of this add-on asks that you help support its continued development by making a small contribution.
 
 detail-contributions-button = Contribute
@@ -358,6 +361,8 @@ theme-enabled-heading = Enabled
 theme-disabled-heading = Disabled
 theme-monochromatic-heading = Colorways
 theme-monochromatic-subheading = Vibrant new colorways from { -brand-product-name }. Available for a limited time.
+
+theme-colorways-button = Try Colorways
 
 plugin-enabled-heading = Enabled
 plugin-disabled-heading = Disabled

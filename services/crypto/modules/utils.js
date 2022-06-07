@@ -13,9 +13,10 @@ const { CommonUtils } = ChromeUtils.import(
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
-XPCOMUtils.defineLazyGlobalGetters(this, ["crypto"]);
+const lazy = {};
+XPCOMUtils.defineLazyGlobalGetters(lazy, ["crypto"]);
 
-XPCOMUtils.defineLazyGetter(this, "textEncoder", function() {
+XPCOMUtils.defineLazyGetter(lazy, "textEncoder", function() {
   return new TextEncoder();
 });
 
@@ -51,27 +52,23 @@ var CryptoUtils = {
   },
 
   generateRandomBytes(length) {
-    return crypto.getRandomValues(new Uint8Array(length));
+    return lazy.crypto.getRandomValues(new Uint8Array(length));
   },
 
   /**
    * UTF8-encode a message and hash it with the given hasher. Returns a
-   * string containing bytes. The hasher is reset if it's an HMAC hasher.
+   * string containing bytes.
    */
   digestUTF8(message, hasher) {
     let data = this._utf8Converter.convertToByteArray(message, {});
     hasher.update(data, data.length);
     let result = hasher.finish(false);
-    if (hasher instanceof Ci.nsICryptoHMAC) {
-      hasher.reset();
-    }
     return result;
   },
 
   /**
    * Treat the given message as a bytes string (if necessary) and hash it with
    * the given hasher. Returns a string containing bytes.
-   * The hasher is reset if it's an HMAC hasher.
    */
   digestBytes(bytes, hasher) {
     if (typeof bytes == "string" || bytes instanceof String) {
@@ -83,9 +80,6 @@ var CryptoUtils = {
   digestBytesArray(bytes, hasher) {
     hasher.update(bytes, bytes.length);
     let result = hasher.finish(false);
-    if (hasher instanceof Ci.nsICryptoHMAC) {
-      hasher.reset();
-    }
     return result;
   },
 
@@ -119,24 +113,6 @@ var CryptoUtils = {
   },
 
   /**
-   * Produce an HMAC key object from a key string.
-   */
-  makeHMACKey: function makeHMACKey(str) {
-    return Svc.KeyFactory.keyFromString(Ci.nsIKeyObject.HMAC, str);
-  },
-
-  /**
-   * Produce an HMAC hasher and initialize it with the given HMAC key.
-   */
-  makeHMACHasher: function makeHMACHasher(type, key) {
-    let hasher = Cc["@mozilla.org/security/hmac;1"].createInstance(
-      Ci.nsICryptoHMAC
-    );
-    hasher.init(type, key);
-    return hasher;
-  },
-
-  /**
    * @param {string} alg Hash algorithm (common values are SHA-1 or SHA-256)
    * @param {string} key Key as an octet string.
    * @param {string} data Data as an octet string.
@@ -160,7 +136,7 @@ var CryptoUtils = {
   async hkdfLegacy(ikm, xts, info, len) {
     ikm = CommonUtils.byteStringToArrayBuffer(ikm);
     xts = CommonUtils.byteStringToArrayBuffer(xts);
-    info = textEncoder.encode(info);
+    info = lazy.textEncoder.encode(info);
     const okm = await CryptoUtils.hkdf(ikm, xts, info, len);
     return CommonUtils.arrayBufferToByteString(okm);
   },
@@ -173,14 +149,14 @@ var CryptoUtils = {
    * @returns {Uint8Array}
    */
   async hmac(alg, key, data) {
-    const hmacKey = await crypto.subtle.importKey(
+    const hmacKey = await lazy.crypto.subtle.importKey(
       "raw",
       key,
       { name: "HMAC", hash: alg },
       false,
       ["sign"]
     );
-    const result = await crypto.subtle.sign("HMAC", hmacKey, data);
+    const result = await lazy.crypto.subtle.sign("HMAC", hmacKey, data);
     return new Uint8Array(result);
   },
 
@@ -192,14 +168,14 @@ var CryptoUtils = {
    * @returns {Uint8Array}
    */
   async hkdf(ikm, salt, info, len) {
-    const key = await crypto.subtle.importKey(
+    const key = await lazy.crypto.subtle.importKey(
       "raw",
       ikm,
       { name: "HKDF" },
       false,
       ["deriveBits"]
     );
-    const okm = await crypto.subtle.deriveBits(
+    const okm = await lazy.crypto.subtle.deriveBits(
       {
         name: "HKDF",
         hash: "SHA-256",
@@ -223,14 +199,14 @@ var CryptoUtils = {
   async pbkdf2Generate(passphrase, salt, iterations, len) {
     passphrase = CommonUtils.byteStringToArrayBuffer(passphrase);
     salt = CommonUtils.byteStringToArrayBuffer(salt);
-    const key = await crypto.subtle.importKey(
+    const key = await lazy.crypto.subtle.importKey(
       "raw",
       passphrase,
       { name: "PBKDF2" },
       false,
       ["deriveBits"]
     );
-    const output = await crypto.subtle.deriveBits(
+    const output = await lazy.crypto.subtle.deriveBits(
       {
         name: "PBKDF2",
         hash: "SHA-256",
@@ -494,10 +470,10 @@ var CryptoUtils = {
       options.hasOwnProperty("payload") &&
       options.payload
     ) {
-      const buffer = textEncoder.encode(
+      const buffer = lazy.textEncoder.encode(
         `hawk.1.payload\n${contentType}\n${options.payload}\n`
       );
-      const hash = await crypto.subtle.digest("SHA-256", buffer);
+      const hash = await lazy.crypto.subtle.digest("SHA-256", buffer);
       // HAWK specifies this .hash to use +/ (not _-) and include the
       // trailing "==" padding.
       artifacts.hash = ChromeUtils.base64URLEncode(hash, { pad: true })
@@ -570,13 +546,6 @@ XPCOMUtils.defineLazyGetter(CryptoUtils, "_utf8Converter", function() {
 });
 
 var Svc = {};
-
-XPCOMUtils.defineLazyServiceGetter(
-  Svc,
-  "KeyFactory",
-  "@mozilla.org/security/keyobjectfactory;1",
-  "nsIKeyObjectFactory"
-);
 
 Observers.add("xpcom-shutdown", function unloadServices() {
   Observers.remove("xpcom-shutdown", unloadServices);

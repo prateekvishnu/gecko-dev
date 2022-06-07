@@ -10,9 +10,10 @@ const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { clearTimeout, setTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
 );
-const { fxAccounts } = ChromeUtils.import(
+const { getFxAccountsSingleton } = ChromeUtils.import(
   "resource://gre/modules/FxAccounts.jsm"
 );
+const fxAccounts = getFxAccountsSingleton();
 const { FxAccountsClient } = ChromeUtils.import(
   "resource://gre/modules/FxAccountsClient.jsm"
 );
@@ -23,13 +24,10 @@ const { Logger } = ChromeUtils.import("resource://tps/logger.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
+const lazy = {};
+XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 /**
  * Helper object for Firefox Accounts authentication
@@ -100,7 +98,7 @@ var Authentication = {
     const tries = 10;
     const normalWait = 2000;
     for (let i = 0; i < tries; ++i) {
-      let resp = await fetch(restmailURI);
+      let resp = await lazy.fetch(restmailURI);
       let messages = await resp.json();
       // Sort so that the most recent emails are first.
       messages.sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt));
@@ -147,7 +145,7 @@ var Authentication = {
     )}`;
     try {
       // Clean up after ourselves.
-      let deleteResult = await fetch(restmailURI, { method: "DELETE" });
+      let deleteResult = await lazy.fetch(restmailURI, { method: "DELETE" });
       if (!deleteResult.ok) {
         Logger.logInfo(
           `Warning: Got non-success status ${deleteResult.status} when deleting emails`

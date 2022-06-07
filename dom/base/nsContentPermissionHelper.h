@@ -32,8 +32,7 @@ namespace IPC {
 class Principal;
 }  // namespace IPC
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Element;
 class PermissionRequest;
@@ -96,7 +95,7 @@ class nsContentPermissionUtils {
 };
 
 nsresult TranslateChoices(
-    JS::HandleValue aChoices,
+    JS::Handle<JS::Value> aChoices,
     const nsTArray<PermissionRequest>& aPermissionRequests,
     nsTArray<PermissionChoice>& aTranslatedChoices);
 
@@ -169,8 +168,7 @@ class ContentPermissionRequestBase : public nsIContentPermissionRequest {
   bool mIsRequestDelegatedToUnsafeThirdParty;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using mozilla::dom::ContentPermissionRequestParent;
 
@@ -231,7 +229,7 @@ class RemotePermissionRequest final
   virtual ~RemotePermissionRequest();
 
   MOZ_CAN_RUN_SCRIPT
-  void DoAllow(JS::HandleValue aChoices);
+  void DoAllow(JS::Handle<JS::Value> aChoices);
   MOZ_CAN_RUN_SCRIPT
   void DoCancel();
 

@@ -5,12 +5,11 @@
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  Services: "resource://gre/modules/Services.jsm",
-});
+const lazy = {};
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["fetch", "URL"]);
+XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 const TIPPYTOP_PATH = "chrome://activity-stream/content/data/content/tippytop/";
 const TIPPYTOP_JSON_PATH =
@@ -34,7 +33,7 @@ function getDomain(url, strip = "www.") {
   return domain;
 }
 
-this.TippyTopProvider = class TippyTopProvider {
+class TippyTopProvider {
   constructor() {
     this._sitesByDomain = new Map();
     this.initialized = false;
@@ -44,7 +43,7 @@ this.TippyTopProvider = class TippyTopProvider {
     // Load the Tippy Top sites from the json manifest.
     try {
       for (const site of await (
-        await fetch(TIPPYTOP_JSON_PATH, {
+        await lazy.fetch(TIPPYTOP_JSON_PATH, {
           credentials: "omit",
         })
       ).json()) {
@@ -67,6 +66,6 @@ this.TippyTopProvider = class TippyTopProvider {
     }
     return site;
   }
-};
+}
 
 const EXPORTED_SYMBOLS = ["TippyTopProvider", "getDomain"];

@@ -23,6 +23,10 @@
 <?xml-stylesheet href="chrome://browser/content/places/places.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/content/usercontext/usercontext.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/skin/" type="text/css"?>
+#ifdef XP_WIN
+<?xml-stylesheet href="chrome://browser/skin/browser-aero.css" type="text/css"?>
+#endif
+
 <?xml-stylesheet href="chrome://browser/skin/controlcenter/panel.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/skin/customizableui/panelUI.css" type="text/css"?>
 <?xml-stylesheet href="chrome://browser/skin/downloads/downloads.css" type="text/css"?>
@@ -70,6 +74,7 @@
   <link rel="localization" href="browser/appmenu.ftl"/>
   <link rel="localization" href="browser/panelUI.ftl"/>
   <link rel="localization" href="preview/interventions.ftl"/>
+  <link rel="localization" href="preview/textrecognition.ftl"/>
   <link rel="localization" href="browser/sidebarMenu.ftl"/>
   <link rel="localization" href="browser/allTabsMenu.ftl"/>
   <link rel="localization" href="browser/places.ftl"/>

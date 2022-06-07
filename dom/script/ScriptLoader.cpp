@@ -9,6 +9,8 @@
 #include "ScriptTrace.h"
 #include "ModuleLoader.h"
 
+#include "zlib.h"
+
 #include "prsystem.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -17,6 +19,7 @@
 #include "js/ContextOptions.h"        // JS::ContextOptionsRef
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/loader/ScriptLoadRequest.h"
+#include "ScriptCompression.h"
 #include "js/loader/LoadedScript.h"
 #include "js/loader/ModuleLoadRequest.h"
 #include "js/MemoryFunctions.h"
@@ -1600,7 +1603,7 @@ nsresult ScriptLoader::AttemptAsyncScriptCompile(ScriptLoadRequest* aRequest,
 
   // Introduction script will actually be computed and set when the script is
   // collected from offthread
-  JS::RootedScript dummyIntroductionScript(cx);
+  JS::Rooted<JSScript*> dummyIntroductionScript(cx);
   nsresult rv = FillCompileOptionsForRequest(cx, aRequest, &options,
                                              &dummyIntroductionScript);
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -1693,6 +1696,7 @@ nsresult ScriptLoader::AttemptAsyncScriptCompile(ScriptLoadRequest* aRequest,
           TRACE_FOR_TEST(aRequest->GetScriptLoadContext()->GetScriptElement(),
                          "delazification_on_demand_only");
           break;
+        case JS::DelazificationOption::CheckConcurrentWithOnDemand:
         case JS::DelazificationOption::ConcurrentDepthFirst:
           TRACE_FOR_TEST(aRequest->GetScriptLoadContext()->GetScriptElement(),
                          "delazification_concurrent_depth_first");
@@ -2349,10 +2353,10 @@ nsresult ScriptLoader::EvaluateScript(nsIGlobalObject* aGlobalObject,
   // Create a ClassicScript object and associate it with the JSScript.
   RefPtr<ClassicScript> classicScript =
       new ClassicScript(aRequest->mFetchOptions, aRequest->mBaseURL);
-  JS::RootedValue classicScriptValue(cx, JS::PrivateValue(classicScript));
+  JS::Rooted<JS::Value> classicScriptValue(cx, JS::PrivateValue(classicScript));
 
   JS::CompileOptions options(cx);
-  JS::RootedScript introductionScript(cx);
+  JS::Rooted<JSScript*> introductionScript(cx);
   nsresult rv =
       FillCompileOptionsForRequest(cx, aRequest, &options, &introductionScript);
 
@@ -2537,7 +2541,7 @@ void ScriptLoader::EncodeRequestBytecode(JSContext* aCx,
     result =
         JS::FinishIncrementalEncoding(aCx, module, aRequest->mScriptBytecode);
   } else {
-    JS::RootedScript script(aCx, aRequest->mScriptForBytecodeEncoding);
+    JS::Rooted<JSScript*> script(aCx, aRequest->mScriptForBytecodeEncoding);
     result =
         JS::FinishIncrementalEncoding(aCx, script, aRequest->mScriptBytecode);
   }
@@ -2551,7 +2555,14 @@ void ScriptLoader::EncodeRequestBytecode(JSContext* aCx,
     return;
   }
 
-  if (aRequest->mScriptBytecode.length() >= UINT32_MAX) {
+  Vector<uint8_t> compressedBytecode;
+  // TODO probably need to move this to a helper thread
+  if (!ScriptBytecodeCompress(aRequest->mScriptBytecode,
+                              aRequest->mBytecodeOffset, compressedBytecode)) {
+    return;
+  }
+
+  if (compressedBytecode.length() >= UINT32_MAX) {
     LOG(
         ("ScriptLoadRequest (%p): Bytecode cache is too large to be decoded "
          "correctly.",
@@ -2564,7 +2575,8 @@ void ScriptLoader::EncodeRequestBytecode(JSContext* aCx,
   // case, we just ignore the current one.
   nsCOMPtr<nsIAsyncOutputStream> output;
   rv = aRequest->mCacheInfo->OpenAlternativeOutputStream(
-      BytecodeMimeTypeFor(aRequest), aRequest->mScriptBytecode.length(),
+      BytecodeMimeTypeFor(aRequest),
+      static_cast<int64_t>(compressedBytecode.length()),
       getter_AddRefs(output));
   if (NS_FAILED(rv)) {
     LOG(
@@ -2581,17 +2593,17 @@ void ScriptLoader::EncodeRequestBytecode(JSContext* aCx,
   });
 
   uint32_t n;
-  rv = output->Write(reinterpret_cast<char*>(aRequest->mScriptBytecode.begin()),
-                     aRequest->mScriptBytecode.length(), &n);
-  LOG((
-      "ScriptLoadRequest (%p): Write bytecode cache (rv = %X, length = %u, "
-      "written = %u)",
-      aRequest, unsigned(rv), unsigned(aRequest->mScriptBytecode.length()), n));
+  rv = output->Write(reinterpret_cast<char*>(compressedBytecode.begin()),
+                     compressedBytecode.length(), &n);
+  LOG(
+      ("ScriptLoadRequest (%p): Write bytecode cache (rv = %X, length = %u, "
+       "written = %u)",
+       aRequest, unsigned(rv), unsigned(compressedBytecode.length()), n));
   if (NS_FAILED(rv)) {
     return;
   }
 
-  MOZ_RELEASE_ASSERT(aRequest->mScriptBytecode.length() == n);
+  MOZ_RELEASE_ASSERT(compressedBytecode.length() == n);
 
   bytecodeFailed.release();
   TRACE_FOR_TEST_NONE(aRequest->GetScriptLoadContext()->GetScriptElement(),
@@ -2633,7 +2645,8 @@ void ScriptLoader::GiveUpBytecodeEncoding() {
         result = JS::FinishIncrementalEncoding(aes->cx(), module,
                                                request->mScriptBytecode);
       } else {
-        JS::RootedScript script(aes->cx(), request->mScriptForBytecodeEncoding);
+        JS::Rooted<JSScript*> script(aes->cx(),
+                                     request->mScriptForBytecodeEncoding);
         result = JS::FinishIncrementalEncoding(aes->cx(), script,
                                                request->mScriptBytecode);
       }

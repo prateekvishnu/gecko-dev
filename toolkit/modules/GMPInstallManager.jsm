@@ -26,24 +26,26 @@ var EXPORTED_SYMBOLS = [
   "GMPAddon",
 ];
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "CertUtils",
   "resource://gre/modules/CertUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "UpdateUtils",
   "resource://gre/modules/UpdateUtils.jsm"
 );
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ServiceRequest",
   "resource://gre/modules/ServiceRequest.jsm"
 );
@@ -69,7 +71,7 @@ function downloadJSON(uri) {
   let log = getScopedLogger("GMPInstallManager.checkForAddons");
   log.info("fetching config from: " + uri);
   return new Promise((resolve, reject) => {
-    let xmlHttp = new ServiceRequest({ mozAnon: true });
+    let xmlHttp = new lazy.ServiceRequest({ mozAnon: true });
 
     xmlHttp.onload = function(aResponse) {
       resolve(JSON.parse(this.responseText));
@@ -95,7 +97,7 @@ function downloadLocalConfig() {
     LOCAL_GMP_SOURCES.map(conf => {
       return downloadJSON(conf.src).then(addons => {
         let platforms = addons.vendors[conf.id].platforms;
-        let target = Services.appinfo.OS + "_" + UpdateUtils.ABI;
+        let target = Services.appinfo.OS + "_" + lazy.UpdateUtils.ABI;
         let details = null;
 
         while (!details) {
@@ -160,7 +162,7 @@ GMPInstallManager.prototype = {
       log.info("Using url: " + url);
     }
 
-    url = await UpdateUtils.formatUpdateURL(url);
+    url = await lazy.UpdateUtils.formatUpdateURL(url);
 
     log.info("Using url (with replacement): " + url);
     return url;
@@ -318,7 +320,7 @@ GMPInstallManager.prototype = {
     // will be done instead of the older cert pinning method.
     let checkContentSignature = GMPPrefs.getBool(
       GMPPrefs.KEY_CHECK_CONTENT_SIGNATURE,
-      false
+      true
     );
 
     let allowNonBuiltIn = true;
@@ -334,7 +336,7 @@ GMPInstallManager.prototype = {
         true
       );
       if (GMPPrefs.getBool(GMPPrefs.KEY_CERT_CHECKATTRS, true)) {
-        certs = CertUtils.readCertPrefs(GMPPrefs.KEY_CERTS_BRANCH);
+        certs = lazy.CertUtils.readCertPrefs(GMPPrefs.KEY_CERTS_BRANCH);
       }
     }
 
@@ -534,6 +536,8 @@ GMPInstallManager.prototype = {
       }, this);
 
       if (!addonsToInstall.length) {
+        let now = Math.round(Date.now() / 1000);
+        GMPPrefs.setInt(GMPPrefs.KEY_UPDATE_LAST_EMPTY_CHECK, now);
         log.info("No new addons to install, returning");
         return { status: "nothing-new-to-install" };
       }
@@ -685,7 +689,7 @@ GMPExtractor.prototype = {
     let deferredPromise = this._deferred;
     let { zipPath, relativeInstallPath } = this;
     // Escape the zip path since the worker will use it as a URI
-    let zipFile = new FileUtils.File(zipPath);
+    let zipFile = new lazy.FileUtils.File(zipPath);
     let zipURI = Services.io.newFileURI(zipFile).spec;
     let worker = new ChromeWorker(
       "resource://gre/modules/GMPExtractorWorker.js"
@@ -727,6 +731,8 @@ GMPDownloader.prototype = {
   start() {
     let log = getScopedLogger("GMPDownloader");
     let gmpAddon = this._gmpAddon;
+    let now = Math.round(Date.now() / 1000);
+    GMPPrefs.setInt(GMPPrefs.KEY_PLUGIN_LAST_INSTALL_START, now, gmpAddon.id);
 
     if (!gmpAddon.isValid) {
       log.info("gmpAddon is not valid, will not continue");
@@ -743,6 +749,8 @@ GMPDownloader.prototype = {
     };
     return ProductAddonChecker.downloadAddon(gmpAddon, downloadOptions).then(
       zipPath => {
+        let now = Math.round(Date.now() / 1000);
+        GMPPrefs.setInt(GMPPrefs.KEY_PLUGIN_LAST_DOWNLOAD, now, gmpAddon.id);
         log.info(
           `install to directory path: ${gmpAddon.id}/${gmpAddon.version}`
         );
@@ -751,25 +759,50 @@ GMPDownloader.prototype = {
           gmpAddon.version,
         ]);
         let installPromise = gmpInstaller.install();
-        return installPromise.then(extractedPaths => {
-          // Success, set the prefs
-          let now = Math.round(Date.now() / 1000);
-          GMPPrefs.setInt(GMPPrefs.KEY_PLUGIN_LAST_UPDATE, now, gmpAddon.id);
-          // Remember our ABI, so that if the profile is migrated to another
-          // platform or from 32 -> 64 bit, we notice and don't try to load the
-          // unexecutable plugin library.
-          let abi = GMPUtils._expectedABI(gmpAddon);
-          log.info("Setting ABI to '" + abi + "' for " + gmpAddon.id);
-          GMPPrefs.setString(GMPPrefs.KEY_PLUGIN_ABI, abi, gmpAddon.id);
-          // Setting the version pref signals installation completion to consumers,
-          // if you need to set other prefs etc. do it before this.
-          GMPPrefs.setString(
-            GMPPrefs.KEY_PLUGIN_VERSION,
-            gmpAddon.version,
-            gmpAddon.id
-          );
-          return extractedPaths;
-        });
+        return installPromise.then(
+          extractedPaths => {
+            // Success, set the prefs
+            let now = Math.round(Date.now() / 1000);
+            GMPPrefs.setInt(GMPPrefs.KEY_PLUGIN_LAST_UPDATE, now, gmpAddon.id);
+            // Remember our ABI, so that if the profile is migrated to another
+            // platform or from 32 -> 64 bit, we notice and don't try to load the
+            // unexecutable plugin library.
+            let abi = GMPUtils._expectedABI(gmpAddon);
+            log.info("Setting ABI to '" + abi + "' for " + gmpAddon.id);
+            GMPPrefs.setString(GMPPrefs.KEY_PLUGIN_ABI, abi, gmpAddon.id);
+            // Setting the version pref signals installation completion to consumers,
+            // if you need to set other prefs etc. do it before this.
+            GMPPrefs.setString(
+              GMPPrefs.KEY_PLUGIN_VERSION,
+              gmpAddon.version,
+              gmpAddon.id
+            );
+            return extractedPaths;
+          },
+          reason => {
+            let now = Math.round(Date.now() / 1000);
+            GMPPrefs.setInt(
+              GMPPrefs.KEY_PLUGIN_LAST_INSTALL_FAILED,
+              now,
+              gmpAddon.id
+            );
+            throw reason;
+          }
+        );
+      },
+      reason => {
+        GMPPrefs.setString(
+          GMPPrefs.KEY_PLUGIN_LAST_DOWNLOAD_FAIL_REASON,
+          reason,
+          gmpAddon.id
+        );
+        let now = Math.round(Date.now() / 1000);
+        GMPPrefs.setInt(
+          GMPPrefs.KEY_PLUGIN_LAST_DOWNLOAD_FAILED,
+          now,
+          gmpAddon.id
+        );
+        throw reason;
       }
     );
   },

@@ -6131,10 +6131,7 @@ MDefinition* MGuardStringToInt32::foldsTo(TempAllocator& alloc) {
   }
 
   JSLinearString* str = &string()->toConstant()->toString()->asLinear();
-  double number;
-  if (!js::MaybeStringToNumber(str, &number)) {
-    return this;
-  }
+  double number = LinearStringToNumber(str);
 
   int32_t n;
   if (!mozilla::NumberIsInt32(number, &n)) {
@@ -6150,11 +6147,7 @@ MDefinition* MGuardStringToDouble::foldsTo(TempAllocator& alloc) {
   }
 
   JSLinearString* str = &string()->toConstant()->toString()->asLinear();
-  double number;
-  if (!js::MaybeStringToNumber(str, &number)) {
-    return this;
-  }
-
+  double number = LinearStringToNumber(str);
   return MConstant::New(alloc, DoubleValue(number));
 }
 
@@ -6547,9 +6540,9 @@ bool MIonToWasmCall::isConsistentFloat32Use(MUse* use) const {
 
 MCreateInlinedArgumentsObject* MCreateInlinedArgumentsObject::New(
     TempAllocator& alloc, MDefinition* callObj, MDefinition* callee,
-    MDefinitionVector& args) {
+    MDefinitionVector& args, ArgumentsObject* templateObj) {
   MCreateInlinedArgumentsObject* ins =
-      new (alloc) MCreateInlinedArgumentsObject();
+      new (alloc) MCreateInlinedArgumentsObject(templateObj);
 
   uint32_t argc = args.length();
   MOZ_ASSERT(argc <= ArgumentsObject::MaxInlinedArgs);

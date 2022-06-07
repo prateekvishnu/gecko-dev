@@ -110,6 +110,7 @@ module.exports = {
       excludedFiles: [
         // Enable the rule on JSM, test head files and some specific files.
         "**/*.jsm",
+        "**/*.sjs",
         "**/test/**/head.js",
         "**/test/**/shared-head.js",
         "client/debugger/test/mochitest/code_frame-script.js",
@@ -392,6 +393,10 @@ module.exports = {
     // require assignment operator shorthand where possible or prohibit it
     // entirely
     "operator-assignment": "off",
+    // This rule will match any function starting with `use` which aren't
+    // necessarily in a React component. Also DevTools aren't using React hooks
+    // so this sounds unecessary.
+    "react-hooks/rules-of-hooks": "off",
   },
   settings: {
     react: {

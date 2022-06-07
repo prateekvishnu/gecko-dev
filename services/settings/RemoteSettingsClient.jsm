@@ -10,9 +10,13 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ClientEnvironmentBase:
     "resource://gre/modules/components-utils/ClientEnvironment.jsm",
   Database: "resource://services-settings/Database.jsm",
@@ -20,7 +24,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   IDBHelpers: "resource://services-settings/IDBHelpers.jsm",
   KintoHttpClient: "resource://services-common/kinto-http-client.js",
   ObjectUtils: "resource://gre/modules/ObjectUtils.jsm",
-  PerformanceCounters: "resource://gre/modules/PerformanceCounters.jsm",
   RemoteSettingsWorker: "resource://services-settings/RemoteSettingsWorker.jsm",
   SharedUtils: "resource://services-settings/SharedUtils.jsm",
   UptakeTelemetry: "resource://services-common/uptake-telemetry.js",
@@ -29,21 +32,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 
 const TELEMETRY_COMPONENT = "remotesettings";
 
-XPCOMUtils.defineLazyGetter(this, "console", () => Utils.log);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "gTimingEnabled",
-  "services.settings.enablePerformanceCounters",
-  false
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "gLoadDump",
-  "services.settings.load_dump",
-  true
-);
+XPCOMUtils.defineLazyGetter(lazy, "console", () => lazy.Utils.log);
 
 /**
  * cacheProxy returns an object Proxy that will memoize properties of the target.
@@ -160,7 +149,7 @@ class UnknownCollectionError extends Error {
   }
 }
 
-class AttachmentDownloader extends Downloader {
+class AttachmentDownloader extends lazy.Downloader {
   constructor(client) {
     super(client.bucketName, client.collectionName);
     this._client = client;
@@ -193,14 +182,14 @@ class AttachmentDownloader extends Downloader {
       return await super.download(record, options);
     } catch (err) {
       // Report download error.
-      let status = UptakeTelemetry.STATUS.DOWNLOAD_ERROR;
-      if (Utils.isOffline) {
-        status = UptakeTelemetry.STATUS.NETWORK_OFFLINE_ERROR;
+      let status = lazy.UptakeTelemetry.STATUS.DOWNLOAD_ERROR;
+      if (lazy.Utils.isOffline) {
+        status = lazy.UptakeTelemetry.STATUS.NETWORK_OFFLINE_ERROR;
       } else if (/NetworkError/.test(err.message)) {
-        status = UptakeTelemetry.STATUS.NETWORK_ERROR;
+        status = lazy.UptakeTelemetry.STATUS.NETWORK_ERROR;
       }
       // If the file failed to be downloaded, report it as such in Telemetry.
-      await UptakeTelemetry.report(TELEMETRY_COMPONENT, status, {
+      await lazy.UptakeTelemetry.report(TELEMETRY_COMPONENT, status, {
         source: this._client.identifier,
       });
       throw err;
@@ -245,18 +234,19 @@ class RemoteSettingsClient extends EventEmitter {
   constructor(
     collectionName,
     {
-      bucketName,
-      bucketNamePref,
+      bucketName = AppConstants.REMOTE_SETTINGS_DEFAULT_BUCKET,
       signerName,
       filterFunc,
       localFields = [],
       lastCheckTimePref,
-    }
+    } = {}
   ) {
     super(["sync"]); // emitted events
 
     this.collectionName = collectionName;
-    this.bucketName = bucketName;
+    // Client is constructed with the raw bucket name (eg. "main", "security-state", "blocklist")
+    // The `bucketName` will contain the `-preview` suffix if the preview mode is enabled.
+    this.bucketName = lazy.Utils.actualBucketName(bucketName);
     this.signerName = signerName;
     this.filterFunc = filterFunc;
     this.localFields = localFields;
@@ -268,26 +258,10 @@ class RemoteSettingsClient extends EventEmitter {
     // or when pulling data from a dev server.
     this.verifySignature = AppConstants.REMOTE_SETTINGS_VERIFY_SIGNATURE;
 
-    if (!bucketName) {
-      // TODO bug 1702759: Remove bucketNamePref.
-      // The bucket preference value can be changed (eg. `main` to `main-preview`) in order
-      // to preview the changes to be approved in a real client.
-      this.bucketNamePref = bucketNamePref;
-      XPCOMUtils.defineLazyPreferenceGetter(
-        this,
-        "bucketName",
-        this.bucketNamePref,
-        null,
-        () => {
-          this.db.identifier = this.identifier;
-        }
-      );
-    }
-
     XPCOMUtils.defineLazyGetter(
       this,
       "db",
-      () => new Database(this.identifier)
+      () => new lazy.Database(this.identifier)
     );
 
     XPCOMUtils.defineLazyGetter(
@@ -295,6 +269,17 @@ class RemoteSettingsClient extends EventEmitter {
       "attachments",
       () => new AttachmentDownloader(this)
     );
+  }
+
+  /**
+   * Internal method to refresh the client bucket name after the preview mode
+   * was toggled.
+   *
+   * See `RemoteSettings.enabledPreviewMode()`.
+   */
+  refreshBucketName() {
+    this.bucketName = lazy.Utils.actualBucketName(this.bucketName);
+    this.db.identifier = this.identifier;
   }
 
   get identifier() {
@@ -309,8 +294,8 @@ class RemoteSettingsClient extends EventEmitter {
   }
 
   httpClient() {
-    const api = new KintoHttpClient(Utils.SERVER_URL, {
-      fetchFunc: Utils.fetch, // Use fetch() wrapper.
+    const api = new lazy.KintoHttpClient(lazy.Utils.SERVER_URL, {
+      fetchFunc: lazy.Utils.fetch, // Use fetch() wrapper.
     });
     return api.bucket(this.bucketName).collection(this.collectionName);
   }
@@ -329,7 +314,7 @@ class RemoteSettingsClient extends EventEmitter {
     try {
       timestamp = await this.db.getLastModified();
     } catch (err) {
-      console.warn(
+      lazy.console.warn(
         `Error retrieving the getLastModified timestamp from ${this.identifier} RemoteSettingsClient`,
         err
       );
@@ -371,14 +356,14 @@ class RemoteSettingsClient extends EventEmitter {
         if (!this._importingPromise) {
           // Prevent parallel loading when .get() is called multiple times.
           this._importingPromise = (async () => {
-            const importedFromDump = gLoadDump
+            const importedFromDump = lazy.Utils.LOAD_DUMPS
               ? await this._importJSONDump()
               : -1;
             if (importedFromDump < 0) {
               // There is no JSON dump to load, force a synchronization from the server.
               // We don't want the "sync" event to be sent, since some consumers use `.get()`
               // in "sync" callbacks. See Bug 1761953
-              console.debug(
+              lazy.console.debug(
                 `${this.identifier} Local DB is empty, pull data from server`
               );
               await this.sync({ loadDump: false, sendEvents: false });
@@ -389,17 +374,17 @@ class RemoteSettingsClient extends EventEmitter {
             return true;
           })();
         } else {
-          console.debug(`${this.identifier} Awaiting existing import.`);
+          lazy.console.debug(`${this.identifier} Awaiting existing import.`);
         }
       } else if (hasLocalData && loadDumpIfNewer) {
         // Check whether the local data is older than the packaged dump.
         // If it is, load the packaged dump (which overwrites the local data).
-        let lastModifiedDump = await Utils.getLocalDumpLastModified(
+        let lastModifiedDump = await lazy.Utils.getLocalDumpLastModified(
           this.bucketName,
           this.collectionName
         );
         if (lastModified < lastModifiedDump) {
-          console.debug(
+          lazy.console.debug(
             `${this.identifier} Local DB is stale (${lastModified}), using dump instead (${lastModifiedDump})`
           );
           if (!this._importingPromise) {
@@ -413,7 +398,7 @@ class RemoteSettingsClient extends EventEmitter {
               return importedFromDump >= 0;
             })();
           } else {
-            console.debug(`${this.identifier} Awaiting existing import.`);
+            lazy.console.debug(`${this.identifier} Awaiting existing import.`);
           }
         }
       }
@@ -444,21 +429,23 @@ class RemoteSettingsClient extends EventEmitter {
         throw e;
       }
       Cu.reportError(e);
-      let { data } = await SharedUtils.loadJSONDump(
+      let { data } = await lazy.SharedUtils.loadJSONDump(
         this.bucketName,
         this.collectionName
       );
       if (data !== null) {
-        console.info(`${this.identifier} falling back to JSON dump`);
+        lazy.console.info(`${this.identifier} falling back to JSON dump`);
       } else {
-        console.info(`${this.identifier} no dump fallback, return empty list`);
+        lazy.console.info(
+          `${this.identifier} no dump fallback, return empty list`
+        );
         data = [];
       }
-      if (!ObjectUtils.isEmpty(filters)) {
-        data = data.filter(r => Utils.filterObject(filters, r));
+      if (!lazy.ObjectUtils.isEmpty(filters)) {
+        data = data.filter(r => lazy.Utils.filterObject(filters, r));
       }
       if (order) {
-        data = Utils.sortObjects(order, data);
+        data = lazy.Utils.sortObjects(order, data);
       }
       // No need to verify signature on JSON dumps.
       // If local DB cannot be read, then we don't even try to do anything,
@@ -466,21 +453,21 @@ class RemoteSettingsClient extends EventEmitter {
       return this._filterEntries(data);
     }
 
-    console.debug(
+    lazy.console.debug(
       `${this.identifier} ${data.length} records before filtering.`
     );
 
     if (verifySignature) {
-      console.debug(
+      lazy.console.debug(
         `${this.identifier} verify signature of local data on read`
       );
-      const allData = ObjectUtils.isEmpty(filters)
+      const allData = lazy.ObjectUtils.isEmpty(filters)
         ? data
         : await this.db.list();
       const localRecords = allData.map(r => this._cleanLocalFields(r));
       const timestamp = await this.db.getLastModified();
       let metadata = await this.db.getMetadata();
-      if (syncIfEmpty && ObjectUtils.isEmpty(metadata)) {
+      if (syncIfEmpty && lazy.ObjectUtils.isEmpty(metadata)) {
         // No sync occured yet, may have records from dump but no metadata.
         // We don't want the "sync" event to be sent, since some consumers use `.get()`
         // in "sync" callbacks. See Bug 1761953
@@ -497,7 +484,7 @@ class RemoteSettingsClient extends EventEmitter {
 
     // Filter the records based on `this.filterFunc` results.
     const final = await this._filterEntries(data);
-    console.debug(
+    lazy.console.debug(
       `${this.identifier} ${final.length} records after filtering.`
     );
     return final;
@@ -511,12 +498,15 @@ class RemoteSettingsClient extends EventEmitter {
   async sync(options) {
     // We want to know which timestamp we are expected to obtain in order to leverage
     // cache busting. We don't provide ETag because we don't want a 304.
-    const { changes } = await Utils.fetchLatestChanges(Utils.SERVER_URL, {
-      filters: {
-        collection: this.collectionName,
-        bucket: this.bucketName,
-      },
-    });
+    const { changes } = await lazy.Utils.fetchLatestChanges(
+      lazy.Utils.SERVER_URL,
+      {
+        filters: {
+          collection: this.collectionName,
+          bucket: this.bucketName,
+        },
+      }
+    );
     if (changes.length === 0) {
       throw new RemoteSettingsClient.UnknownCollectionError(this.identifier);
     }
@@ -533,8 +523,7 @@ class RemoteSettingsClient extends EventEmitter {
    *                                    This will be compared to the local timestamp, and will be used for
    *                                    cache busting if local data is out of date.
    * @param {Object} options            additional advanced options.
-   * @param {bool}   options.loadDump   load initial dump from disk on first sync (default: true, unless
-   *                                    `services.settings.load_dump` says otherwise).
+   * @param {bool}   options.loadDump   load initial dump from disk on first sync (default: true if server is prod)
    * @param {bool}   options.sendEvents send `"sync"` events (default: `true`)
    * @param {string} options.trigger    label to identify what triggered this sync (eg. ``"timer"``, default: `"manual"`)
    * @return {Promise}                  which rejects on sync or process failure.
@@ -542,7 +531,7 @@ class RemoteSettingsClient extends EventEmitter {
   async maybeSync(expectedTimestamp, options = {}) {
     // Should the clients try to load JSON dump? (mainly disabled in tests)
     const {
-      loadDump = gLoadDump,
+      loadDump = lazy.Utils.LOAD_DUMPS,
       trigger = "manual",
       sendEvents = true,
     } = options;
@@ -550,14 +539,14 @@ class RemoteSettingsClient extends EventEmitter {
     // Make sure we don't run several synchronizations in parallel, mainly
     // in order to avoid race conditions in "sync" events listeners.
     if (this._syncRunning) {
-      console.warn(`${this.identifier} sync already running`);
+      lazy.console.warn(`${this.identifier} sync already running`);
       return;
     }
 
     // Prevent network requests and IndexedDB calls to be initiated
     // during shutdown.
     if (Services.startup.shuttingDown) {
-      console.warn(`${this.identifier} sync interrupted by shutdown`);
+      lazy.console.warn(`${this.identifier} sync interrupted by shutdown`);
       return;
     }
 
@@ -569,7 +558,7 @@ class RemoteSettingsClient extends EventEmitter {
     let thrownError = null;
     try {
       // If network is offline, we can't synchronize.
-      if (Utils.isOffline) {
+      if (lazy.Utils.isOffline) {
         throw new RemoteSettingsClient.NetworkOfflineError();
       }
 
@@ -589,7 +578,7 @@ class RemoteSettingsClient extends EventEmitter {
           const imported = await this._importJSONDump();
           // The worker only returns an integer. List the imported records to build the sync event.
           if (imported > 0) {
-            console.debug(
+            lazy.console.debug(
               `${this.identifier} ${imported} records loaded from JSON dump`
             );
             importedFromDump = await this.db.list();
@@ -607,13 +596,13 @@ class RemoteSettingsClient extends EventEmitter {
       try {
         // Is local timestamp up to date with the server?
         if (expectedTimestamp == collectionLastModified) {
-          console.debug(`${this.identifier} local data is up-to-date`);
-          reportStatus = UptakeTelemetry.STATUS.UP_TO_DATE;
+          lazy.console.debug(`${this.identifier} local data is up-to-date`);
+          reportStatus = lazy.UptakeTelemetry.STATUS.UP_TO_DATE;
 
           // If the data is up-to-date but don't have metadata (records loaded from dump),
           // we fetch them and validate the signature immediately.
-          if (this.verifySignature && ObjectUtils.isEmpty(localMetadata)) {
-            console.debug(`${this.identifier} pull collection metadata`);
+          if (this.verifySignature && lazy.ObjectUtils.isEmpty(localMetadata)) {
+            lazy.console.debug(`${this.identifier} pull collection metadata`);
             const metadata = await this.httpClient().getData({
               query: { _expected: expectedTimestamp },
             });
@@ -621,7 +610,7 @@ class RemoteSettingsClient extends EventEmitter {
             // We don't bother validating the signature if the dump was just loaded. We do
             // if the dump was loaded at some other point (eg. from .get()).
             if (this.verifySignature && importedFromDump.length == 0) {
-              console.debug(
+              lazy.console.debug(
                 `${this.identifier} verify signature of local data`
               );
               await this._validateCollectionSignature(
@@ -647,22 +636,12 @@ class RemoteSettingsClient extends EventEmitter {
           // Local data is either outdated or tampered.
           // In both cases we will fetch changes from server,
           // and make sure we overwrite local data.
-          const startSyncDB = Cu.now() * 1000;
           syncResult = await this._importChanges(
             localRecords,
             collectionLastModified,
             localMetadata,
             expectedTimestamp
           );
-          if (gTimingEnabled) {
-            const endSyncDB = Cu.now() * 1000;
-            PerformanceCounters.storeExecutionTime(
-              `remotesettings/${this.identifier}`,
-              "syncDB",
-              endSyncDB - startSyncDB,
-              "duration"
-            );
-          }
           if (sendEvents && this.hasListeners("sync")) {
             // If we have listeners for the "sync" event, then compute the lists of changes.
             // The records imported from the dump should be considered as "created" for the
@@ -689,14 +668,14 @@ class RemoteSettingsClient extends EventEmitter {
           // Signature verification failed during synchronization.
           reportStatus =
             e instanceof CorruptedDataError
-              ? UptakeTelemetry.STATUS.CORRUPTION_ERROR
-              : UptakeTelemetry.STATUS.SIGNATURE_ERROR;
+              ? lazy.UptakeTelemetry.STATUS.CORRUPTION_ERROR
+              : lazy.UptakeTelemetry.STATUS.SIGNATURE_ERROR;
           // If sync fails with a signature error, it's likely that our
           // local data has been modified in some way.
           // We will attempt to fix this by retrieving the whole
           // remote collection.
           try {
-            console.warn(
+            lazy.console.warn(
               `${this.identifier} Signature verified failed. Retry from scratch`
             );
             syncResult = await this._importChanges(
@@ -709,14 +688,14 @@ class RemoteSettingsClient extends EventEmitter {
           } catch (e) {
             // If the signature fails again, or if an error occured during wiping out the
             // local data, then we report it as a *signature retry* error.
-            reportStatus = UptakeTelemetry.STATUS.SIGNATURE_RETRY_ERROR;
+            reportStatus = lazy.UptakeTelemetry.STATUS.SIGNATURE_RETRY_ERROR;
             throw e;
           }
         } else {
           // The sync has thrown for other reason than signature verification.
           // Default status for errors at this step is SYNC_ERROR.
           reportStatus = this._telemetryFromError(e, {
-            default: UptakeTelemetry.STATUS.SYNC_ERROR,
+            default: lazy.UptakeTelemetry.STATUS.SYNC_ERROR,
           });
           throw e;
         }
@@ -729,11 +708,11 @@ class RemoteSettingsClient extends EventEmitter {
           try {
             await this.emit("sync", { data: filteredSyncResult });
           } catch (e) {
-            reportStatus = UptakeTelemetry.STATUS.APPLY_ERROR;
+            reportStatus = lazy.UptakeTelemetry.STATUS.APPLY_ERROR;
             throw e;
           }
         } else {
-          console.info(
+          lazy.console.info(
             `All changes are filtered by JEXL expressions for ${this.identifier}`
           );
         }
@@ -743,13 +722,13 @@ class RemoteSettingsClient extends EventEmitter {
       // If browser is shutting down, then we can report a specific status.
       // (eg. IndexedDB will abort transactions)
       if (Services.startup.shuttingDown) {
-        reportStatus = UptakeTelemetry.STATUS.SHUTDOWN_ERROR;
+        reportStatus = lazy.UptakeTelemetry.STATUS.SHUTDOWN_ERROR;
       }
       // If no Telemetry status was determined yet (ie. outside sync step),
       // then introspect error, default status at this step is UNKNOWN.
       else if (reportStatus == null) {
         reportStatus = this._telemetryFromError(e, {
-          default: UptakeTelemetry.STATUS.UNKNOWN_ERROR,
+          default: lazy.UptakeTelemetry.STATUS.UNKNOWN_ERROR,
         });
       }
       throw e;
@@ -757,7 +736,7 @@ class RemoteSettingsClient extends EventEmitter {
       const durationMilliseconds = new Date() - startedAt;
       // No error was reported, this is a success!
       if (reportStatus === null) {
-        reportStatus = UptakeTelemetry.STATUS.SUCCESS;
+        reportStatus = lazy.UptakeTelemetry.STATUS.SUCCESS;
       }
       // Report success/error status to Telemetry.
       let reportArgs = {
@@ -768,15 +747,15 @@ class RemoteSettingsClient extends EventEmitter {
       // In Bug 1617133, we will try to break down specific errors into
       // more precise statuses by reporting the JavaScript error name
       // ("TypeError", etc.) to Telemetry on Nightly.
-      const channel = UptakeTelemetry.Policy.getChannel();
+      const channel = lazy.UptakeTelemetry.Policy.getChannel();
       if (
         thrownError !== null &&
         channel == "nightly" &&
         [
-          UptakeTelemetry.STATUS.SYNC_ERROR,
-          UptakeTelemetry.STATUS.CUSTOM_1_ERROR, // IndexedDB.
-          UptakeTelemetry.STATUS.UNKNOWN_ERROR,
-          UptakeTelemetry.STATUS.SHUTDOWN_ERROR,
+          lazy.UptakeTelemetry.STATUS.SYNC_ERROR,
+          lazy.UptakeTelemetry.STATUS.CUSTOM_1_ERROR, // IndexedDB.
+          lazy.UptakeTelemetry.STATUS.UNKNOWN_ERROR,
+          lazy.UptakeTelemetry.STATUS.SHUTDOWN_ERROR,
         ].includes(reportStatus)
       ) {
         // List of possible error names for IndexedDB:
@@ -784,13 +763,13 @@ class RemoteSettingsClient extends EventEmitter {
         reportArgs = { ...reportArgs, errorName: thrownError.name };
       }
 
-      await UptakeTelemetry.report(
+      await lazy.UptakeTelemetry.report(
         TELEMETRY_COMPONENT,
         reportStatus,
         reportArgs
       );
 
-      console.debug(`${this.identifier} sync status is ${reportStatus}`);
+      lazy.console.debug(`${this.identifier} sync status is ${reportStatus}`);
       this._syncRunning = false;
     }
   }
@@ -803,26 +782,26 @@ class RemoteSettingsClient extends EventEmitter {
     let reportStatus = options.default;
 
     if (e instanceof RemoteSettingsClient.NetworkOfflineError) {
-      reportStatus = UptakeTelemetry.STATUS.NETWORK_OFFLINE_ERROR;
-    } else if (e instanceof IDBHelpers.ShutdownError) {
-      reportStatus = UptakeTelemetry.STATUS.SHUTDOWN_ERROR;
+      reportStatus = lazy.UptakeTelemetry.STATUS.NETWORK_OFFLINE_ERROR;
+    } else if (e instanceof lazy.IDBHelpers.ShutdownError) {
+      reportStatus = lazy.UptakeTelemetry.STATUS.SHUTDOWN_ERROR;
     } else if (/unparseable/.test(e.message)) {
-      reportStatus = UptakeTelemetry.STATUS.PARSE_ERROR;
+      reportStatus = lazy.UptakeTelemetry.STATUS.PARSE_ERROR;
     } else if (/NetworkError/.test(e.message)) {
-      reportStatus = UptakeTelemetry.STATUS.NETWORK_ERROR;
+      reportStatus = lazy.UptakeTelemetry.STATUS.NETWORK_ERROR;
     } else if (/Timeout/.test(e.message)) {
-      reportStatus = UptakeTelemetry.STATUS.TIMEOUT_ERROR;
+      reportStatus = lazy.UptakeTelemetry.STATUS.TIMEOUT_ERROR;
     } else if (/HTTP 5??/.test(e.message)) {
-      reportStatus = UptakeTelemetry.STATUS.SERVER_ERROR;
+      reportStatus = lazy.UptakeTelemetry.STATUS.SERVER_ERROR;
     } else if (/Backoff/.test(e.message)) {
-      reportStatus = UptakeTelemetry.STATUS.BACKOFF;
+      reportStatus = lazy.UptakeTelemetry.STATUS.BACKOFF;
     } else if (
       // Errors from kinto.js IDB adapter.
-      e instanceof IDBHelpers.IndexedDBError ||
+      e instanceof lazy.IDBHelpers.IndexedDBError ||
       // Other IndexedDB errors (eg. RemoteSettingsWorker).
       /IndexedDB/.test(e.message)
     ) {
-      reportStatus = UptakeTelemetry.STATUS.CUSTOM_1_ERROR;
+      reportStatus = lazy.UptakeTelemetry.STATUS.CUSTOM_1_ERROR;
     }
 
     return reportStatus;
@@ -832,26 +811,17 @@ class RemoteSettingsClient extends EventEmitter {
    * Import the JSON files from services/settings/dump into the local DB.
    */
   async _importJSONDump() {
-    console.info(`${this.identifier} try to restore dump`);
-
-    const start = Cu.now() * 1000;
-    const result = await RemoteSettingsWorker.importJSONDump(
+    lazy.console.info(`${this.identifier} try to restore dump`);
+    const result = await lazy.RemoteSettingsWorker.importJSONDump(
       this.bucketName,
       this.collectionName
     );
-    if (gTimingEnabled) {
-      const end = Cu.now() * 1000;
-      PerformanceCounters.storeExecutionTime(
-        `remotesettings/${this.identifier}`,
-        "importJSONDump",
-        end - start,
-        "duration"
-      );
-    }
     if (result < 0) {
-      console.debug(`${this.identifier} no dump available`);
+      lazy.console.debug(`${this.identifier} no dump available`);
     } else {
-      console.info(`${this.identifier} imported ${result} records from dump`);
+      lazy.console.info(
+        `${this.identifier} imported ${result} records from dump`
+      );
     }
     return result;
   }
@@ -866,8 +836,6 @@ class RemoteSettingsClient extends EventEmitter {
    * @returns {Promise}
    */
   async _validateCollectionSignature(records, timestamp, metadata) {
-    const start = Cu.now() * 1000;
-
     if (!metadata?.signature) {
       throw new MissingSignatureError(this.identifier);
     }
@@ -882,9 +850,9 @@ class RemoteSettingsClient extends EventEmitter {
     const {
       signature: { x5u, signature },
     } = metadata;
-    const certChain = await (await Utils.fetch(x5u)).text();
+    const certChain = await (await lazy.Utils.fetch(x5u)).text();
     // Merge remote records with local ones and serialize as canonical JSON.
-    const serialized = await RemoteSettingsWorker.canonicalStringify(
+    const serialized = await lazy.RemoteSettingsWorker.canonicalStringify(
       records,
       timestamp
     );
@@ -893,19 +861,11 @@ class RemoteSettingsClient extends EventEmitter {
         serialized,
         "p384ecdsa=" + signature,
         certChain,
-        this.signerName
+        this.signerName,
+        lazy.Utils.CERT_CHAIN_ROOT_IDENTIFIER
       ))
     ) {
       throw new InvalidSignatureError(this.identifier);
-    }
-    if (gTimingEnabled) {
-      const end = Cu.now() * 1000;
-      PerformanceCounters.storeExecutionTime(
-        `remotesettings/${this.identifier}`,
-        "validateCollectionSignature",
-        end - start,
-        "duration"
-      );
     }
   }
 
@@ -935,7 +895,7 @@ class RemoteSettingsClient extends EventEmitter {
     const since = retry || !localTimestamp ? undefined : `"${localTimestamp}"`;
 
     // Fetch collection metadata and list of changes from server.
-    console.debug(
+    lazy.console.debug(
       `${this.identifier} Fetch changes from server (expected=${expectedTimestamp}, since=${since})`
     );
     const {
@@ -953,26 +913,16 @@ class RemoteSettingsClient extends EventEmitter {
     };
     // If data wasn't changed, return empty sync result.
     // This can happen when we update the signature but not the data.
-    console.debug(
+    lazy.console.debug(
       `${this.identifier} local timestamp: ${localTimestamp}, remote: ${remoteTimestamp}`
     );
     if (localTimestamp && remoteTimestamp < localTimestamp) {
       return syncResult;
     }
 
-    const start = Cu.now() * 1000;
     await this.db.importChanges(metadata, remoteTimestamp, remoteRecords, {
       clear: retry,
     });
-    if (gTimingEnabled) {
-      const end = Cu.now() * 1000;
-      PerformanceCounters.storeExecutionTime(
-        `remotesettings/${this.identifier}`,
-        "loadRawData",
-        end - start,
-        "duration"
-      );
-    }
 
     // Read the new local data, after updating.
     const newLocal = await this.db.list();
@@ -986,7 +936,7 @@ class RemoteSettingsClient extends EventEmitter {
           metadata
         );
       } catch (e) {
-        console.error(
+        lazy.console.error(
           `${this.identifier} Signature failed ${retry ? "again" : ""} ${e}`
         );
         if (!(e instanceof InvalidSignatureError)) {
@@ -999,7 +949,7 @@ class RemoteSettingsClient extends EventEmitter {
         // during sync, from hijacks of local DBs, we will verify
         // the signature on the data that we had before syncing.
         let localTrustworthy = false;
-        console.debug(`${this.identifier} verify data before sync`);
+        lazy.console.debug(`${this.identifier} verify data before sync`);
         try {
           await this._validateCollectionSignature(
             localRecords,
@@ -1012,16 +962,16 @@ class RemoteSettingsClient extends EventEmitter {
             // If it fails for other reason, keep original error and give up.
             throw sigerr;
           }
-          console.debug(`${this.identifier} previous data was invalid`);
+          lazy.console.debug(`${this.identifier} previous data was invalid`);
         }
 
         if (!localTrustworthy && !retry) {
           // Signature failed, clear local DB because it contains
           // bad data (local + remote changes).
-          console.debug(`${this.identifier} clear local data`);
+          lazy.console.debug(`${this.identifier} clear local data`);
           await this.db.clear();
           // Local data was tampered, throw and it will retry from empty DB.
-          console.error(`${this.identifier} local data was corrupted`);
+          lazy.console.error(`${this.identifier} local data was corrupted`);
           throw new CorruptedDataError(this.identifier);
         } else if (retry) {
           // We retried already, we will restore the previous local data
@@ -1048,7 +998,7 @@ class RemoteSettingsClient extends EventEmitter {
         throw e;
       }
     } else {
-      console.warn(`${this.identifier} has signature disabled`);
+      lazy.console.warn(`${this.identifier} has signature disabled`);
     }
 
     if (this.hasListeners("sync")) {
@@ -1070,7 +1020,7 @@ class RemoteSettingsClient extends EventEmitter {
       syncResult.deleted = syncResult.deleted.concat(
         Array.from(oldById.values())
       );
-      console.debug(
+      lazy.console.debug(
         `${this.identifier} ${syncResult.created.length} created. ${syncResult.updated.length} updated. ${syncResult.deleted.length} deleted.`
       );
     }
@@ -1158,19 +1108,9 @@ class RemoteSettingsClient extends EventEmitter {
     if (!this.filterFunc) {
       return data;
     }
-    const start = Cu.now() * 1000;
-    const environment = cacheProxy(ClientEnvironmentBase);
+    const environment = cacheProxy(lazy.ClientEnvironmentBase);
     const dataPromises = data.map(e => this.filterFunc(e, environment));
     const results = await Promise.all(dataPromises);
-    if (gTimingEnabled) {
-      const end = Cu.now() * 1000;
-      PerformanceCounters.storeExecutionTime(
-        `remotesettings/${this.identifier}`,
-        "filterEntries",
-        end - start,
-        "duration"
-      );
-    }
     return results.filter(Boolean);
   }
 

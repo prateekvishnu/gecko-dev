@@ -79,9 +79,10 @@ class HyperTextAccessibleBase {
   virtual uint32_t CharacterCount() const;
 
   /**
-   * Get caret offset, if no caret then -1.
+   * Get/set caret offset, if no caret then -1.
    */
   virtual int32_t CaretOffset() const;
+  virtual void SetCaretOffset(int32_t aOffset) = 0;
 
   /**
    * Transform magic offset into text offset.
@@ -99,6 +100,20 @@ class HyperTextAccessibleBase {
    */
   bool CharAt(int32_t aOffset, nsAString& aChar,
               int32_t* aStartOffset = nullptr, int32_t* aEndOffset = nullptr);
+
+  /**
+   * Return a rect (in dev pixels) for character at given offset relative
+   * given coordinate system.
+   */
+  virtual LayoutDeviceIntRect CharBounds(int32_t aOffset, uint32_t aCoordType);
+
+  /**
+   * Return a rect (in dev pixels) of the given text range relative given
+   * coordinate system.
+   */
+  virtual LayoutDeviceIntRect TextBounds(int32_t aStartOffset,
+                                         int32_t aEndOffset,
+                                         uint32_t aCoordType);
 
   /**
    * Get a TextLeafPoint for a given offset in this HyperTextAccessible.

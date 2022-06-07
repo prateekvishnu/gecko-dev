@@ -51,12 +51,15 @@ ${helpers.single_keyword(
     spec="None (Nonstandard Firefox-only property)",
 )}
 
+// TODO(emilio): Maybe make shadow behavior on macOS match Linux / Windows, and remove this
+// property.
 ${helpers.single_keyword(
     "-moz-window-shadow",
-    "default none menu tooltip sheet cliprounded",
+    "default none",
     engines="gecko",
     gecko_ffi_name="mWindowShadow",
     gecko_enum_prefix="StyleWindowShadow",
+    gecko_inexhaustive=True,
     animation_value_type="discrete",
     enabled_in="chrome",
     spec="None (Nonstandard internal property)",
@@ -91,6 +94,16 @@ ${helpers.predefined_type(
     animation_value_type="ComputedValue",
     gecko_ffi_name="mWindowTransformOrigin",
     boxed=True,
+    spec="None (Nonstandard internal property)",
+    enabled_in="chrome",
+)}
+
+${helpers.predefined_type(
+    "-moz-window-input-region-margin",
+    "Length",
+    "computed::Length::zero()",
+    engines="gecko",
+    animation_value_type="ComputedValue",
     spec="None (Nonstandard internal property)",
     enabled_in="chrome",
 )}

@@ -90,10 +90,15 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   UrlbarValueFormatter: "resource:///modules/UrlbarValueFormatter.jsm",
   Weave: "resource://services-sync/main.js",
   WebNavigationFrames: "resource://gre/modules/WebNavigationFrames.jsm",
-  fxAccounts: "resource://gre/modules/FxAccounts.jsm",
   webrtcUI: "resource:///modules/webrtcUI.jsm",
   WebsiteFilter: "resource:///modules/policies/WebsiteFilter.jsm",
   ZoomUI: "resource:///modules/ZoomUI.jsm",
+});
+
+XPCOMUtils.defineLazyGetter(this, "fxAccounts", () => {
+  return ChromeUtils.import(
+    "resource://gre/modules/FxAccounts.jsm"
+  ).getFxAccountsSingleton();
 });
 
 if (AppConstants.MOZ_CRASHREPORTER) {
@@ -560,6 +565,7 @@ var gMultiProcessBrowser = window.docShell.QueryInterface(Ci.nsILoadContext)
   .useRemoteTabs;
 var gFissionBrowser = window.docShell.QueryInterface(Ci.nsILoadContext)
   .useRemoteSubframes;
+var gFirefoxViewTab;
 
 var gBrowserAllowScriptsToCloseInitialTabs = false;
 
@@ -1911,7 +1917,7 @@ var gBrowserInit = {
     );
     Services.obs.addObserver(
       gXPInstallObserver,
-      "addon-install-webapi-blocked-policy"
+      "addon-install-policy-blocked"
     );
     Services.obs.addObserver(
       gXPInstallObserver,
@@ -2540,7 +2546,7 @@ var gBrowserInit = {
       );
       Services.obs.removeObserver(
         gXPInstallObserver,
-        "addon-install-webapi-blocked-policy"
+        "addon-install-policy-blocked"
       );
       Services.obs.removeObserver(
         gXPInstallObserver,
@@ -7127,6 +7133,7 @@ function handleLinkClick(event, href, linkNode) {
   if (where == "save") {
     saveURL(
       href,
+      null,
       linkNode ? gatherTextUnder(linkNode) : "",
       null,
       true,
@@ -8403,6 +8410,16 @@ const gRemoteControl = {
   },
 
   updateVisualCue() {
+    // Disable updating the remote control cue for performance tests,
+    // because these could fail due to an early initialization of Marionette.
+    const disableRemoteControlCue = Services.prefs.getBoolPref(
+      "browser.chrome.disableRemoteControlCueForTests",
+      false
+    );
+    if (disableRemoteControlCue && Cu.isInAutomation) {
+      return;
+    }
+
     const mainWindow = document.documentElement;
     const remoteControlComponent = this.getRemoteControlComponent();
     if (remoteControlComponent) {

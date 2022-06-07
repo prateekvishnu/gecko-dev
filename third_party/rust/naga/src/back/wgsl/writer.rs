@@ -535,6 +535,21 @@ impl<W: Write> Writer<W> {
                 }
                 write!(self.out, ">")?;
             }
+            TypeInner::BindingArray { base, size } => {
+                // More info https://github.com/gpuweb/gpuweb/issues/2105
+                write!(self.out, "binding_array<")?;
+                match size {
+                    crate::ArraySize::Constant(handle) => {
+                        self.write_type(module, base)?;
+                        write!(self.out, ",")?;
+                        self.write_constant(module, handle)?;
+                    }
+                    crate::ArraySize::Dynamic => {
+                        self.write_type(module, base)?;
+                    }
+                }
+                write!(self.out, ">")?;
+            }
             TypeInner::Matrix {
                 columns,
                 rows,
@@ -644,6 +659,11 @@ impl<W: Write> Writer<W> {
                         // Otherwise, we could accidentally write variable name instead of full expression.
                         // Also, we use sanitized names! It defense backend from generating variable with name from reserved keywords.
                         Some(self.namer.call(name))
+                    } else if info.ref_count == 0 {
+                        write!(self.out, "{}_ = ", level)?;
+                        self.write_expr(module, handle, func_ctx)?;
+                        writeln!(self.out, ";")?;
+                        continue;
                     } else {
                         let expr = &func_ctx.expressions[handle];
                         let min_ref_count = expr.bake_ref_count();
@@ -1181,6 +1201,7 @@ impl<W: Write> Writer<W> {
                     }
                     TypeInner::Matrix { .. }
                     | TypeInner::Array { .. }
+                    | TypeInner::BindingArray { .. }
                     | TypeInner::ValuePointer { .. } => write!(self.out, "[{}]", index)?,
                     TypeInner::Struct { .. } => {
                         // This will never panic in case the type is a `Struct`, this is not true

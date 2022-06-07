@@ -10,10 +10,13 @@
 
 #include "mozilla/AbstractThread.h"
 #include "mozilla/AppShutdown.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/Poison.h"
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/TaskController.h"
+#include "mozilla/Unused.h"
 #include "mozilla/XPCOM.h"
 #include "mozJSComponentLoader.h"
 #include "nsXULAppAPI.h"
@@ -134,19 +137,13 @@ extern nsresult NS_CategoryManagerGetFactory(nsIFactory**);
 extern nsresult CreateAnonTempFileRemover();
 #endif
 
-nsresult nsThreadManagerGetSingleton(nsISupports* aOuter, const nsIID& aIID,
-                                     void** aInstancePtr) {
+nsresult nsThreadManagerGetSingleton(const nsIID& aIID, void** aInstancePtr) {
   NS_ASSERTION(aInstancePtr, "null outptr");
-  if (NS_WARN_IF(aOuter)) {
-    return NS_ERROR_NO_AGGREGATION;
-  }
-
   return nsThreadManager::get().QueryInterface(aIID, aInstancePtr);
 }
 
-nsresult nsLocalFileConstructor(nsISupports* aOuter, const nsIID& aIID,
-                                void** aInstancePtr) {
-  return nsLocalFile::nsLocalFileConstructor(aOuter, aIID, aInstancePtr);
+nsresult nsLocalFileConstructor(const nsIID& aIID, void** aInstancePtr) {
+  return nsLocalFile::nsLocalFileConstructor(aIID, aInstancePtr);
 }
 
 nsComponentManagerImpl* nsComponentManagerImpl::gComponentManager = nullptr;
@@ -185,7 +182,7 @@ static nsIDebug2* gDebug = nullptr;
 
 EXPORT_XPCOM_API(nsresult)
 NS_GetDebug(nsIDebug2** aResult) {
-  return nsDebugImpl::Create(nullptr, NS_GET_IID(nsIDebug2), (void**)aResult);
+  return nsDebugImpl::Create(NS_GET_IID(nsIDebug2), (void**)aResult);
 }
 
 class ICUReporter final : public nsIMemoryReporter,
@@ -601,8 +598,6 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
     MOZ_CRASH("Shutdown on wrong thread");
   }
 
-  nsresult rv;
-
   // Notify observers of xpcom shutting down
   {
     // Block it so that the COMPtr will get deleted before we hit
@@ -616,18 +611,12 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
     mozilla::AppShutdown::AdvanceShutdownPhase(
         mozilla::ShutdownPhase::XPCOMWillShutdown);
 
+    // We want the service manager to be the subject of notifications
     nsCOMPtr<nsIServiceManager> mgr;
-    rv = NS_GetServiceManager(getter_AddRefs(mgr));
-    if (NS_SUCCEEDED(rv)) {
-      // We want the service manager to be the subject of notifications
-      mozilla::AppShutdown::AdvanceShutdownPhase(
-          mozilla::ShutdownPhase::XPCOMShutdown, nullptr,
-          do_QueryInterface(mgr));
-    }
-
-#ifndef ANDROID
-    mozilla::XPCOMShutdownNotified();
-#endif
+    Unused << NS_GetServiceManager(getter_AddRefs(mgr));
+    MOZ_DIAGNOSTIC_ASSERT(mgr != nullptr, "Service manager not present!");
+    mozilla::AppShutdown::AdvanceShutdownPhase(
+        mozilla::ShutdownPhase::XPCOMShutdown, nullptr, do_QueryInterface(mgr));
 
     // This must happen after the shutdown of media and widgets, which
     // are triggered by the NS_XPCOM_SHUTDOWN_OBSERVER_ID notification.
@@ -639,14 +628,10 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
     gXPCOMThreadsShutDown = true;
     NS_ProcessPendingEvents(thread);
 
-    // Shutdown the timer thread and all timers that might still be alive before
-    // shutting down the component manager
+    // Shutdown the timer thread and all timers that might still be alive
     nsTimerImpl::Shutdown();
 
     NS_ProcessPendingEvents(thread);
-
-    mozilla::KillClearOnShutdown(ShutdownPhase::XPCOMShutdownLoaders);
-    // XXX: Why don't we try a MaybeFastShutdown for XPCOMShutdownLoaders ?
 
     // Shutdown all remaining threads.  This method does not return until
     // all threads created using the thread manager (with the exception of
@@ -660,11 +645,12 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
       observerService->Shutdown();
     }
 
-    // Free ClearOnShutdown()'ed smart pointers.  This needs to happen *after*
-    // we've finished notifying observers of XPCOM shutdown, because shutdown
-    // observers themselves might call ClearOnShutdown().
-    // Some destructors may fire extra runnables that will be processed below.
-    mozilla::KillClearOnShutdown(ShutdownPhase::XPCOMShutdownFinal);
+    // XPCOMShutdownFinal is the default phase for ClearOnShutdown.
+    // This AdvanceShutdownPhase will thus free most ClearOnShutdown()'ed
+    // smart pointers. Some destructors may fire extra main thread runnables
+    // that will be processed below.
+    AppShutdown::AdvanceShutdownPhase(ShutdownPhase::XPCOMShutdownFinal);
+
     NS_ProcessPendingEvents(thread);
 
     // Shutdown the main thread, processing our last round of events, and then
@@ -678,9 +664,6 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
   }
 
   AbstractThread::ShutdownMainThread();
-
-  mozilla::AppShutdown::MaybeFastShutdown(
-      mozilla::ShutdownPhase::XPCOMShutdownFinal);
 
   // XPCOM is officially in shutdown mode NOW
   // Set this only after the observers have been notified as this
@@ -723,9 +706,7 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
 
   // There can be code trying to refer to global objects during the final cc
   // shutdown. This is the phase for such global objects to correctly release.
-  mozilla::KillClearOnShutdown(ShutdownPhase::CCPostLastCycleCollection);
-  mozilla::AppShutdown::MaybeFastShutdown(
-      mozilla::ShutdownPhase::CCPostLastCycleCollection);
+  AppShutdown::AdvanceShutdownPhase(ShutdownPhase::CCPostLastCycleCollection);
 
   mozilla::scache::StartupCache::DeleteSingleton();
   mozilla::ScriptPreloader::DeleteSingleton();
@@ -735,8 +716,9 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
   // Shutdown xpcom. This will release all loaders and cause others holding
   // a refcount to the component manager to release it.
   if (nsComponentManagerImpl::gComponentManager) {
-    rv = (nsComponentManagerImpl::gComponentManager)->Shutdown();
-    NS_ASSERTION(NS_SUCCEEDED(rv), "Component Manager shutdown failed.");
+    DebugOnly<nsresult> rv =
+        (nsComponentManagerImpl::gComponentManager)->Shutdown();
+    NS_ASSERTION(NS_SUCCEEDED(rv.value), "Component Manager shutdown failed.");
   } else {
     NS_WARNING("Component Manager was never created ...");
   }

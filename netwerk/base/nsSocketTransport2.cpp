@@ -1234,7 +1234,7 @@ nsresult nsSocketTransport::InitiateSocket() {
           "Browser services should be disabled or redirected to a local "
           "server.\n",
           mHost.get(), ipaddr.get());
-      MOZ_CRASH("Attempting to connect to non-local address!");
+      return NS_ERROR_NON_LOCAL_CONNECTION_REFUSED;
     }
   }
 
@@ -1630,7 +1630,10 @@ bool nsSocketTransport::RecoverFromError() {
 
   // all connection failures need to be reported to DNS so that the next
   // time we will use a different address if available.
-  if (mState == STATE_CONNECTING && mDNSRecord) {
+  // NS_BASE_STREAM_CLOSED is not an actual connection failure, so don't report
+  // to DNS.
+  if (mState == STATE_CONNECTING && mDNSRecord &&
+      mCondition != NS_BASE_STREAM_CLOSED) {
     mDNSRecord->ReportUnusable(SocketPort());
   }
 

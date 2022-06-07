@@ -1126,6 +1126,28 @@ impl ToCss for ScrollSnapAlign {
     ToShmem,
 )]
 #[repr(u8)]
+pub enum ScrollSnapStop {
+    Normal,
+    Always,
+}
+
+#[allow(missing_docs)]
+#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
 pub enum OverscrollBehavior {
     Auto,
     Contain,
@@ -1311,7 +1333,9 @@ impl Parse for WillChange {
                 &["will-change", "none", "all", "auto"],
             )?;
 
-            if ident.0 == atom!("scroll-position") {
+            if context.in_ua_sheet() && ident.0 == atom!("-moz-fixed-pos-containing-block") {
+                bits |= WillChangeBits::FIXPOS_CB_NON_SVG;
+            } else if ident.0 == atom!("scroll-position") {
                 bits |= WillChangeBits::SCROLL;
             } else {
                 bits |= change_bits_for_maybe_property(&parser_ident, context);
@@ -1913,10 +1937,6 @@ pub enum Appearance {
     MozMacSourceList,
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     MozMacSourceListSelection,
-    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
-    MozMacVibrantTitlebarDark,
-    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
-    MozMacVibrantTitlebarLight,
 
     /// A themed focus outline (for outline:auto).
     ///

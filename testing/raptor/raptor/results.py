@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 import json
 import os
+import pathlib
 import shutil
 from abc import ABCMeta, abstractmethod
 from io import open
@@ -42,6 +43,7 @@ class PerftestResultsHandler(object):
         conditioned_profile=None,
         cold=False,
         chimera=False,
+        fission=True,
         **kwargs
     ):
         self.gecko_profile = gecko_profile
@@ -55,9 +57,7 @@ class PerftestResultsHandler(object):
         self.page_timeout_list = []
         self.images = []
         self.supporting_data = None
-        self.fission_enabled = kwargs.get("extra_prefs", {}).get(
-            "fission.autostart", False
-        )
+        self.fission_enabled = fission
         self.browser_version = None
         self.browser_name = None
         self.cold = cold
@@ -107,7 +107,11 @@ class PerftestResultsHandler(object):
             "chrome-m",
             "chromium",
         ):
-            extra_options.remove("webrender")
+            # Bug 1770225: Make this more dynamic, this will fail us again in the future
+            if "webrender" in extra_options:
+                extra_options.remove("webrender")
+            if "fission" in extra_options:
+                extra_options.remove("fission")
 
         return extra_options
 
@@ -664,6 +668,24 @@ class BrowsertimeResultsHandler(PerftestResultsHandler):
             "accept_zero_vismet": accept_zero_vismet,
         }
 
+    def _label_video_folder(self, result_data, base_dir, kind="warm"):
+        for filetype in result_data["files"]:
+            for idx, data in enumerate(result_data["files"][filetype]):
+                parts = list(pathlib.Path(data).parts)
+                lable_idx = parts.index("data")
+                if "query-" in parts[lable_idx - 1]:
+                    lable_idx -= 1
+
+                src_dir = pathlib.Path(base_dir).joinpath(*parts[: lable_idx + 1])
+                parts.insert(lable_idx, kind)
+                dst_dir = pathlib.Path(base_dir).joinpath(*parts[: lable_idx + 1])
+
+                if src_dir.exists() and not dst_dir.exists():
+                    pathlib.Path(dst_dir).mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src_dir), str(dst_dir))
+
+                result_data["files"][filetype][idx] = str(pathlib.Path(*parts[:]))
+
     def summarize_and_output(self, test_config, tests, test_names):
         """
         Retrieve, process, and output the browsertime test results. Currently supports page-load
@@ -729,10 +751,27 @@ class BrowsertimeResultsHandler(PerftestResultsHandler):
                 cold_path = os.path.join(dirpath, "cold-browsertime.json")
                 warm_path = os.path.join(dirpath, "warm-browsertime.json")
 
+                self._label_video_folder(cold_data, dirpath, "cold")
+                self._label_video_folder(warm_data, dirpath, "warm")
+
                 with open(cold_path, "w") as f:
                     json.dump([cold_data], f)
                 with open(warm_path, "w") as f:
                     json.dump([warm_data], f)
+
+                raw_btresults[0] = cold_data
+                raw_btresults[1] = warm_data
+
+                # Overwrite the contents of the browertime.json file
+                # to update it with the new file paths
+                try:
+                    with open(bt_res_json, "w", encoding="utf8") as f:
+                        json.dump(raw_btresults, f)
+                except Exception as e:
+                    LOG.error("Exception reading %s" % bt_res_json)
+                    # XXX this should be replaced by a traceback call
+                    LOG.error("Exception: %s %s" % (type(e).__name__, str(e)))
+                    raise
 
             if not run_local:
                 extra_options = self.build_extra_options()

@@ -62,7 +62,9 @@ add_task(async function testExportToClipboard() {
 
   info("Test export to clipboard ");
   // Let's wait until we have all the logged messages.
-  const lastMessage = await waitFor(() => findMessage(hud, "item-99"));
+  const lastMessage = await waitFor(() =>
+    findConsoleAPIMessage(hud, "item-99")
+  );
 
   const clipboardText = await exportAllToClipboard(hud, lastMessage);
   ok(true, "Clipboard text was found and saved");
@@ -159,8 +161,8 @@ async function exportAllToFile(hud, message) {
   menuPopup.hidePopup();
 
   // The file may not be ready yet.
-  await waitFor(() => OS.File.exists(nsiFile.path));
-  const buffer = await OS.File.read(nsiFile.path);
+  await waitFor(() => IOUtils.exists(nsiFile.path));
+  const buffer = await IOUtils.read(nsiFile.path);
   return new TextDecoder().decode(buffer);
 }
 

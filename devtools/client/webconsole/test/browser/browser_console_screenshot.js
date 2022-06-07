@@ -45,11 +45,16 @@ add_task(async function() {
   // to keep tests consistant across OSs we are setting the dpr to 1
   const command = `:screenshot ${file.path} --dpr 1`;
 
-  await executeAndWaitForMessage(hud, command, `Saved to ${file.path}`);
+  await executeAndWaitForMessageByType(
+    hud,
+    command,
+    `Saved to ${file.path}`,
+    ".console-api"
+  );
 
   info("Create an image using the downloaded file as source");
   const image = new Image();
-  image.src = OS.Path.toFileURI(file.path);
+  image.src = PathUtils.toFileURI(file.path);
   await once(image, "load");
 
   info(
@@ -101,6 +106,6 @@ add_task(async function() {
   });
 
   info("Remove the downloaded screenshot file and cleanup downloads");
-  await OS.File.remove(file.path);
+  await IOUtils.remove(file.path);
   await resetDownloads();
 });

@@ -1116,7 +1116,7 @@ bool CanvasRenderingContext2D::ParseColor(const nsACString& aString,
   if (wasCurrentColor && mCanvasElement) {
     // Otherwise, get the value of the color property, flushing style
     // if necessary.
-    RefPtr<ComputedStyle> canvasStyle =
+    RefPtr<const ComputedStyle> canvasStyle =
         nsComputedDOMStyle::GetComputedStyle(mCanvasElement);
     if (canvasStyle) {
       *aColor = canvasStyle->StyleText()->mColor.ToColor();
@@ -1696,7 +1696,7 @@ void CanvasRenderingContext2D::ClearTarget(int32_t aWidth, int32_t aHeight) {
 
   // For vertical writing-mode, unless text-orientation is sideways,
   // we'll modify the initial value of textBaseline to 'middle'.
-  RefPtr<ComputedStyle> canvasStyle =
+  RefPtr<const ComputedStyle> canvasStyle =
       nsComputedDOMStyle::GetComputedStyle(mCanvasElement);
   if (canvasStyle) {
     WritingMode wm(canvasStyle);
@@ -2453,7 +2453,7 @@ static already_AddRefed<RawServoDeclarationBlock> CreateFontDeclarationForServo(
   return CreateDeclarationForServo(eCSSProperty_font, aFont, aDocument);
 }
 
-static already_AddRefed<ComputedStyle> GetFontStyleForServo(
+static already_AddRefed<const ComputedStyle> GetFontStyleForServo(
     Element* aElement, const nsACString& aFont, PresShell* aPresShell,
     nsACString& aOutUsedFont, ErrorResult& aError) {
   RefPtr<RawServoDeclarationBlock> declarations =
@@ -2473,7 +2473,7 @@ static already_AddRefed<ComputedStyle> GetFontStyleForServo(
 
   ServoStyleSet* styleSet = aPresShell->StyleSet();
 
-  RefPtr<ComputedStyle> parentStyle;
+  RefPtr<const ComputedStyle> parentStyle;
   // have to get a parent ComputedStyle for inherit-like relative
   // values (2em, bolder, etc.)
   if (aElement && aElement->IsInComposedDoc()) {
@@ -2500,7 +2500,7 @@ static already_AddRefed<ComputedStyle> GetFontStyleForServo(
              "We should have returned an error above if the presshell is "
              "being destroyed.");
 
-  RefPtr<ComputedStyle> sc =
+  RefPtr<const ComputedStyle> sc =
       styleSet->ResolveForDeclarations(parentStyle, declarations);
 
   // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-font
@@ -2527,7 +2527,7 @@ CreateFilterDeclarationForServo(const nsACString& aFilter,
   return CreateDeclarationForServo(eCSSProperty_filter, aFilter, aDocument);
 }
 
-static already_AddRefed<ComputedStyle> ResolveFilterStyleForServo(
+static already_AddRefed<const ComputedStyle> ResolveFilterStyleForServo(
     const nsACString& aFilterString, const ComputedStyle* aParentStyle,
     PresShell* aPresShell, ErrorResult& aError) {
   RefPtr<RawServoDeclarationBlock> declarations =
@@ -2545,7 +2545,7 @@ static already_AddRefed<ComputedStyle> ResolveFilterStyleForServo(
   }
 
   ServoStyleSet* styleSet = aPresShell->StyleSet();
-  RefPtr<ComputedStyle> computedValues =
+  RefPtr<const ComputedStyle> computedValues =
       styleSet->ResolveForDeclarations(aParentStyle, declarations);
 
   return computedValues.forget();
@@ -2562,13 +2562,13 @@ bool CanvasRenderingContext2D::ParseFilter(
 
   nsAutoCString usedFont;  // unused
 
-  RefPtr<ComputedStyle> parentStyle = GetFontStyleForServo(
+  RefPtr<const ComputedStyle> parentStyle = GetFontStyleForServo(
       mCanvasElement, GetFont(), presShell, usedFont, aError);
   if (!parentStyle) {
     return false;
   }
 
-  RefPtr<ComputedStyle> style =
+  RefPtr<const ComputedStyle> style =
       ResolveFilterStyleForServo(aString, parentStyle, presShell, aError);
   if (!style) {
     return false;
@@ -2754,22 +2754,25 @@ void CanvasRenderingContext2D::FillRect(double aX, double aY, double aW,
       // just punt to relying on the default Clamp mode.
       gfx::Rect patternBounds(style->mSurface->GetRect());
       patternBounds = style->mTransform.TransformBounds(patternBounds);
-      gfx::Rect bounds(aX, aY, aW, aH);
-      // We always need to execute painting for non-over operators, even if
-      // we end up with w/h = 0.
-      bounds = bounds.Intersect(patternBounds);
       if (style->mTransform.HasNonAxisAlignedTransform()) {
         // If there is an rotation (90 or 270 degrees), the X axis of the
         // pattern projects onto the Y axis of the geometry, and vice versa.
         std::swap(limitx, limity);
       }
+      // We always need to execute painting for non-over operators, even if
+      // we end up with w/h = 0. The default Rect::Intersect can cause both
+      // dimensions to become empty if either dimension individually fails
+      // to overlap, which is unsuitable. Instead, we need to independently
+      // limit the supplied rectangle on each dimension as required.
       if (limitx) {
-        aX = bounds.x;
-        aW = bounds.width;
+        double x2 = aX + aW;
+        aX = std::max(aX, double(patternBounds.x));
+        aW = std::max(std::min(x2, double(patternBounds.XMost())) - aX, 0.0);
       }
       if (limity) {
-        aY = bounds.y;
-        aH = bounds.height;
+        double y2 = aY + aH;
+        aY = std::max(aY, double(patternBounds.y));
+        aH = std::max(std::min(y2, double(patternBounds.YMost())) - aY, 0.0);
       }
     }
   }
@@ -3406,7 +3409,7 @@ bool CanvasRenderingContext2D::SetFontInternal(const nsACString& aFont,
   }
 
   nsCString usedFont;
-  RefPtr<ComputedStyle> sc =
+  RefPtr<const ComputedStyle> sc =
       GetFontStyleForServo(mCanvasElement, aFont, presShell, usedFont, aError);
   if (!sc) {
     return false;
@@ -3987,7 +3990,7 @@ TextMetrics* CanvasRenderingContext2D::DrawOrMeasureText(
     textToDraw.Truncate();
   }
 
-  RefPtr<ComputedStyle> canvasStyle;
+  RefPtr<const ComputedStyle> canvasStyle;
   if (mCanvasElement && mCanvasElement->IsInComposedDoc()) {
     // try to find the closest context
     canvasStyle = nsComputedDOMStyle::GetComputedStyle(mCanvasElement);
@@ -4264,17 +4267,14 @@ gfxFontGroup* CanvasRenderingContext2D::GetCurrentFontStyle() {
   // Use lazy (re)initialization for the fontGroup since it's rather expensive.
 
   RefPtr<PresShell> presShell = GetPresShell();
-  nsPresContext* pc = presShell ? presShell->GetPresContext() : nullptr;
-  gfxTextPerfMetrics* tp = nullptr;
-  if (pc) {
-    tp = pc->GetTextPerfMetrics();
-  }
+  nsPresContext* presContext =
+      presShell ? presShell->GetPresContext() : nullptr;
 
   // If we have a cached fontGroup, check that it is valid for the current
   // prescontext; if not, we need to discard and re-create it.
   RefPtr<gfxFontGroup>& fontGroup = CurrentState().fontGroup;
   if (fontGroup) {
-    if (fontGroup->GetTextPerfMetrics() != tp) {
+    if (fontGroup->GetPresContext() != presContext) {
       fontGroup = nullptr;
     }
   }
@@ -4302,7 +4302,8 @@ gfxFontGroup* CanvasRenderingContext2D::GetCurrentFontStyle() {
       const auto* sans =
           Servo_FontFamily_Generic(StyleGenericFontFamily::SansSerif);
       fontGroup = gfxPlatform::GetPlatform()->CreateFontGroup(
-          pc, sans->families, &style, language, explicitLanguage, tp, nullptr,
+          presContext, sans->families, &style, language, explicitLanguage,
+          presContext ? presContext->GetTextPerfMetrics() : nullptr, nullptr,
           devToCssSize);
       if (fontGroup) {
         CurrentState().font = kDefaultFontStyle;
@@ -5365,6 +5366,16 @@ already_AddRefed<ImageData> CanvasRenderingContext2D::GetImageData(
   return MakeAndAddRef<ImageData>(w, h, *array);
 }
 
+static IntRect ClipImageDataTransfer(IntRect& aSrc, const IntPoint& aDestOffset,
+                                     const IntSize& aDestBounds) {
+  IntRect dest = aSrc;
+  dest.SafeMoveBy(aDestOffset);
+  dest = IntRect(IntPoint(0, 0), aDestBounds).SafeIntersect(dest);
+
+  aSrc = aSrc.SafeIntersect(dest - aDestOffset);
+  return aSrc + aDestOffset;
+}
+
 nsresult CanvasRenderingContext2D::GetImageDataArray(
     JSContext* aCx, int32_t aX, int32_t aY, uint32_t aWidth, uint32_t aHeight,
     Maybe<nsIPrincipal*> aSubjectPrincipal, JSObject** aRetval) {
@@ -5394,9 +5405,9 @@ nsresult CanvasRenderingContext2D::GetImageDataArray(
     return NS_OK;
   }
 
-  IntRect srcRect(0, 0, mWidth, mHeight);
-  IntRect destRect(aX, aY, aWidth, aHeight);
-  IntRect srcReadRect = srcRect.Intersect(destRect);
+  IntRect dstWriteRect(0, 0, aWidth, aHeight);
+  IntRect srcReadRect = ClipImageDataTransfer(dstWriteRect, IntPoint(aX, aY),
+                                              IntSize(mWidth, mHeight));
   if (srcReadRect.IsEmpty()) {
     *aRetval = darray;
     return NS_OK;
@@ -5420,9 +5431,6 @@ nsresult CanvasRenderingContext2D::GetImageDataArray(
   if (!readback || !readback->Map(DataSourceSurface::READ, &rawData)) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
-
-  IntRect dstWriteRect = srcReadRect;
-  dstWriteRect.MoveBy(-aX, -aY);
 
   // Check for site-specific permission.  This check is not needed if the
   // canvas was created with a docshell (that is only done for special
@@ -5576,10 +5584,10 @@ void CanvasRenderingContext2D::PutImageData_explicit(
     dirtyRect = imageDataRect;
   }
 
-  dirtyRect.MoveBy(IntPoint(aX, aY));
-  dirtyRect = IntRect(0, 0, mWidth, mHeight).Intersect(dirtyRect);
-
-  if (dirtyRect.Width() <= 0 || dirtyRect.Height() <= 0) {
+  IntRect srcRect = dirtyRect;
+  dirtyRect = ClipImageDataTransfer(srcRect, IntPoint(aX, aY),
+                                    IntSize(mWidth, mHeight));
+  if (dirtyRect.IsEmpty()) {
     return;
   }
 
@@ -5634,7 +5642,6 @@ void CanvasRenderingContext2D::PutImageData_explicit(
     dstFormat = sourceSurface->GetFormat();
   }
 
-  IntRect srcRect = dirtyRect - IntPoint(aX, aY);
   uint8_t* srcData = arr.Data() + srcRect.y * (width * 4) + srcRect.x * 4;
 
   PremultiplyData(
@@ -5695,6 +5702,12 @@ already_AddRefed<ImageData> CanvasRenderingContext2D::CreateImageData(
     JSContext* aCx, ImageData& aImagedata, ErrorResult& aError) {
   return dom::CreateImageData(aCx, this, aImagedata.Width(),
                               aImagedata.Height(), aError);
+}
+
+void CanvasRenderingContext2D::OnMemoryPressure() {
+  if (mBufferProvider) {
+    mBufferProvider->OnMemoryPressure();
+  }
 }
 
 void CanvasRenderingContext2D::OnBeforePaintTransaction() {

@@ -11,9 +11,11 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 
 XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   Downloads: "resource://gre/modules/Downloads.jsm",
   ServiceWorkerCleanUp: "resource://gre/modules/ServiceWorkerCleanUp.jsm",
   PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
@@ -1495,9 +1497,9 @@ const FLAGS_MAP = [
   },
 ];
 
-this.ClearDataService = function() {
+function ClearDataService() {
   this._initialize();
-};
+}
 
 ClearDataService.prototype = Object.freeze({
   classID: Components.ID("{0c06583d-7dd8-4293-b1a5-912205f779aa}"),

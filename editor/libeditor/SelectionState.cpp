@@ -505,11 +505,10 @@ void RangeUpdater::DidRemoveContainer(const Element& aRemovedElement,
 
 void RangeUpdater::DidMoveNode(const nsINode& aOldParent, uint32_t aOldOffset,
                                const nsINode& aNewParent, uint32_t aNewOffset) {
-  if (NS_WARN_IF(!mLocked)) {
+  if (mLocked) {
+    // Do nothing if moving nodes is occurred while changing the container.
     return;
   }
-  mLocked = false;
-
   for (RefPtr<RangeItem>& rangeItem : mArray) {
     if (NS_WARN_IF(!rangeItem)) {
       return;
@@ -554,7 +553,7 @@ void RangeItem::StoreRange(const nsRange& aRange) {
   mEndOffset = aRange.EndOffset();
 }
 
-already_AddRefed<nsRange> RangeItem::GetRange() {
+already_AddRefed<nsRange> RangeItem::GetRange() const {
   RefPtr<nsRange> range = nsRange::Create(
       mStartContainer, mStartOffset, mEndContainer, mEndOffset, IgnoreErrors());
   NS_WARNING_ASSERTION(range, "nsRange::Create() failed");

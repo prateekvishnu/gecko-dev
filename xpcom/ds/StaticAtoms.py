@@ -1020,6 +1020,7 @@ STATIC_ATOMS = [
     Atom("previewDiv", "preview-div"),
     Atom("primary", "primary"),
     Atom("print", "print"),
+    Atom("printisfocuseddoc", "printisfocuseddoc"),
     Atom("printselectionranges", "printselectionranges"),
     Atom("priority", "priority"),
     Atom("processingInstruction", "processing-instruction"),
@@ -1259,6 +1260,7 @@ STATIC_ATOMS = [
     Atom("ul", "ul"),
     Atom("unparsedEntityUri", "unparsed-entity-uri"),
     Atom("up", "up"),
+    Atom("update", "update"),
     Atom("upperFirst", "upper-first"),
     Atom("use", "use"),
     Atom("useAttributeSets", "use-attribute-sets"),
@@ -2199,6 +2201,7 @@ STATIC_ATOMS = [
     Atom("fantasy", "fantasy"),
     Atom("monospace", "monospace"),
     Atom("mozfixed", "-moz-fixed"),
+    Atom("moz_fixed_pos_containing_block", "-moz-fixed-pos-containing-block"),
     # IPC stuff
     # Atom("Remote", "remote"),  # "remote" is present above
     Atom("RemoteId", "_remote_id"),
@@ -2221,7 +2224,6 @@ STATIC_ATOMS = [
     Atom("_moz_scrollbar_start_forward", "-moz-scrollbar-start-forward"),
     Atom("_moz_scrollbar_end_backward", "-moz-scrollbar-end-backward"),
     Atom("_moz_scrollbar_end_forward", "-moz-scrollbar-end-forward"),
-    Atom("_moz_scrollbar_thumb_proportional", "-moz-scrollbar-thumb-proportional"),
     Atom("_moz_overlay_scrollbars", "-moz-overlay-scrollbars"),
     Atom("_moz_windows_accent_color_in_titlebar", "-moz-windows-accent-color-in-titlebar"),
     Atom("_moz_windows_default_theme", "-moz-windows-default-theme"),

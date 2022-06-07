@@ -233,14 +233,13 @@ void gfxPlatformGtk::InitDmabufConfig() {
 void gfxPlatformGtk::InitVAAPIConfig() {
   FeatureState& feature = gfxConfig::GetFeature(Feature::VAAPI);
 #ifdef MOZ_WAYLAND
+#  ifdef NIGHTLY_BUILD
+  feature.EnableByDefault();
+#  else
   feature.DisableByDefault(FeatureStatus::Disabled,
                            "VAAPI is disabled by default",
                            "FEATURE_VAAPI_DISABLED"_ns);
-
-  if (StaticPrefs::media_ffmpeg_vaapi_enabled()) {
-    feature.UserForceEnable("Force enabled by pref");
-  }
-
+#  endif
   nsCString failureId;
   int32_t status;
   nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
@@ -251,6 +250,10 @@ void gfxPlatformGtk::InitVAAPIConfig() {
   } else if (status != nsIGfxInfo::FEATURE_STATUS_OK) {
     feature.Disable(FeatureStatus::Blocklisted, "Blocklisted by gfxInfo",
                     failureId);
+  }
+
+  if (StaticPrefs::media_ffmpeg_vaapi_enabled()) {
+    feature.UserForceEnable("Force enabled by pref");
   }
 
   if (!gfxVars::UseEGL()) {
@@ -279,6 +282,11 @@ void gfxPlatformGtk::InitWebRenderConfig() {
   }
 
   FeatureState& feature = gfxConfig::GetFeature(Feature::WEBRENDER_COMPOSITOR);
+#ifdef RELEASE_OR_BETA
+  feature.ForceDisable(FeatureStatus::Blocked,
+                       "Cannot be enabled in release or beta",
+                       "FEATURE_FAILURE_DISABLE_RELEASE_OR_BETA"_ns);
+#else
   if (feature.IsEnabled()) {
     if (!(gfxConfig::IsEnabled(Feature::WEBRENDER) ||
           gfxConfig::IsEnabled(Feature::WEBRENDER_SOFTWARE))) {
@@ -289,7 +297,7 @@ void gfxPlatformGtk::InitWebRenderConfig() {
                            "Wayland support missing",
                            "FEATURE_FAILURE_NO_WAYLAND"_ns);
     }
-#ifdef MOZ_WAYLAND
+#  ifdef MOZ_WAYLAND
     else if (gfxConfig::IsEnabled(Feature::WEBRENDER) &&
              !gfxConfig::IsEnabled(Feature::DMABUF)) {
       // We use zwp_linux_dmabuf_v1 and GBM directly to manage FBOs. In theory
@@ -303,8 +311,10 @@ void gfxPlatformGtk::InitWebRenderConfig() {
                            "Requires wp_viewporter protocol support",
                            "FEATURE_FAILURE_REQUIRES_WPVIEWPORTER"_ns);
     }
-#endif
+#  endif  // MOZ_WAYLAND
   }
+#endif    // RELEASE_OR_BETA
+
   gfxVars::SetUseWebRenderCompositor(feature.IsEnabled());
 }
 

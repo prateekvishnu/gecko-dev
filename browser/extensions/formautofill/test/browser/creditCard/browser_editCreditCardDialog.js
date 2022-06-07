@@ -1,5 +1,3 @@
-/* eslint-disable mozilla/no-arbitrary-setTimeout */
-
 "use strict";
 
 add_setup(async function() {
@@ -270,11 +268,12 @@ add_task(async function test_addInvalidCreditCard() {
     SimpleTest.requestFlakyTimeout(
       "Ensure the window remains open after save attempt"
     );
+    // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
     setTimeout(() => {
       win.removeEventListener("unload", unloadHandler);
       info("closing");
       win.close();
-    }, 500);
+    }, TIMEOUT_ENSURE_CC_EDIT_DIALOG_NOT_CLOSED);
   });
   info("closed");
   let creditCards = await getCreditCards();
@@ -446,4 +445,43 @@ add_task(async function test_editCreditCardWithInvalidNumber() {
 
   creditCards = await getCreditCards();
   is(creditCards.length, 0, "Credit card storage is empty");
+});
+
+add_task(async function test_noAutocompletePopupOnSystemTab() {
+  await setStorage(TEST_CREDIT_CARD_1);
+
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: PRIVACY_PREF_URL },
+    async browser => {
+      // Open credit card manage dialog
+      await SpecialPowers.spawn(browser, [], async () => {
+        let button = content.document.querySelector(
+          "#creditCardAutofill button"
+        );
+        button.click();
+      });
+      let dialog = await waitForSubDialogLoad(
+        content,
+        MANAGE_CREDIT_CARDS_DIALOG_URL
+      );
+
+      // Open edit credit card dialog
+      await SpecialPowers.spawn(dialog, [], async () => {
+        let button = content.document.querySelector("#add");
+        button.click();
+      });
+      dialog = await waitForSubDialogLoad(content, EDIT_CREDIT_CARD_DIALOG_URL);
+
+      // Focus on credit card number field
+      await SpecialPowers.spawn(dialog, [], async () => {
+        let number = content.document.querySelector("#cc-number");
+        number.focus();
+      });
+
+      // autocomplete popup should not appear
+      await ensureNoAutocompletePopup(browser);
+    }
+  );
+
+  await removeAllRecords();
 });

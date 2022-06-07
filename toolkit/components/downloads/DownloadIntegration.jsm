@@ -23,9 +23,7 @@ ChromeUtils.defineModuleGetter(
   "AsyncShutdown",
   "resource://gre/modules/AsyncShutdown.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
+const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 ChromeUtils.defineModuleGetter(
@@ -58,11 +56,7 @@ ChromeUtils.defineModuleGetter(
   "NetUtil",
   "resource://gre/modules/NetUtil.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 ChromeUtils.defineModuleGetter(
   this,
   "NetUtil",
@@ -734,6 +728,17 @@ var DownloadIntegration = {
       fileExtension &&
       fileExtension.toLowerCase() == "exe";
 
+    let isExemptExecutableExtension = false;
+    try {
+      let url = new URL(aDownload.source.url);
+      isExemptExecutableExtension = Services.policies.isExemptExecutableExtension(
+        url.origin,
+        fileExtension?.toLowerCase()
+      );
+    } catch (e) {
+      // Invalid URL, go down the original path.
+    }
+
     // Ask for confirmation if the file is executable, except for .exe on
     // Windows where the operating system will show the prompt based on the
     // security zone.  We do this here, instead of letting the caller handle
@@ -741,9 +746,11 @@ var DownloadIntegration = {
     // first is because of its security nature, so that add-ons cannot forget
     // to do this check.  The second is that the system-level security prompt
     // would be displayed at launch time in any case.
+    // We allow policy to override this behavior for file extensions on specific domains.
     if (
       file.isExecutable() &&
       !isWindowsExe &&
+      !isExemptExecutableExtension &&
       !(await this.confirmLaunchExecutable(file.path))
     ) {
       return;

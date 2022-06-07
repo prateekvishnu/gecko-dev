@@ -374,7 +374,9 @@ void HTMLEditor::HideGrabberInternal() {
 nsresult HTMLEditor::ShowGrabberInternal(Element& aElement) {
   MOZ_ASSERT(IsEditActionDataAvailable());
 
-  if (NS_WARN_IF(!IsDescendantOfEditorRoot(&aElement))) {
+  const RefPtr<Element> editingHost = ComputeEditingHost();
+  if (NS_WARN_IF(!editingHost) ||
+      NS_WARN_IF(!aElement.IsInclusiveDescendantOf(editingHost))) {
     return NS_ERROR_UNEXPECTED;
   }
 
@@ -491,7 +493,7 @@ nsresult HTMLEditor::StartMoving() {
   return NS_OK;  // XXX Looks like nobody refers this result
 }
 
-void HTMLEditor::SnapToGrid(int32_t& newX, int32_t& newY) {
+void HTMLEditor::SnapToGrid(int32_t& newX, int32_t& newY) const {
   if (mSnapToGridEnabled && mGridSize) {
     newX = (int32_t)floor(((float)newX / (float)mGridSize) + 0.5f) * mGridSize;
     newY = (int32_t)floor(((float)newY / (float)mGridSize) + 0.5f) * mGridSize;
@@ -829,12 +831,19 @@ nsresult HTMLEditor::SetPositionToStatic(Element& aElement) {
   }
   // MOZ_KnownLive(*styledElement): aElement's lifetime must be guarantted
   // by the caller because of MOZ_CAN_RUN_SCRIPT method.
-  rv = RemoveContainerWithTransaction(MOZ_KnownLive(*styledElement));
-  if (NS_WARN_IF(Destroyed())) {
-    return NS_ERROR_EDITOR_DESTROYED;
+  const Result<EditorDOMPoint, nsresult> unwrapStyledElementResult =
+      RemoveContainerWithTransaction(MOZ_KnownLive(*styledElement));
+  if (MOZ_UNLIKELY(unwrapStyledElementResult.isErr())) {
+    NS_WARNING("HTMLEditor::RemoveContainerWithTransaction() failed");
+    return unwrapStyledElementResult.inspectErr();
   }
+  const EditorDOMPoint& pointToPutCaret = unwrapStyledElementResult.inspect();
+  if (!AllowsTransactionsToChangeSelection() || !pointToPutCaret.IsSet()) {
+    return NS_OK;
+  }
+  rv = CollapseSelectionTo(pointToPutCaret);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "HTMLEditor::RemoveContainerWithTransaction() failed");
+                       "EditorBase::CollapseSelectionTo() failed");
   return rv;
 }
 
@@ -930,7 +939,8 @@ nsresult HTMLEditor::GetTemporaryStyleForFocusedPositionedElement(
     return NS_OK;
   }
 
-  RefPtr<ComputedStyle> style = nsComputedDOMStyle::GetComputedStyle(&aElement);
+  RefPtr<const ComputedStyle> style =
+      nsComputedDOMStyle::GetComputedStyle(&aElement);
   if (NS_WARN_IF(Destroyed())) {
     return NS_ERROR_EDITOR_DESTROYED;
   }

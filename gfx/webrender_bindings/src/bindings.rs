@@ -512,7 +512,6 @@ extern "C" {
     #[allow(dead_code)]
     fn gfx_critical_error(msg: *const c_char);
     fn gfx_critical_note(msg: *const c_char);
-    fn record_telemetry_time(probe: TelemetryProbe, time_ns: u64);
     fn gfx_wr_set_crash_annotation(annotation: CrashAnnotation, value: *const c_char);
     fn gfx_wr_clear_crash_annotation(annotation: CrashAnnotation);
 }
@@ -548,11 +547,8 @@ impl RenderNotifier for CppNotifier {
         }
     }
 
-    fn new_frame_ready(&self, _: DocumentId, _scrolled: bool, composite_needed: bool, render_time_ns: Option<u64>) {
+    fn new_frame_ready(&self, _: DocumentId, _scrolled: bool, composite_needed: bool) {
         unsafe {
-            if let Some(time) = render_time_ns {
-                record_telemetry_time(TelemetryProbe::FrameBuildTime, time);
-            }
             if composite_needed {
                 wr_notifier_new_frame_ready(self.window_id);
             } else {
@@ -988,17 +984,15 @@ impl SceneBuilderHooks for APZCallbacks {
         gecko_profiler_start_marker("SceneBuilding");
     }
 
-    fn pre_scene_swap(&self, scenebuild_time: u64) {
+    fn pre_scene_swap(&self) {
         unsafe {
-            record_telemetry_time(TelemetryProbe::SceneBuildTime, scenebuild_time);
             apz_pre_scene_swap(self.window_id);
         }
     }
 
-    fn post_scene_swap(&self, _document_ids: &Vec<DocumentId>, info: PipelineInfo, sceneswap_time: u64) {
+    fn post_scene_swap(&self, _document_ids: &Vec<DocumentId>, info: PipelineInfo) {
         let mut info = WrPipelineInfo::new(&info);
         unsafe {
-            record_telemetry_time(TelemetryProbe::SceneSwapTime, sceneswap_time);
             apz_post_scene_swap(self.window_id, &info);
         }
 
@@ -1216,6 +1210,7 @@ extern "C" {
         is_opaque: bool,
     );
     fn wr_compositor_create_external_surface(compositor: *mut c_void, id: NativeSurfaceId, is_opaque: bool);
+    fn wr_compositor_create_backdrop_surface(compositor: *mut c_void, id: NativeSurfaceId, color: ColorF);
     fn wr_compositor_destroy_surface(compositor: *mut c_void, id: NativeSurfaceId);
     fn wr_compositor_create_tile(compositor: *mut c_void, id: NativeSurfaceId, x: i32, y: i32);
     fn wr_compositor_destroy_tile(compositor: *mut c_void, id: NativeSurfaceId, x: i32, y: i32);
@@ -1289,6 +1284,12 @@ impl Compositor for WrCompositor {
     fn create_external_surface(&mut self, id: NativeSurfaceId, is_opaque: bool) {
         unsafe {
             wr_compositor_create_external_surface(self.0, id, is_opaque);
+        }
+    }
+
+    fn create_backdrop_surface(&mut self, id: NativeSurfaceId, color: ColorF) {
+        unsafe {
+            wr_compositor_create_backdrop_surface(self.0, id, color);
         }
     }
 
@@ -2879,6 +2880,7 @@ pub extern "C" fn wr_dp_push_rect(
     clip: LayoutRect,
     is_backface_visible: bool,
     force_antialiasing: bool,
+    is_checkerboard: bool,
     parent: &WrSpaceAndClipChain,
     color: ColorF,
 ) {
@@ -2887,6 +2889,9 @@ pub extern "C" fn wr_dp_push_rect(
     let mut prim_info = common_item_properties_for_rect(state, clip, is_backface_visible, parent);
     if force_antialiasing {
         prim_info.flags |= PrimitiveFlags::ANTIALISED;
+    }
+    if is_checkerboard {
+        prim_info.flags |= PrimitiveFlags::CHECKERBOARD_BACKGROUND;
     }
 
     state.frame_builder.dl_builder.push_rect(&prim_info, rect, color);

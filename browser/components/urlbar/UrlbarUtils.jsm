@@ -22,6 +22,7 @@ var EXPORTED_SYMBOLS = [
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 XPCOMUtils.defineLazyModuleGetters(this, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
   FormHistory: "resource://gre/modules/FormHistory.jsm",
@@ -32,7 +33,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
   SearchSuggestionController:
     "resource://gre/modules/SearchSuggestionController.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
   UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
   UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.jsm",
@@ -133,7 +133,7 @@ var UrlbarUtils = {
    * histogram.
    */
   SELECTED_RESULT_TYPES: {
-    autofill: 0,
+    autofill: 0, // This is currently unused.
     bookmark: 1,
     history: 2,
     keyword: 3,
@@ -151,6 +151,12 @@ var UrlbarUtils = {
     dynamic: 15,
     tabtosearch: 16,
     quicksuggest: 17,
+    autofill_adaptive: 18,
+    autofill_origin: 19,
+    autofill_url: 20,
+    autofill_about: 21,
+    autofill_other: 22,
+    autofill_preloaded: 23,
     // n_values = 32, so you'll need to create a new histogram if you need more.
   },
 
@@ -889,7 +895,7 @@ var UrlbarUtils = {
         LEFT JOIN moz_inputhistory i ON i.place_id = h.id AND i.input = :input
         WHERE url_hash = hash(:url) AND url = :url
       `,
-        { url, input }
+        { url, input: input.toLowerCase() }
       );
     });
   },
@@ -1118,12 +1124,17 @@ var UrlbarUtils = {
    * @returns {boolean} true: can autofill
    */
   canAutofillURL(url, candidate, checkFragmentOnly = false) {
-    if (
-      !checkFragmentOnly &&
-      (url.length <= candidate.length ||
-        !url.toLocaleLowerCase().startsWith(candidate.toLocaleLowerCase()))
-    ) {
-      return false;
+    if (!checkFragmentOnly) {
+      if (
+        url.length <= candidate.length ||
+        !url.toLocaleLowerCase().startsWith(candidate.toLocaleLowerCase())
+      ) {
+        return false;
+      }
+
+      if (!candidate.includes("/")) {
+        return true;
+      }
     }
 
     if (!UrlbarTokenizer.REGEXP_PREFIX.test(url)) {
@@ -1179,7 +1190,16 @@ var UrlbarUtils = {
         return result.payload.suggestion ? "searchsuggestion" : "searchengine";
       case UrlbarUtils.RESULT_TYPE.URL:
         if (result.autofill) {
-          return "autofill";
+          let { type } = result.autofill;
+          if (!type) {
+            type = "other";
+            Cu.reportError(
+              new Error(
+                "`result.autofill.type` not set, falling back to 'other'"
+              )
+            );
+          }
+          return `autofill_${type}`;
         }
         if (
           result.source == UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL &&

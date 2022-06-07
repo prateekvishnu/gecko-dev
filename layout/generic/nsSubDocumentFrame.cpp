@@ -813,11 +813,6 @@ nsresult nsSubDocumentFrame::AttributeChanged(int32_t aNameSpaceID,
 }
 
 void nsSubDocumentFrame::MaybeUpdateEmbedderColorScheme() {
-  if (!mContent->IsXULElement()) {
-    // We only do this for XUL <browser>s.
-    return;
-  }
-
   nsFrameLoader* fl = mFrameLoader.get();
   if (!fl) {
     return;
@@ -944,6 +939,8 @@ void nsSubDocumentFrame::DestroyFrom(nsIFrame* aDestructRoot,
   // the frame has been made position:fixed).
   RefPtr<nsFrameLoader> frameloader = FrameLoader();
   if (frameloader) {
+    ClearDisplayItems();
+
     nsView* detachedViews =
         ::BeginSwapDocShellsForViews(mInnerView->GetFirstChild());
 
@@ -1205,20 +1202,9 @@ void nsSubDocumentFrame::EndSwapDocShells(nsIFrame* aOther) {
 }
 
 void nsSubDocumentFrame::ClearDisplayItems() {
-  for (nsDisplayItem* i : DisplayItems()) {
-    if (i->GetType() == DisplayItemType::TYPE_SUBDOCUMENT) {
-      nsIFrame* displayRoot = nsLayoutUtils::GetDisplayRootFrame(this);
-      MOZ_ASSERT(displayRoot);
-
-      RetainedDisplayListBuilder* retainedBuilder =
-          displayRoot->GetProperty(RetainedDisplayListBuilder::Cached());
-      MOZ_ASSERT(retainedBuilder);
-
-      auto* item = static_cast<nsDisplaySubDocument*>(i);
-      item->GetChildren()->DeleteAll(retainedBuilder->Builder());
-      item->Disown();
-      break;
-    }
+  if (auto* builder = nsLayoutUtils::GetRetainedDisplayListBuilder(this)) {
+    DL_LOGD("nsSubDocumentFrame::ClearDisplayItems() %p", this);
+    builder->ClearRetainedData();
   }
 }
 
@@ -1360,7 +1346,7 @@ bool nsDisplayRemote::CreateWebRenderCommands(
     visibleRect -= destRect.TopLeft();
 
     // Generate an effects update notifying the browser it is visible
-    gfx::Size scale = aSc.GetInheritedScale();
+    MatrixScales scale = aSc.GetInheritedScale();
 
     ParentLayerToScreenScale2D transformToAncestorScale =
         ParentLayerToParentLayerScale(
@@ -1370,9 +1356,8 @@ bool nsDisplayRemote::CreateWebRenderCommands(
             mFrame);
 
     aDisplayListBuilder->AddEffectUpdate(
-        remoteBrowser,
-        EffectsInfo::VisibleWithinRect(visibleRect, {scale.width, scale.height},
-                                       transformToAncestorScale));
+        remoteBrowser, EffectsInfo::VisibleWithinRect(
+                           visibleRect, scale, transformToAncestorScale));
 
     // Create a WebRenderRemoteData to notify the RemoteBrowser when it is no
     // longer visible

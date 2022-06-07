@@ -106,6 +106,7 @@ struct CycleCollectorStats {
   constexpr CycleCollectorStats() = default;
   void Init();
   void Clear();
+  void PrepareForCycleCollection(TimeStamp aNow);
   void AfterPrepareForCycleCollectionSlice(TimeStamp aDeadline,
                                            TimeStamp aBeginTime,
                                            TimeStamp aMaybeAfterGCTime);
@@ -114,7 +115,7 @@ struct CycleCollectorStats {
   void AfterForgetSkippable(TimeDuration duration, uint32_t aRemovedPurples);
   void AfterCycleCollection();
 
-  void SendTelemetry(TimeDuration aCCNowDuration) const;
+  void SendTelemetry(TimeDuration aCCNowDuration, TimeStamp aPrevCCEnd) const;
   void MaybeLogStats(const CycleCollectorResults& aResults,
                      uint32_t aCleanups) const;
   void MaybeNotifyStats(const CycleCollectorResults& aResults,
@@ -184,11 +185,10 @@ namespace xpc {
 //
 // Note that the returned stackObj and stackGlobal are _not_ wrapped into the
 // compartment of exceptionValue.
-void FindExceptionStackForConsoleReport(nsPIDOMWindowInner* win,
-                                        JS::HandleValue exceptionValue,
-                                        JS::HandleObject exceptionStack,
-                                        JS::MutableHandleObject stackObj,
-                                        JS::MutableHandleObject stackGlobal) {
+void FindExceptionStackForConsoleReport(
+    nsPIDOMWindowInner* win, JS::Handle<JS::Value> exceptionValue,
+    JS::Handle<JSObject*> exceptionStack, JS::MutableHandle<JSObject*> stackObj,
+    JS::MutableHandle<JSObject*> stackGlobal) {
   stackObj.set(nullptr);
   stackGlobal.set(nullptr);
 
@@ -209,7 +209,7 @@ void FindExceptionStackForConsoleReport(nsPIDOMWindowInner* win,
   }
 
   JS::RootingContext* rcx = RootingCx();
-  JS::RootedObject exceptionObject(rcx, &exceptionValue.toObject());
+  JS::Rooted<JSObject*> exceptionObject(rcx, &exceptionValue.toObject());
   if (JSObject* excStack = JS::ExceptionStackOrNull(exceptionObject)) {
     // At this point we know exceptionObject is a possibly-wrapped
     // js::ErrorObject that has excStack as stack. excStack might also be a CCW,
@@ -243,7 +243,7 @@ void FindExceptionStackForConsoleReport(nsPIDOMWindowInner* win,
   if (!stack) {
     return;
   }
-  JS::RootedValue value(rcx);
+  JS::Rooted<JS::Value> value(rcx);
   stack->GetNativeSavedFrame(&value);
   if (value.isObject()) {
     stackObj.set(&value.toObject());
@@ -433,8 +433,8 @@ class ScriptErrorEvent : public Runnable {
  private:
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
   RefPtr<xpc::ErrorReport> mReport;
-  JS::PersistentRootedValue mError;
-  JS::PersistentRootedObject mErrorStack;
+  JS::PersistentRooted<JS::Value> mError;
+  JS::PersistentRooted<JSObject*> mErrorStack;
 
   static bool sHandlingScriptError;
 };
@@ -1242,6 +1242,11 @@ void CycleCollectorStats::AfterCycleCollectionSlice() {
   mBeginSliceTime = TimeStamp();
 }
 
+void CycleCollectorStats::PrepareForCycleCollection(TimeStamp aNow) {
+  mBeginTime = aNow;
+  mSuspected = nsCycleCollector_suspectedCount();
+}
+
 void CycleCollectorStats::AfterPrepareForCycleCollectionSlice(
     TimeStamp aDeadline, TimeStamp aBeginTime, TimeStamp aMaybeAfterGCTime) {
   mBeginSliceTime = aBeginTime;
@@ -1273,7 +1278,8 @@ void CycleCollectorStats::AfterForgetSkippable(TimeDuration duration,
   mRemovedPurples += aRemovedPurples;
 }
 
-void CycleCollectorStats::SendTelemetry(TimeDuration aCCNowDuration) const {
+void CycleCollectorStats::SendTelemetry(TimeDuration aCCNowDuration,
+                                        TimeStamp aPrevCCEnd) const {
   Telemetry::Accumulate(Telemetry::CYCLE_COLLECTOR_FINISH_IGC, mAnyLockedOut);
   Telemetry::Accumulate(Telemetry::CYCLE_COLLECTOR_SYNC_SKIPPABLE,
                         mRanSyncForgetSkippable);
@@ -1282,9 +1288,8 @@ void CycleCollectorStats::SendTelemetry(TimeDuration aCCNowDuration) const {
   Telemetry::Accumulate(Telemetry::CYCLE_COLLECTOR_MAX_PAUSE,
                         mMaxSliceTime.ToMilliseconds());
 
-  TimeStamp lastCCEndTime = sScheduler.GetLastCCEndTime();
-  if (!lastCCEndTime.IsNull()) {
-    TimeDuration timeBetween = TimeBetween(lastCCEndTime, mBeginTime);
+  if (!aPrevCCEnd.IsNull()) {
+    TimeDuration timeBetween = TimeBetween(aPrevCCEnd, mBeginTime);
     Telemetry::Accumulate(Telemetry::CYCLE_COLLECTOR_TIME_BETWEEN,
                           timeBetween.ToSeconds());
   }
@@ -1427,7 +1432,10 @@ void nsJSContext::PrepareForCycleCollectionSlice(CCReason aReason,
   }
 
   if (!sScheduler.IsCollectingCycles()) {
-    sScheduler.NoteCCBegin(aReason, beginTime);
+    sCCStats.PrepareForCycleCollection(beginTime);
+    sScheduler.NoteCCBegin(aReason, beginTime,
+                           sCCStats.mForgetSkippableBeforeCC,
+                           sCCStats.mSuspected, sCCStats.mRemovedPurples);
   }
 
   sCCStats.AfterPrepareForCycleCollectionSlice(aDeadline, beginTime,
@@ -1487,9 +1495,7 @@ void nsJSContext::BeginCycleCollectionCallback(CCReason aReason) {
   MOZ_ASSERT(NS_IsMainThread());
 
   TimeStamp startTime = TimeStamp::Now();
-  sCCStats.mBeginTime =
-      sCCStats.mBeginSliceTime.IsNull() ? startTime : sCCStats.mBeginSliceTime;
-  sCCStats.mSuspected = nsCycleCollector_suspectedCount();
+  sCCStats.PrepareForCycleCollection(startTime);
 
   // Run forgetSkippable synchronously to reduce the size of the CC graph. This
   // is particularly useful if we recently finished a GC.
@@ -1510,7 +1516,8 @@ void nsJSContext::BeginCycleCollectionCallback(CCReason aReason) {
 }
 
 // static
-void nsJSContext::EndCycleCollectionCallback(CycleCollectorResults& aResults) {
+void nsJSContext::EndCycleCollectionCallback(
+    const CycleCollectorResults& aResults) {
   MOZ_ASSERT(NS_IsMainThread());
 
   sScheduler.KillCCRunner();
@@ -1519,10 +1526,28 @@ void nsJSContext::EndCycleCollectionCallback(CycleCollectorResults& aResults) {
   // we previously called PrepareForCycleCollectionSlice(). During shutdown
   // CCs, this won't happen.
   sCCStats.AfterCycleCollectionSlice();
-  sScheduler.NoteCycleCollected(aResults);
 
   TimeStamp endCCTimeStamp = TimeStamp::Now();
   TimeDuration ccNowDuration = TimeBetween(sCCStats.mBeginTime, endCCTimeStamp);
+  TimeStamp prevCCEnd = sScheduler.GetLastCCEndTime();
+
+  sScheduler.NoteCCEnd(aResults, endCCTimeStamp, sCCStats.mMaxSliceTime);
+
+  // Log information about the CC via telemetry, JSON and the console.
+
+  sCCStats.SendTelemetry(ccNowDuration, prevCCEnd);
+
+  uint32_t cleanups = std::max(sCCStats.mForgetSkippableBeforeCC, 1u);
+
+  sCCStats.MaybeLogStats(aResults, cleanups);
+
+  sCCStats.MaybeNotifyStats(aResults, ccNowDuration, cleanups);
+
+  // Update global state to indicate we have just run a cycle collection.
+  sCCStats.Clear();
+
+  // If we need a GC after this CC (typically because lots of GCed objects or
+  // zones have been collected in the CC), schedule it.
 
   if (sScheduler.NeedsGCAfterCC()) {
     MOZ_ASSERT(
@@ -1535,20 +1560,6 @@ void nsJSContext::EndCycleCollectionCallback(CycleCollectorResults& aResults) {
                           StaticPrefs::javascript_options_gc_delay()) -
                           std::min(ccNowDuration, kMaxICCDuration));
   }
-
-  // Log information about the CC via telemetry, JSON and the console.
-
-  sCCStats.SendTelemetry(ccNowDuration);
-
-  uint32_t cleanups = std::max(sCCStats.mForgetSkippableBeforeCC, 1u);
-
-  sCCStats.MaybeLogStats(aResults, cleanups);
-
-  sCCStats.MaybeNotifyStats(aResults, ccNowDuration, cleanups);
-
-  // Update global state to indicate we have just run a cycle collection.
-  sScheduler.NoteCCEnd(endCCTimeStamp);
-  sCCStats.Clear();
 }
 
 /* static */
@@ -1572,9 +1583,15 @@ bool CCGCScheduler::CCRunnerFired(TimeStamp aDeadline) {
       case CCRunnerAction::None:
         break;
 
+      case CCRunnerAction::MinorGC:
+        JS::MaybeRunNurseryCollection(CycleCollectedJSRuntime::Get()->Runtime(),
+                                      step.mParam.mReason);
+        sScheduler.NoteMinorGCEnd();
+        break;
+
       case CCRunnerAction::ForgetSkippable:
         // 'Forget skippable' only, then end this invocation.
-        FireForgetSkippable(bool(step.mRemoveChildless), aDeadline);
+        FireForgetSkippable(bool(step.mParam.mRemoveChildless), aDeadline);
         break;
 
       case CCRunnerAction::CleanupContentUnbinder:
@@ -1589,7 +1606,7 @@ bool CCGCScheduler::CCRunnerFired(TimeStamp aDeadline) {
 
       case CCRunnerAction::CycleCollect:
         // Cycle collection slice.
-        nsJSContext::RunCycleCollectorSlice(step.mCCReason, aDeadline);
+        nsJSContext::RunCycleCollectorSlice(step.mParam.mCCReason, aDeadline);
         break;
 
       case CCRunnerAction::StopRunning:
@@ -1675,6 +1692,23 @@ void nsJSContext::PokeGC(JS::GCReason aReason, JSObject* aObj,
 }
 
 // static
+void nsJSContext::MaybePokeGC() {
+  if (sShuttingDown) {
+    return;
+  }
+
+  JSRuntime* rt = CycleCollectedJSRuntime::Get()->Runtime();
+  JS::GCReason reason = JS::WantEagerMinorGC(rt);
+  if (reason != JS::GCReason::NO_REASON) {
+    MOZ_ASSERT(reason == JS::GCReason::EAGER_NURSERY_COLLECTION);
+    sScheduler.PokeMinorGC(reason);
+  }
+
+  // Bug 1772638: For now, only do eager minor GCs. Eager major GCs regress some
+  // benchmarks. Hopefully that will be worked out and this will check for
+  // whether an eager major GC is needed.
+}
+
 void nsJSContext::DoLowMemoryGC() {
   if (sShuttingDown) {
     return;
@@ -1717,7 +1751,7 @@ static void DOMGCSliceCallback(JSContext* aCx, JS::GCProgress aProgress,
   switch (aProgress) {
     case JS::GC_CYCLE_BEGIN: {
       // Prevent cycle collections and shrinking during incremental GC.
-      sScheduler.NoteGCBegin();
+      sScheduler.NoteGCBegin(aDesc.reason_);
       sCurrentGCStartTime = TimeStamp::Now();
       break;
     }
@@ -1745,8 +1779,7 @@ static void DOMGCSliceCallback(JSContext* aCx, JS::GCProgress aProgress,
       // May need to kill the GC runner
       sScheduler.KillGCRunner();
 
-      TimeStamp now = TimeStamp::Now();
-      sScheduler.MaybePokeCC(now, nsCycleCollector_suspectedCount());
+      nsJSContext::MaybePokeCC();
 
       if (aDesc.isZone_) {
         sScheduler.PokeFullGC();
@@ -1755,7 +1788,8 @@ static void DOMGCSliceCallback(JSContext* aCx, JS::GCProgress aProgress,
         sScheduler.KillFullGCTimer();
       }
 
-      if (sScheduler.IsCCNeeded(now, nsCycleCollector_suspectedCount()) !=
+      if (sScheduler.IsCCNeeded(TimeStamp::Now(),
+                                nsCycleCollector_suspectedCount()) !=
           CCReason::NO_REASON) {
         nsCycleCollector_dispatchDeferredDeletion();
       }
@@ -1952,7 +1986,7 @@ static bool DispatchToEventLoop(void* closure,
   return true;
 }
 
-static bool ConsumeStream(JSContext* aCx, JS::HandleObject aObj,
+static bool ConsumeStream(JSContext* aCx, JS::Handle<JSObject*> aObj,
                           JS::MimeType aMimeType,
                           JS::StreamConsumer* aConsumer) {
   return FetchUtil::StreamResponseToJS(aCx, aObj, aMimeType, aConsumer,

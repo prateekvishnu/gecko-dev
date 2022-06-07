@@ -8,15 +8,17 @@ var EXPORTED_SYMBOLS = ["CreditCardTelemetry"];
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FormAutofillUtils",
   "resource://autofill/FormAutofillUtils.jsm"
 );
 
-const { FIELD_STATES } = FormAutofillUtils;
+const { FIELD_STATES } = lazy.FormAutofillUtils;
 
-this.CreditCardTelemetry = {
+const CreditCardTelemetry = {
   // Mapping of field name used in formautofill code to the field name
   // used in the telemetry.
   CC_FORM_V2_SUPPORTED_FIELDS: {
@@ -153,9 +155,8 @@ this.CreditCardTelemetry = {
       let state = profile[fieldDetail.fieldName] ? "filled" : "not_filled";
       if (
         fieldDetail.state == FIELD_STATES.NORMAL &&
-        (ChromeUtils.getClassName(element) == "HTMLSelectElement" ||
-          (ChromeUtils.getClassName(element) == "HTMLInputElement" &&
-            element.value.length))
+        (HTMLSelectElement.isInstance(element) ||
+          (HTMLInputElement.isInstance(element) && element.value.length))
       ) {
         state = "user_filled";
       }

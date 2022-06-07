@@ -41,62 +41,61 @@ const { CreditCard } = ChromeUtils.import(
   "resource://gre/modules/CreditCard.jsm"
 );
 
+const lazy = {};
+
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "FormLikeFactory",
   "resource://gre/modules/FormLikeFactory.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LoginFormFactory",
   "resource://gre/modules/LoginFormFactory.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LoginRecipesContent",
   "resource://gre/modules/LoginRecipes.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "LoginHelper",
   "resource://gre/modules/LoginHelper.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "InsecurePasswordUtils",
   "resource://gre/modules/InsecurePasswordUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "ContentDOMReference",
   "resource://gre/modules/ContentDOMReference.jsm"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
-  this,
+  lazy,
   "gFormFillService",
   "@mozilla.org/satchel/form-fill-controller;1",
   "nsIFormFillController"
 );
 
-XPCOMUtils.defineLazyGetter(this, "log", () => {
-  let logger = LoginHelper.createLogger("LoginManagerChild");
+XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+  let logger = lazy.LoginHelper.createLogger("LoginManagerChild");
   return logger.log.bind(logger);
 });
 
 Services.cpmm.addMessageListener("clearRecipeCache", () => {
-  LoginRecipesContent._clearRecipeCache();
+  lazy.LoginRecipesContent._clearRecipeCache();
 });
 
 let gLastRightClickTimeStamp = Number.NEGATIVE_INFINITY;
-
-// Input element on which enter keydown event was fired.
-let gKeyDownEnterForInput = null;
 
 // Events on pages with Shadow DOM could return the shadow host element
 // (aEvent.target) rather than the actual username or password field
@@ -104,10 +103,76 @@ let gKeyDownEnterForInput = null;
 // Only allow input elements (can be extended later) to avoid false negatives.
 class WeakFieldSet extends WeakSet {
   add(value) {
-    if (ChromeUtils.getClassName(value) != "HTMLInputElement") {
+    if (!HTMLInputElement.isInstance(value)) {
       throw new Error("Non-field type added to a WeakFieldSet");
     }
     super.add(value);
+  }
+}
+
+class LoginFormState {
+  /**
+   * Keeps track of filled fields and values.
+   */
+  fillsByRootElement = new WeakMap();
+  /**
+   * Keeps track of fields we've filled with generated passwords
+   */
+  generatedPasswordFields = new WeakFieldSet();
+  /**
+   * Keeps track of logins that were last submitted.
+   */
+  lastSubmittedValuesByRootElement = new WeakMap();
+  fieldModificationsByRootElement = new WeakMap();
+  loginFormRootElements = new WeakSet();
+  /**
+   * Anything entered into an <input> that we think might be a username
+   */
+  possibleUsernames = new Set();
+  /**
+   * Anything entered into an <input> that we think might be a password
+   */
+  possiblePasswords = new Set();
+
+  /**
+   * Keeps track of the formLike of nodes (form or formless password field)
+   * that we are watching when they are removed from DOM.
+   */
+  formLikeByObservedNode = new WeakMap();
+
+  /**
+   * Keeps track of all formless password fields that have been
+   * updated by the user.
+   */
+  formlessModifiedPasswordFields = new WeakFieldSet();
+
+  /**
+   * Caches the results of the username heuristics
+   */
+  cachedIsInferredUsernameField = new WeakMap();
+  cachedIsInferredEmailField = new WeakMap();
+  cachedIsInferredLoginForm = new WeakMap();
+
+  /**
+   * Records the mock username field when its associated form is submitted.
+   */
+  mockUsernameOnlyField = null;
+
+  /**
+   * Records the number of possible username event received for this document.
+   */
+  numFormHasPossibleUsernameEvent = 0;
+
+  captureLoginTimeStamp = 0;
+
+  storeUserInput(field) {
+    if (field.value && lazy.LoginHelper.captureInputChanges) {
+      if (lazy.LoginHelper.isPasswordFieldType(field)) {
+        this.possiblePasswords.add(field.value);
+      } else if (lazy.LoginHelper.isUsernameFieldType(field)) {
+        this.possibleUsernames.add(field.value);
+      }
+    }
   }
 }
 
@@ -128,27 +193,26 @@ const observer = {
       return;
     }
 
-    log(
+    const window = aWebProgress.DOMWindow;
+    lazy.log(
       "onLocationChange handled:",
       aLocation.displaySpec,
-      aWebProgress.DOMWindow.document
+      window.document
     );
-
-    LoginManagerChild.forWindow(aWebProgress.DOMWindow)._onNavigation(
-      aWebProgress.DOMWindow.document
-    );
+    LoginManagerChild.forWindow(window)._onNavigation(window.document);
   },
 
   onStateChange(aWebProgress, aRequest, aState, aStatus) {
+    const window = aWebProgress.DOMWindow;
+    const loginManagerChild = () => LoginManagerChild.forWindow(window);
+
     if (
       aState & Ci.nsIWebProgressListener.STATE_RESTORING &&
       aState & Ci.nsIWebProgressListener.STATE_STOP
     ) {
       // Re-fill a document restored from bfcache since password field values
       // aren't persisted there.
-      LoginManagerChild.forWindow(aWebProgress.DOMWindow)._onDocumentRestored(
-        aWebProgress.DOMWindow.document
-      );
+      loginManagerChild()._onDocumentRestored(window.document);
       return;
     }
 
@@ -173,17 +237,15 @@ const observer = {
     // Don't handle history navigation, reload, or pushState not triggered via chrome UI.
     // e.g. history.go(-1), location.reload(), history.replaceState()
     if (!(aWebProgress.loadType & Ci.nsIDocShell.LOAD_CMD_NORMAL)) {
-      log(
+      lazy.log(
         "onStateChange: loadType isn't LOAD_CMD_NORMAL:",
         aWebProgress.loadType
       );
       return;
     }
 
-    log("onStateChange handled:", channel);
-    LoginManagerChild.forWindow(aWebProgress.DOMWindow)._onNavigation(
-      aWebProgress.DOMWindow.document
-    );
+    lazy.log("onStateChange handled:", channel);
+    loginManagerChild()._onNavigation(window.document);
   },
 
   // nsIObserver
@@ -196,7 +258,7 @@ const observer = {
           break;
         }
 
-        let { focusedInput } = gFormFillService;
+        let { focusedInput } = lazy.gFormFillService;
         if (focusedInput.nodePrincipal.isNullPrincipal) {
           // If we have a null principal then prevent any more password manager code from running and
           // incorrectly using the document `location`.
@@ -226,83 +288,74 @@ const observer = {
       return;
     }
 
-    if (!LoginHelper.enabled) {
+    if (!lazy.LoginHelper.enabled) {
       return;
     }
 
-    let ownerDocument = aEvent.target.ownerDocument;
-    let window = ownerDocument.defaultView;
-    let docState = LoginManagerChild.forWindow(window).stateForDocument(
-      ownerDocument
-    );
+    const ownerDocument = aEvent.target.ownerDocument;
+    const window = ownerDocument.defaultView;
+    const loginManagerChild = LoginManagerChild.forWindow(window);
+    const docState = loginManagerChild.stateForDocument(ownerDocument);
+    const field = aEvent.composedTarget;
 
     switch (aEvent.type) {
       // Used to mask fields with filled generated passwords when blurred.
       case "blur": {
-        if (docState.generatedPasswordFields.has(aEvent.composedTarget)) {
-          let unmask = false;
-          LoginManagerChild.forWindow(window)._togglePasswordFieldMasking(
-            aEvent.composedTarget,
-            unmask
-          );
+        if (docState.generatedPasswordFields.has(field)) {
+          const unmask = false;
+          loginManagerChild._togglePasswordFieldMasking(field, unmask);
         }
         break;
       }
 
       // Used to watch for changes to username and password fields.
       case "change": {
-        let formLikeRoot = FormLikeFactory.findRootForField(
-          aEvent.composedTarget
-        );
+        let formLikeRoot = lazy.FormLikeFactory.findRootForField(field);
         if (!docState.fieldModificationsByRootElement.get(formLikeRoot)) {
-          log("Ignoring change event on form that hasn't been user-modified");
-          if (aEvent.composedTarget.hasBeenTypePassword) {
+          lazy.log(
+            "Ignoring change event on form that hasn't been user-modified"
+          );
+          if (field.hasBeenTypePassword) {
             // Send notification that the password field has not been changed.
             // This is used only for testing.
-            LoginManagerChild.forWindow(window)._ignorePasswordEdit();
+            loginManagerChild._ignorePasswordEdit();
           }
           break;
         }
 
-        // _storeUserInput mutates docstate
-        this._storeUserInput(docState, aEvent.composedTarget);
+        docState.storeUserInput(field);
         let detail = {
           possibleValues: {
             usernames: docState.possibleUsernames,
             passwords: docState.possiblePasswords,
           },
         };
-        LoginManagerChild.forWindow(window).sendAsyncMessage(
+        loginManagerChild.sendAsyncMessage(
           "PasswordManager:updateDoorhangerSuggestions",
           detail
         );
 
-        if (aEvent.composedTarget.hasBeenTypePassword) {
+        if (field.hasBeenTypePassword) {
           let triggeredByFillingGenerated = docState.generatedPasswordFields.has(
-            aEvent.composedTarget
+            field
           );
           // Autosave generated password initial fills and subsequent edits
           if (triggeredByFillingGenerated) {
-            LoginManagerChild.forWindow(window)._passwordEditedOrGenerated(
-              aEvent.composedTarget,
-              {
-                triggeredByFillingGenerated,
-              }
-            );
+            loginManagerChild._passwordEditedOrGenerated(field, {
+              triggeredByFillingGenerated,
+            });
           } else {
             // Send a notification that we are not saving the edit to the password field.
             // This is used only for testing.
-            LoginManagerChild.forWindow(window)._ignorePasswordEdit();
+            loginManagerChild._ignorePasswordEdit();
           }
         }
         break;
       }
 
       case "input": {
-        let field = aEvent.composedTarget;
-        let isPasswordType = LoginHelper.isPasswordFieldType(field);
+        let isPasswordType = lazy.LoginHelper.isPasswordFieldType(field);
         // React to input into fields filled with generated passwords.
-        let loginManagerChild = LoginManagerChild.forWindow(window);
         if (
           docState.generatedPasswordFields.has(field) &&
           // Depending on the edit, we may no longer want to consider
@@ -312,12 +365,12 @@ const observer = {
           loginManagerChild._stopTreatingAsGeneratedPasswordField(field);
         }
 
-        if (!isPasswordType && !LoginHelper.isUsernameFieldType(field)) {
+        if (!isPasswordType && !lazy.LoginHelper.isUsernameFieldType(field)) {
           break;
         }
 
         // React to input into potential username or password fields
-        let formLikeRoot = FormLikeFactory.findRootForField(field);
+        let formLikeRoot = lazy.FormLikeFactory.findRootForField(field);
 
         if (formLikeRoot !== aEvent.currentTarget) {
           break;
@@ -333,7 +386,7 @@ const observer = {
         let isAutofillInput = filledLogin && !fillWasUserTriggered;
         if (!alreadyModified && isAutofillInput) {
           if (isPasswordType && filledLogin.password == field.value) {
-            log(
+            lazy.log(
               "Ignoring password input event that doesn't change autofilled values"
             );
             break;
@@ -343,7 +396,7 @@ const observer = {
             filledLogin.usernameField &&
             filledLogin.username == field.value
           ) {
-            log(
+            lazy.log(
               "Ignoring username input event that doesn't change autofilled values"
             );
             break;
@@ -353,7 +406,7 @@ const observer = {
         // Keep track of the modified formless password field to trigger form submission
         // when it is removed from DOM.
         let alreadyModifiedFormLessField = true;
-        if (ChromeUtils.getClassName(formLikeRoot) !== "HTMLFormElement") {
+        if (!HTMLFormElement.isInstance(formLikeRoot)) {
           alreadyModifiedFormLessField = docState.formlessModifiedPasswordFields.has(
             field
           );
@@ -365,7 +418,7 @@ const observer = {
         // Infer form submission only when there has been an user interaction on the form
         // or the formless password field.
         if (
-          LoginHelper.formRemovalCaptureEnabled &&
+          lazy.LoginHelper.formRemovalCaptureEnabled &&
           (!alreadyModified || !alreadyModifiedFormLessField)
         ) {
           ownerDocument.setNotifyFetchSuccess(true);
@@ -385,7 +438,7 @@ const observer = {
           docState.fillsByRootElement.delete(formLikeRoot);
         }
 
-        if (!LoginHelper.passwordEditCaptureEnabled) {
+        if (!lazy.LoginHelper.passwordEditCaptureEnabled) {
           break;
         }
         if (field.hasBeenTypePassword) {
@@ -393,35 +446,28 @@ const observer = {
           // if found. To do this, _fillConfirmFieldWithGeneratedPassword calls setUserInput, which fires
           // an "input" event on the confirm password field. _compareAndUpdatePreviouslySentValues will
           // allow that message through due to triggeredByFillingGenerated, so early return here.
-          let form = LoginFormFactory.createFromField(field);
+          let form = lazy.LoginFormFactory.createFromField(field);
           if (
             docState.generatedPasswordFields.has(field) &&
-            LoginManagerChild.forWindow(window)._getFormFields(form)
-              .confirmPasswordField === field
+            loginManagerChild._getFormFields(form).confirmPasswordField ===
+              field
           ) {
             break;
           }
           // Don't check for triggeredByFillingGenerated, as we do not want to autosave
           // a field marked as a generated password field on every "input" event
-          LoginManagerChild.forWindow(window)._passwordEditedOrGenerated(field);
+          loginManagerChild._passwordEditedOrGenerated(field);
         } else {
-          let [usernameField, passwordField] = LoginManagerChild.forWindow(
-            window
-          ).getUserNameAndPasswordFields(field);
-          if (
-            usernameField &&
-            field == usernameField &&
-            passwordField &&
-            passwordField.value
-          ) {
-            LoginManagerChild.forWindow(window)._passwordEditedOrGenerated(
-              passwordField,
-              {
-                triggeredByFillingGenerated: docState.generatedPasswordFields.has(
-                  passwordField
-                ),
-              }
-            );
+          let [
+            usernameField,
+            passwordField,
+          ] = loginManagerChild.getUserNameAndPasswordFields(field);
+          if (field == usernameField && passwordField?.value) {
+            loginManagerChild._passwordEditedOrGenerated(passwordField, {
+              triggeredByFillingGenerated: docState.generatedPasswordFields.has(
+                passwordField
+              ),
+            });
           }
         }
         break;
@@ -429,20 +475,18 @@ const observer = {
 
       case "keydown": {
         if (
-          aEvent.composedTarget.value &&
+          field.value &&
           (aEvent.keyCode == aEvent.DOM_VK_TAB ||
             aEvent.keyCode == aEvent.DOM_VK_RETURN)
         ) {
           const autofillForm =
-            LoginHelper.autofillForms &&
+            lazy.LoginHelper.autofillForms &&
             !PrivateBrowsingUtils.isContentWindowPrivate(
               ownerDocument.defaultView
             );
 
           if (autofillForm) {
-            LoginManagerChild.forWindow(window).onUsernameAutocompleted(
-              aEvent.composedTarget
-            );
+            loginManagerChild.onUsernameAutocompleted(field);
           }
         }
         break;
@@ -450,20 +494,17 @@ const observer = {
 
       case "focus": {
         if (
-          aEvent.composedTarget.hasBeenTypePassword &&
-          docState.generatedPasswordFields.has(aEvent.composedTarget)
+          field.hasBeenTypePassword &&
+          docState.generatedPasswordFields.has(field)
         ) {
           // Used to unmask fields with filled generated passwords when focused.
-          let unmask = true;
-          LoginManagerChild.forWindow(window)._togglePasswordFieldMasking(
-            aEvent.composedTarget,
-            unmask
-          );
+          const unmask = true;
+          loginManagerChild._togglePasswordFieldMasking(field, unmask);
           break;
         }
 
         // Only used for username fields.
-        LoginManagerChild.forWindow(window)._onUsernameFocus(aEvent);
+        loginManagerChild._onUsernameFocus(aEvent);
         break;
       }
 
@@ -482,75 +523,48 @@ const observer = {
       }
     }
   },
-
-  _storeUserInput(docState, field) {
-    if (
-      !Services.prefs.getBoolPref(
-        "signon.capture.inputChanges.enabled",
-        false
-      ) ||
-      !field.value
-    ) {
-      return;
-    }
-
-    if (LoginHelper.isPasswordFieldType(field)) {
-      docState.possiblePasswords.add(field.value);
-    } else if (LoginHelper.isUsernameFieldType(field)) {
-      docState.possibleUsernames.add(field.value);
-    }
-  },
 };
 
 // Add this observer once for the process.
 Services.obs.addObserver(observer, "autocomplete-did-enter-text");
 
-this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
-  constructor() {
-    super();
+class LoginManagerChild extends JSWindowActorChild {
+  /**
+   * WeakMap of the root element of a LoginForm to the DeferredTask to fill its fields.
+   *
+   * This is used to be able to throttle fills for a LoginForm since onDOMInputPasswordAdded gets
+   * dispatched for each password field added to a document but we only want to fill once per
+   * LoginForm when multiple fields are added at once.
+   *
+   * @type {WeakMap}
+   */
+  #deferredPasswordAddedTasksByRootElement = new WeakMap();
 
-    /**
-     * WeakMap of the root element of a LoginForm to the DeferredTask to fill its fields.
-     *
-     * This is used to be able to throttle fills for a LoginForm since onDOMInputPasswordAdded gets
-     * dispatched for each password field added to a document but we only want to fill once per
-     * LoginForm when multiple fields are added at once.
-     *
-     * @type {WeakMap}
-     */
-    this._deferredPasswordAddedTasksByRootElement = new WeakMap();
+  /**
+   * WeakMap of a document to the array of callbacks to execute when it becomes visible
+   *
+   * This is used to defer handling DOMFormHasPassword and onDOMInputPasswordAdded events when the
+   * containing document is hidden.
+   * When the document first becomes visible, any queued events will be handled as normal.
+   *
+   * @type {WeakMap}
+   */
+  #visibleTasksByDocument = new WeakMap();
 
-    /**
-     * WeakMap of a document to the array of callbacks to execute when it becomes visible
-     *
-     * This is used to defer handling DOMFormHasPassword and onDOMInputPasswordAdded events when the
-     * containing document is hidden.
-     * When the document first becomes visible, any queued events will be handled as normal.
-     *
-     * @type {WeakMap}
-     */
-    this._visibleTasksByDocument = new WeakMap();
+  /**
+   * Maps all DOM content documents in this content process, including those in
+   * frames, to the current state used by the Login Manager.
+   */
+  #loginFormStateByDocument = new WeakMap();
 
-    /**
-     * Maps all DOM content documents in this content process, including those in
-     * frames, to the current state used by the Login Manager.
-     */
-    this._loginFormStateByDocument = new WeakMap();
-
-    /**
-     * Set of fields where the user specifically requested password generation
-     * (from the context menu) even if we wouldn't offer it on this field by default.
-     */
-    this._fieldsWithPasswordGenerationForcedOn = new WeakSet();
-  }
+  /**
+   * Set of fields where the user specifically requested password generation
+   * (from the context menu) even if we wouldn't offer it on this field by default.
+   */
+  #fieldsWithPasswordGenerationForcedOn = new WeakSet();
 
   static forWindow(window) {
-    let windowGlobal = window.windowGlobalChild;
-    if (windowGlobal) {
-      return windowGlobal.getActor("LoginManager");
-    }
-
-    return null;
+    return window.windowGlobalChild?.getActor("LoginManager");
   }
 
   /**
@@ -590,7 +604,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         lastSentValues.triggeredByFillingGenerated ==
           triggeredByFillingGenerated
       ) {
-        log(
+        lazy.log(
           "_compareAndUpdatePreviouslySentValues: values are equivalent, returning true"
         );
         return true;
@@ -605,7 +619,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       dismissed,
       triggeredByFillingGenerated,
     });
-    log(
+    lazy.log(
       "_compareAndUpdatePreviouslySentValues: values not equivalent, returning false"
     );
     return false;
@@ -616,7 +630,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       case "PasswordManager:fillForm": {
         this.fillForm({
           loginFormOrigin: msg.data.loginFormOrigin,
-          loginsFound: LoginHelper.vanillaObjectsToLogins(msg.data.logins),
+          loginsFound: lazy.LoginHelper.vanillaObjectsToLogins(msg.data.logins),
           recipes: msg.data.recipes,
           inputElementIdentifier: msg.data.inputElementIdentifier,
           originMatches: msg.data.originMatches,
@@ -626,20 +640,22 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       }
 
       case "PasswordManager:useGeneratedPassword": {
-        let inputElement = ContentDOMReference.resolve(
+        let inputElement = lazy.ContentDOMReference.resolve(
           msg.data.inputElementIdentifier
         );
         if (!inputElement) {
-          log("Could not resolve inputElementIdentifier to a living element.");
+          lazy.log(
+            "Could not resolve inputElementIdentifier to a living element."
+          );
           break;
         }
 
-        if (inputElement != gFormFillService.focusedInput) {
-          log("Could not open popup on input that's no longer focused");
+        if (inputElement != lazy.gFormFillService.focusedInput) {
+          lazy.log("Could not open popup on input that's no longer focused");
           break;
         }
 
-        this._fieldsWithPasswordGenerationForcedOn.add(inputElement);
+        this.#fieldsWithPasswordGenerationForcedOn.add(inputElement);
         this.repopulateAutocompletePopup();
         break;
       }
@@ -650,7 +666,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       }
 
       case "PasswordManager:formIsPending": {
-        return this._visibleTasksByDocument.has(this.document);
+        return this.#visibleTasksByDocument.has(this.document);
       }
 
       case "PasswordManager:formProcessed": {
@@ -664,9 +680,9 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
   repopulateAutocompletePopup() {
     // Clear the cache of previous autocomplete results to show new options.
-    gFormFillService.QueryInterface(Ci.nsIAutoCompleteInput);
-    gFormFillService.controller.resetInternalState();
-    gFormFillService.showPopup();
+    lazy.gFormFillService.QueryInterface(Ci.nsIAutoCompleteInput);
+    lazy.gFormFillService.controller.resetInternalState();
+    lazy.gFormFillService.showPopup();
   }
 
   shouldIgnoreLoginManagerEvent(event) {
@@ -689,57 +705,42 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       return;
     }
 
+    if (this.shouldIgnoreLoginManagerEvent(event)) {
+      return;
+    }
+
     switch (event.type) {
       case "DOMDocFetchSuccess": {
-        if (this.shouldIgnoreLoginManagerEvent(event)) {
-          break;
-        }
-
-        this.onDOMDocFetchSuccess(event);
+        this.#onDOMDocFetchSuccess(event);
         break;
       }
       case "DOMFormBeforeSubmit": {
-        if (this.shouldIgnoreLoginManagerEvent(event)) {
-          break;
-        }
-
-        this.onDOMFormBeforeSubmit(event);
+        this.#onDOMFormBeforeSubmit(event);
         break;
       }
       case "DOMFormHasPassword": {
-        if (this.shouldIgnoreLoginManagerEvent(event)) {
-          break;
-        }
-
-        this.onDOMFormHasPassword(event);
-        let formLike = LoginFormFactory.createFromForm(event.originalTarget);
-        InsecurePasswordUtils.reportInsecurePasswords(formLike);
+        this.#onDOMFormHasPassword(event);
+        let formLike = lazy.LoginFormFactory.createFromForm(
+          event.originalTarget
+        );
+        lazy.InsecurePasswordUtils.reportInsecurePasswords(formLike);
         break;
       }
       case "DOMFormHasPossibleUsername": {
-        if (this.shouldIgnoreLoginManagerEvent(event)) {
-          break;
-        }
-
-        this.onDOMFormHasPossibleUsername(event);
+        this.#onDOMFormHasPossibleUsername(event);
         break;
       }
       case "DOMFormRemoved":
       case "DOMInputPasswordRemoved": {
-        if (this.shouldIgnoreLoginManagerEvent(event)) {
-          break;
-        }
-        this.onDOMFormRemoved(event);
+        this.#onDOMFormRemoved(event);
         break;
       }
       case "DOMInputPasswordAdded": {
-        if (this.shouldIgnoreLoginManagerEvent(event)) {
-          break;
-        }
-
-        this.onDOMInputPasswordAdded(event, this.document.defaultView);
-        let formLike = LoginFormFactory.createFromField(event.originalTarget);
-        InsecurePasswordUtils.reportInsecurePasswords(formLike);
+        this.#onDOMInputPasswordAdded(event, this.document.defaultView);
+        let formLike = lazy.LoginFormFactory.createFromField(
+          event.originalTarget
+        );
+        lazy.InsecurePasswordUtils.reportInsecurePasswords(formLike);
         break;
       }
     }
@@ -758,10 +759,8 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * @param {boolean} options.showPrimaryPassword - whether to show a primary password prompt
    */
   _getLoginDataFromParent(form, options) {
-    let actionOrigin = LoginHelper.getFormActionOrigin(form);
-
+    let actionOrigin = lazy.LoginHelper.getFormActionOrigin(form);
     let messageData = { actionOrigin, options };
-
     let resultPromise = this.sendQuery(
       "PasswordManager:findLogins",
       messageData
@@ -770,14 +769,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       return {
         form,
         importable: result.importable,
-        loginsFound: LoginHelper.vanillaObjectsToLogins(result.logins),
+        loginsFound: lazy.LoginHelper.vanillaObjectsToLogins(result.logins),
         recipes: result.recipes,
       };
     });
   }
 
   setupProgressListener(window) {
-    if (!LoginHelper.formlessCaptureEnabled) {
+    if (!lazy.LoginHelper.formlessCaptureEnabled) {
       return;
     }
 
@@ -785,7 +784,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let docShell;
     for (
       let browsingContext = BrowsingContext.getFromWindow(window);
-      browsingContext && browsingContext.docShell;
+      browsingContext?.docShell;
       browsingContext = browsingContext.parent
     ) {
       docShell = browsingContext.docShell;
@@ -809,14 +808,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * This method sets up form removal listener for form and password fields that
    * users have interacted with.
    */
-  onDOMDocFetchSuccess(event) {
+  #onDOMDocFetchSuccess(event) {
     let document = event.target;
     let docState = this.stateForDocument(document);
     let weakModificationsRootElements = ChromeUtils.nondeterministicGetWeakMapKeys(
       docState.fieldModificationsByRootElement
     );
 
-    log(
+    lazy.log(
       "onDOMDocFetchSuccess: modificationsByRootElement approx size:",
       weakModificationsRootElements.length,
       "document:",
@@ -837,10 +836,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     );
 
     for (let rootElement of weakModificationsRootElements) {
-      if (ChromeUtils.getClassName(rootElement) === "HTMLFormElement") {
+      if (HTMLFormElement.isInstance(rootElement)) {
         // If we create formLike when it is removed, we might not have the
         // right elements at that point, so create formLike object now.
-        let formLike = LoginFormFactory.createFromForm(rootElement);
+        let formLike = lazy.LoginFormFactory.createFromForm(rootElement);
         docState.formLikeByObservedNode.set(rootElement, formLike);
       }
     }
@@ -849,14 +848,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       docState.formlessModifiedPasswordFields
     );
 
-    log(
+    lazy.log(
       "onDOMDocFetchSuccess: formlessModifiedPasswordFields approx size:",
       weakFormlessModifiedPasswordFields.length,
       "document:",
       document
     );
     for (let passwordField of weakFormlessModifiedPasswordFields) {
-      let formLike = LoginFormFactory.createFromField(passwordField);
+      let formLike = lazy.LoginFormFactory.createFromField(passwordField);
       // force elements lazy getter being called.
       if (formLike.elements.length) {
         docState.formLikeByObservedNode.set(passwordField, formLike);
@@ -880,16 +879,15 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * 3. When a form is removed, onDOMFormRemoved triggers the login capture
    *    code.
    */
-  onDOMFormRemoved(event) {
+  #onDOMFormRemoved(event) {
     let document = event.composedTarget.ownerDocument;
     let docState = this.stateForDocument(document);
-
     let formLike = docState.formLikeByObservedNode.get(event.target);
     if (!formLike) {
       return;
     }
 
-    log("form is removed");
+    lazy.log("form is removed");
     this._onFormSubmit(formLike, SUBMIT_FORM_IS_REMOVED);
 
     docState.formLikeByObservedNode.delete(event.target);
@@ -910,15 +908,15 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     }
   }
 
-  onDOMFormBeforeSubmit(event) {
+  #onDOMFormBeforeSubmit(event) {
     if (!event.isTrusted) {
       return;
     }
 
     // We're invoked before the content's |submit| event handlers, so we
     // can grab form data before it might be modified (see bug 257781).
-    log("notified before form submission");
-    let formLike = LoginFormFactory.createFromForm(event.target);
+    lazy.log("notified before form submission");
+    let formLike = lazy.LoginFormFactory.createFromForm(event.target);
     this._onFormSubmit(formLike, SUBMIT_FORM_SUBMIT);
   }
 
@@ -927,28 +925,28 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       return;
     }
     let document = event.target;
-    let onVisibleTasks = this._visibleTasksByDocument.get(document);
+    let onVisibleTasks = this.#visibleTasksByDocument.get(document);
     if (!onVisibleTasks) {
       return;
     }
     for (let task of onVisibleTasks) {
-      log("onDocumentVisibilityChange, executing queued task");
+      lazy.log("onDocumentVisibilityChange, executing queued task");
       task();
     }
-    this._visibleTasksByDocument.delete(document);
+    this.#visibleTasksByDocument.delete(document);
   }
 
   _deferHandlingEventUntilDocumentVisible(event, document, fn) {
-    log(
+    lazy.log(
       `document.visibilityState: ${document.visibilityState}, defer handling ${event.type}`
     );
-    let onVisibleTasks = this._visibleTasksByDocument.get(document);
+    let onVisibleTasks = this.#visibleTasksByDocument.get(document);
     if (!onVisibleTasks) {
-      log(
+      lazy.log(
         `deferHandling, first queued event, register the visibilitychange handler`
       );
       onVisibleTasks = [];
-      this._visibleTasksByDocument.set(document, onVisibleTasks);
+      this.#visibleTasksByDocument.set(document, onVisibleTasks);
       document.addEventListener(
         "visibilitychange",
         event => {
@@ -960,19 +958,21 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     onVisibleTasks.push(fn);
   }
 
-  onDOMFormHasPassword(event) {
+  #getIsPrimaryPasswordSet() {
+    return Services.cpmm.sharedData.get("isPrimaryPasswordSet");
+  }
+
+  #onDOMFormHasPassword(event) {
     if (!event.isTrusted) {
       return;
     }
-    let isPrimaryPasswordSet = Services.cpmm.sharedData.get(
-      "isPrimaryPasswordSet"
-    );
+    const isPrimaryPasswordSet = this.#getIsPrimaryPasswordSet();
     let document = event.target.ownerDocument;
 
     // don't attempt to defer handling when a primary password is set
     // Showing the MP modal as soon as possible minimizes its interference with tab interactions
     // See bug 1539091 and bug 1538460.
-    log(
+    lazy.log(
       "onDOMFormHasPassword, visibilityState:",
       document.visibilityState,
       "isPrimaryPasswordSet:",
@@ -991,21 +991,19 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
   _processDOMFormHasPasswordEvent(event) {
     let form = event.target;
-    let formLike = LoginFormFactory.createFromForm(form);
-    log("_processDOMFormHasPasswordEvent:", form, formLike);
+    let formLike = lazy.LoginFormFactory.createFromForm(form);
+    lazy.log("_processDOMFormHasPasswordEvent:", form, formLike);
     this._fetchLoginsFromParentAndFillForm(formLike);
   }
 
-  onDOMFormHasPossibleUsername(event) {
+  #onDOMFormHasPossibleUsername(event) {
     if (!event.isTrusted) {
       return;
     }
-    let isPrimaryPasswordSet = Services.cpmm.sharedData.get(
-      "isPrimaryPasswordSet"
-    );
+    const isPrimaryPasswordSet = this.#getIsPrimaryPasswordSet();
     let document = event.target.ownerDocument;
 
-    log(
+    lazy.log(
       "onDOMFormHasPossibleUsername, visibilityState:",
       document.visibilityState,
       "isPrimaryPasswordSet:",
@@ -1024,7 +1022,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     // number of form looked up per document.
     if (
       docState.numFormHasPossibleUsernameEvent >
-      LoginHelper.usernameOnlyFormLookupThreshold
+      lazy.LoginHelper.usernameOnlyFormLookupThreshold
     ) {
       return;
     }
@@ -1041,8 +1039,8 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
   _processDOMFormHasPossibleUsernameEvent(event) {
     let form = event.target;
-    let formLike = LoginFormFactory.createFromForm(form);
-    log("_processDOMFormHasPossibleUsernameEvent:", form, formLike);
+    let formLike = lazy.LoginFormFactory.createFromForm(form);
+    lazy.log("_processDOMFormHasPossibleUsernameEvent:", form, formLike);
 
     // If the form contains a passoword field, `getUsernameFieldFromUsernameOnlyForm` returns
     // null, so we don't trigger autofill for those forms here. In this function,
@@ -1055,7 +1053,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let usernameField = this.getUsernameFieldFromUsernameOnlyForm(form, {});
     if (usernameField) {
       // Autofill the username-only form.
-      log(
+      lazy.log(
         "_processDOMFormHasPossibleUsernameEvent: A username-only form is found"
       );
       this._fetchLoginsFromParentAndFillForm(formLike);
@@ -1066,7 +1064,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       .add(!!usernameField);
   }
 
-  onDOMInputPasswordAdded(event, window) {
+  #onDOMInputPasswordAdded(event, window) {
     if (!event.isTrusted) {
       return;
     }
@@ -1080,10 +1078,8 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     }
 
     let document = pwField.ownerDocument;
-    let isPrimaryPasswordSet = Services.cpmm.sharedData.get(
-      "isPrimaryPasswordSet"
-    );
-    log(
+    const isPrimaryPasswordSet = this.#getIsPrimaryPasswordSet();
+    lazy.log(
       "onDOMInputPasswordAdded, visibilityState:",
       document.visibilityState,
       "isPrimaryPasswordSet:",
@@ -1105,31 +1101,30 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
   _processDOMInputPasswordAddedEvent(event) {
     let pwField = event.originalTarget;
+    let formLike = lazy.LoginFormFactory.createFromField(pwField);
+    lazy.log(" _processDOMInputPasswordAddedEvent:", pwField, formLike);
 
-    let formLike = LoginFormFactory.createFromField(pwField);
-    log(" _processDOMInputPasswordAddedEvent:", pwField, formLike);
-
-    let deferredTask = this._deferredPasswordAddedTasksByRootElement.get(
+    let deferredTask = this.#deferredPasswordAddedTasksByRootElement.get(
       formLike.rootElement
     );
     if (!deferredTask) {
-      log(
+      lazy.log(
         "Creating a DeferredTask to call _fetchLoginsFromParentAndFillForm soon"
       );
-      LoginFormFactory.setForRootElement(formLike.rootElement, formLike);
+      lazy.LoginFormFactory.setForRootElement(formLike.rootElement, formLike);
 
-      deferredTask = new DeferredTask(
+      deferredTask = new lazy.DeferredTask(
         () => {
           // Get the updated LoginForm instead of the one at the time of creating the DeferredTask via
           // a closure since it could be stale since LoginForm.elements isn't live.
-          let formLike2 = LoginFormFactory.getForRootElement(
+          let formLike2 = lazy.LoginFormFactory.getForRootElement(
             formLike.rootElement
           );
-          log(
+          lazy.log(
             "Running deferred processing of onDOMInputPasswordAdded",
             formLike2
           );
-          this._deferredPasswordAddedTasksByRootElement.delete(
+          this.#deferredPasswordAddedTasksByRootElement.delete(
             formLike2.rootElement
           );
           this._fetchLoginsFromParentAndFillForm(formLike2);
@@ -1138,7 +1133,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         0
       );
 
-      this._deferredPasswordAddedTasksByRootElement.set(
+      this.#deferredPasswordAddedTasksByRootElement.set(
         formLike.rootElement,
         deferredTask
       );
@@ -1146,14 +1141,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
     let window = pwField.ownerGlobal;
     if (deferredTask.isArmed) {
-      log("DeferredTask is already armed so just updating the LoginForm");
+      lazy.log("DeferredTask is already armed so just updating the LoginForm");
       // We update the LoginForm so it (most important .elements) is fresh when the task eventually
       // runs since changes to the elements could affect our field heuristics.
-      LoginFormFactory.setForRootElement(formLike.rootElement, formLike);
+      lazy.LoginFormFactory.setForRootElement(formLike.rootElement, formLike);
     } else if (
       ["interactive", "complete"].includes(window.document.readyState)
     ) {
-      log(
+      lazy.log(
         "Arming the DeferredTask we just created since document.readyState == 'interactive' or 'complete'"
       );
       deferredTask.arm();
@@ -1161,7 +1156,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       window.addEventListener(
         "DOMContentLoaded",
         function() {
-          log(
+          lazy.log(
             "Arming the onDOMInputPasswordAdded DeferredTask due to DOMContentLoaded"
           );
           deferredTask.arm();
@@ -1177,7 +1172,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * @param {LoginForm} form to fetch the logins for then try autofill.
    */
   _fetchLoginsFromParentAndFillForm(form) {
-    if (!LoginHelper.enabled) {
+    if (!lazy.LoginHelper.enabled) {
       return;
     }
 
@@ -1199,7 +1194,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
   }
 
   isPasswordGenerationForcedOn(passwordField) {
-    return this._fieldsWithPasswordGenerationForcedOn.has(passwordField);
+    return this.#fieldsWithPasswordGenerationForcedOn.has(passwordField);
   }
 
   /**
@@ -1207,64 +1202,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * document. This is initialized to an object with default values.
    */
   stateForDocument(document) {
-    let loginFormState = this._loginFormStateByDocument.get(document);
+    let loginFormState = this.#loginFormStateByDocument.get(document);
     if (!loginFormState) {
-      loginFormState = {
-        /**
-         * Keeps track of filled fields and values.
-         */
-        fillsByRootElement: new WeakMap(),
-        /**
-         * Keeps track of fields we've filled with generated passwords
-         */
-        generatedPasswordFields: new WeakFieldSet(),
-        /**
-         * Keeps track of logins that were last submitted.
-         */
-        lastSubmittedValuesByRootElement: new WeakMap(),
-        fieldModificationsByRootElement: new WeakMap(),
-        loginFormRootElements: new WeakSet(),
-        /**
-         * Anything entered into an <input> that we think might be a username
-         */
-        possibleUsernames: new Set(),
-        /**
-         * Anything entered into an <input> that we think might be a password
-         */
-        possiblePasswords: new Set(),
-
-        /**
-         * Keeps track of the formLike of nodes (form or formless password field)
-         * that we are watching when they are removed from DOM.
-         */
-        formLikeByObservedNode: new WeakMap(),
-
-        /**
-         * Keeps track of all formless password fields that have been
-         * updated by the user.
-         */
-        formlessModifiedPasswordFields: new WeakFieldSet(),
-
-        /**
-         * Caches the results of the username heuristics
-         */
-        cachedIsInferredUsernameField: new WeakMap(),
-        cachedIsInferredEmailField: new WeakMap(),
-        cachedIsInferredLoginForm: new WeakMap(),
-
-        /**
-         * Records the mock username field when its associated form is submitted.
-         */
-        mockUsernameOnlyField: null,
-
-        /**
-         * Records the number of possible username event received for this document.
-         */
-        numFormHasPossibleUsernameEvent: 0,
-
-        captureLoginTimeStamp: 0,
-      };
-      this._loginFormStateByDocument.set(document, loginFormState);
+      loginFormState = new LoginFormState();
+      this.#loginFormStateByDocument.set(document, loginFormState);
     }
     return loginFormState;
   }
@@ -1300,13 +1241,13 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     style,
   }) {
     if (!inputElementIdentifier) {
-      log("fillForm: No input element specified");
+      lazy.log("fillForm: No input element specified");
       return;
     }
 
-    let inputElement = ContentDOMReference.resolve(inputElementIdentifier);
+    let inputElement = lazy.ContentDOMReference.resolve(inputElementIdentifier);
     if (!inputElement) {
-      log(
+      lazy.log(
         "fillForm: Could not resolve inputElementIdentifier to a living element."
       );
       return;
@@ -1314,11 +1255,11 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
     if (!originMatches) {
       if (
-        !inputElement ||
-        LoginHelper.getLoginOrigin(inputElement.ownerDocument.documentURI) !=
-          loginFormOrigin
+        lazy.LoginHelper.getLoginOrigin(
+          inputElement.ownerDocument.documentURI
+        ) != loginFormOrigin
       ) {
-        log(
+        lazy.log(
           "fillForm: The requested origin doesn't match the one from the",
           "document. This may mean we navigated to a document from a different",
           "site before we had a chance to indicate this change in the user",
@@ -1329,7 +1270,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     }
 
     let clobberUsername = true;
-    let form = LoginFormFactory.createFromField(inputElement);
+    let form = lazy.LoginFormFactory.createFromField(inputElement);
     if (inputElement.hasBeenTypePassword) {
       clobberUsername = false;
     }
@@ -1347,11 +1288,11 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
   loginsFound({ form, importable, loginsFound, recipes }) {
     let doc = form.ownerDocument;
     let autofillForm =
-      LoginHelper.autofillForms &&
+      lazy.LoginHelper.autofillForms &&
       !PrivateBrowsingUtils.isContentWindowPrivate(doc.defaultView);
 
-    let formOrigin = LoginHelper.getLoginOrigin(doc.documentURI);
-    LoginRecipesContent.cacheRecipes(formOrigin, doc.defaultView, recipes);
+    let formOrigin = lazy.LoginHelper.getLoginOrigin(doc.documentURI);
+    lazy.LoginRecipesContent.cacheRecipes(formOrigin, doc.defaultView, recipes);
 
     this._fillForm(form, loginsFound, recipes, { autofillForm, importable });
   }
@@ -1371,7 +1312,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     }
 
     if (this._isLoginAlreadyFilled(focusedField)) {
-      log("_onUsernameFocus: Already filled");
+      lazy.log("_onUsernameFocus: Already filled");
       return;
     }
 
@@ -1387,7 +1328,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
      */
     let timeDiff = Date.now() - gLastRightClickTimeStamp;
     if (timeDiff < AUTOCOMPLETE_AFTER_RIGHT_CLICK_THRESHOLD_MS) {
-      log(
+      lazy.log(
         "Not opening autocomplete after focus since a context menu was opened within",
         timeDiff,
         "ms"
@@ -1395,30 +1336,28 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       return;
     }
 
-    log("maybeOpenAutocompleteAfterFocus: Opening the autocomplete popup");
-    gFormFillService.showPopup();
+    lazy.log("maybeOpenAutocompleteAfterFocus: Opening the autocomplete popup");
+    lazy.gFormFillService.showPopup();
   }
 
   /**
    * A username or password was autocompleted into a field.
    */
   onFieldAutoComplete(acInputField, loginGUID) {
-    if (!LoginHelper.enabled) {
+    if (!lazy.LoginHelper.enabled) {
       return;
     }
 
     // This is probably a bit over-conservatative.
-    if (
-      ChromeUtils.getClassName(acInputField.ownerDocument) != "HTMLDocument"
-    ) {
+    if (!Document.isInstance(acInputField.ownerDocument)) {
       return;
     }
 
-    if (!LoginFormFactory.createFromField(acInputField)) {
+    if (!lazy.LoginFormFactory.createFromField(acInputField)) {
       return;
     }
 
-    if (LoginHelper.isUsernameFieldType(acInputField)) {
+    if (lazy.LoginHelper.isUsernameFieldType(acInputField)) {
       this.onUsernameAutocompleted(acInputField, loginGUID);
     } else if (acInputField.hasBeenTypePassword) {
       // Ensure the field gets re-masked and edits don't overwrite the generated
@@ -1433,13 +1372,12 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * associated password in the password field.
    */
   onUsernameAutocompleted(acInputField, loginGUID = null) {
-    log("onUsernameAutocompleted:", acInputField);
+    lazy.log("onUsernameAutocompleted:", acInputField);
 
-    let acForm = LoginFormFactory.createFromField(acInputField);
+    let acForm = lazy.LoginFormFactory.createFromField(acInputField);
     let doc = acForm.ownerDocument;
-    let formOrigin = LoginHelper.getLoginOrigin(doc.documentURI);
-    let recipes = LoginRecipesContent.getRecipes(
-      this,
+    let formOrigin = lazy.LoginHelper.getLoginOrigin(doc.documentURI);
+    let recipes = lazy.LoginRecipesContent.getRecipes(
       formOrigin,
       doc.defaultView
     );
@@ -1513,7 +1451,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     for (let i = 0; i < form.elements.length; i++) {
       let element = form.elements[i];
       if (
-        ChromeUtils.getClassName(element) !== "HTMLInputElement" ||
+        !HTMLInputElement.isInstance(element) ||
         !element.hasBeenTypePassword ||
         (!element.isConnected && !ignoreConnect)
       ) {
@@ -1522,11 +1460,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
       // Exclude ones matching a `notPasswordSelector`, if specified.
       if (
-        fieldOverrideRecipe &&
-        fieldOverrideRecipe.notPasswordSelector &&
+        fieldOverrideRecipe?.notPasswordSelector &&
         element.matches(fieldOverrideRecipe.notPasswordSelector)
       ) {
-        log(
+        lazy.log(
           "skipping password field (id/name is",
           element.id,
           " / ",
@@ -1543,7 +1480,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         minPasswordLength &&
         element.value.trim().length < minPasswordLength
       ) {
-        log(
+        lazy.log(
           "skipping password field (id/name is",
           element.id,
           " / ",
@@ -1561,10 +1498,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
     // If too few or too many fields, bail out.
     if (!pwFields.length) {
-      log("(form ignored -- no password fields.)");
+      lazy.log("(form ignored -- no password fields.)");
       return null;
     } else if (pwFields.length > 5) {
-      log(
+      lazy.log(
         "(form ignored -- too many password fields. [ got ",
         pwFields.length,
         "])"
@@ -1612,20 +1549,20 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     };
 
     let pwFields = null;
-    let fieldOverrideRecipe = LoginRecipesContent.getFieldOverrides(
+    let fieldOverrideRecipe = lazy.LoginRecipesContent.getFieldOverrides(
       recipes,
       form
     );
     if (fieldOverrideRecipe) {
-      log("Has fieldOverrideRecipe", fieldOverrideRecipe);
-      let pwOverrideField = LoginRecipesContent.queryLoginField(
+      lazy.log("Has fieldOverrideRecipe", fieldOverrideRecipe);
+      let pwOverrideField = lazy.LoginRecipesContent.queryLoginField(
         form,
         fieldOverrideRecipe.passwordSelector
       );
       if (pwOverrideField) {
-        log("Has pwOverrideField", pwOverrideField);
+        lazy.log("Has pwOverrideField", pwOverrideField);
         // The field from the password override may be in a different LoginForm.
-        let formLike = LoginFormFactory.createFromField(pwOverrideField);
+        let formLike = lazy.LoginFormFactory.createFromField(pwOverrideField);
         pwFields = [
           {
             index: [...formLike.elements].indexOf(pwOverrideField),
@@ -1634,7 +1571,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         ];
       }
 
-      let usernameOverrideField = LoginRecipesContent.queryLoginField(
+      let usernameOverrideField = lazy.LoginRecipesContent.queryLoginField(
         form,
         fieldOverrideRecipe.usernameSelector
       );
@@ -1658,7 +1595,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     // a password field. Note that recipes are not supported in username-only
     // forms currently (Bug 1708455).
     if (!pwFields) {
-      if (!LoginHelper.usernameOnlyFormEnabled) {
+      if (!lazy.LoginHelper.usernameOnlyFormEnabled) {
         return emptyResult;
       }
 
@@ -1669,7 +1606,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
       if (usernameField) {
         let acFieldName = usernameField.getAutocompleteInfo().fieldName;
-        log(
+        lazy.log(
           "Username field ",
           usernameField,
           "has name/value/autocomplete:",
@@ -1701,13 +1638,12 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
       for (let i = pwFields[0].index - 1; i >= 0; i--) {
         let element = form.elements[i];
-        if (!LoginHelper.isUsernameFieldType(element, { ignoreConnect })) {
+        if (!lazy.LoginHelper.isUsernameFieldType(element, { ignoreConnect })) {
           continue;
         }
 
         if (
-          fieldOverrideRecipe &&
-          fieldOverrideRecipe.notUsernameSelector &&
+          fieldOverrideRecipe?.notUsernameSelector &&
           element.matches(fieldOverrideRecipe.notUsernameSelector)
         ) {
           continue;
@@ -1734,10 +1670,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     }
 
     if (!usernameField) {
-      log("(form -- no username field found)");
+      lazy.log("(form -- no username field found)");
     } else {
       let acFieldName = usernameField.getAutocompleteInfo().fieldName;
-      log(
+      lazy.log(
         "Username field ",
         usernameField,
         "has name/value/autocomplete:",
@@ -1780,7 +1716,12 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     // just assume the first password field is the one to be filled in.
     if (!isSubmission || pwFields.length == 1) {
       let passwordField = pwFields[0].element;
-      log("Password field", passwordField, "has name: ", passwordField.name);
+      lazy.log(
+        "Password field",
+        passwordField,
+        "has name: ",
+        passwordField.name
+      );
       return {
         ...emptyResult,
         usernameField,
@@ -1814,7 +1755,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         oldPasswordField = pwFields[1].element;
       } else {
         // We can't tell which of the 3 passwords should be saved.
-        log("(form ignored -- all 3 pw fields differ)");
+        lazy.log("(form ignored -- all 3 pw fields differ)");
         return emptyResult;
       }
     } else if (pw1 == pw2) {
@@ -1828,21 +1769,21 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       newPasswordField = pwFields[1].element;
     }
 
-    log(
+    lazy.log(
       "Password field (new) id/name is: ",
       newPasswordField.id,
       " / ",
       newPasswordField.name
     );
     if (oldPasswordField) {
-      log(
+      lazy.log(
         "Password field (old) id/name is: ",
         oldPasswordField.id,
         " / ",
         oldPasswordField.name
       );
     } else {
-      log("Password field (old):", oldPasswordField);
+      lazy.log("Password field (old):", oldPasswordField);
     }
     return {
       ...emptyResult,
@@ -1857,7 +1798,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    *              specified element.
    */
   _isAutocompleteDisabled(element) {
-    return element && element.autocomplete == "off";
+    return element?.autocomplete == "off";
   }
 
   /**
@@ -1866,14 +1807,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * @param {Document} aDocument that was restored from bfcache.
    */
   _onDocumentRestored(aDocument) {
-    let rootElsWeakSet = LoginFormFactory.getRootElementsWeakSetForDocument(
+    let rootElsWeakSet = lazy.LoginFormFactory.getRootElementsWeakSetForDocument(
       aDocument
     );
     let weakLoginFormRootElements = ChromeUtils.nondeterministicGetWeakSetKeys(
       rootElsWeakSet
     );
 
-    log(
+    lazy.log(
       "_onDocumentRestored: loginFormRootElements approx size:",
       weakLoginFormRootElements.length,
       "document:",
@@ -1885,7 +1826,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         continue;
       }
 
-      let formLike = LoginFormFactory.getForRootElement(formRoot);
+      let formLike = lazy.LoginFormFactory.getForRootElement(formRoot);
       this._fetchLoginsFromParentAndFillForm(formLike);
     }
   }
@@ -1902,14 +1843,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * @param {Document} document being navigated
    */
   _onNavigation(aDocument) {
-    let rootElsWeakSet = LoginFormFactory.getRootElementsWeakSetForDocument(
+    let rootElsWeakSet = lazy.LoginFormFactory.getRootElementsWeakSetForDocument(
       aDocument
     );
     let weakLoginFormRootElements = ChromeUtils.nondeterministicGetWeakSetKeys(
       rootElsWeakSet
     );
 
-    log(
+    lazy.log(
       "_onNavigation: root elements approx size:",
       weakLoginFormRootElements.length,
       "document:",
@@ -1921,7 +1862,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         continue;
       }
 
-      let formLike = LoginFormFactory.getForRootElement(formRoot);
+      let formLike = lazy.LoginFormFactory.getForRootElement(formRoot);
       this._onFormSubmit(formLike, SUBMIT_PAGE_NAVIGATION);
     }
   }
@@ -1935,7 +1876,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * @param {LoginForm} form
    */
   _onFormSubmit(form, reason) {
-    log("_onFormSubmit", form);
+    lazy.log("_onFormSubmit", form);
 
     this._maybeSendFormInteractionMessage(
       form,
@@ -1983,18 +1924,18 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let win = doc.defaultView;
     let logMessagePrefix = isSubmission ? "form submission" : "field edit";
     let passwordField = null;
-    if (targetField && targetField.hasBeenTypePassword) {
+    if (targetField?.hasBeenTypePassword) {
       passwordField = targetField;
     }
 
-    let origin = LoginHelper.getLoginOrigin(doc.documentURI);
+    let origin = lazy.LoginHelper.getLoginOrigin(doc.documentURI);
     if (!origin) {
-      log(`(${logMessagePrefix} ignored -- invalid origin)`);
+      lazy.log(`(${logMessagePrefix} ignored -- invalid origin)`);
       return;
     }
 
     // Get the appropriate fields from the form.
-    let recipes = LoginRecipesContent.getRecipes(this, origin, win);
+    let recipes = lazy.LoginRecipesContent.getRecipes(origin, win);
     let fields = {
       targetField,
       ...this._getFormFields(form, true, recipes, { ignoreConnect }),
@@ -2013,7 +1954,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     // Need at least 1 valid password field to do anything.
     if (fields.newPasswordField == null) {
       if (isSubmission && fields.usernameField) {
-        log(
+        lazy.log(
           "_onFormSubmit: username-only form. Record the username field but not sending prompt"
         );
         this.stateForDocument(doc).mockUsernameOnlyField = {
@@ -2065,23 +2006,22 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let logMessagePrefix = isSubmission ? "form submission" : "field edit";
     let doc = form.ownerDocument;
     let win = doc.defaultView;
-
     let detail = { messageSent: false };
     try {
       // when filling a generated password, we do still want to message the parent
       if (
         !triggeredByFillingGenerated &&
         PrivateBrowsingUtils.isContentWindowPrivate(win) &&
-        !LoginHelper.privateBrowsingCaptureEnabled
+        !lazy.LoginHelper.privateBrowsingCaptureEnabled
       ) {
         // We won't do anything in private browsing mode anyway,
         // so there's no need to perform further checks.
-        log(`(${logMessagePrefix} ignored in private browsing mode)`);
+        lazy.log(`(${logMessagePrefix} ignored in private browsing mode)`);
         return;
       }
 
       // If password saving is disabled globally, bail out now.
-      if (!LoginHelper.enabled) {
+      if (!lazy.LoginHelper.enabled) {
         return;
       }
 
@@ -2089,7 +2029,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       // Check `isSubmission` to allow munged passwords in dismissed by default doorhangers (since
       // they are initiated by the user) in case this matches their actual password.
       if (isSubmission && newPasswordField?.value.match(fullyMungedPattern)) {
-        log("new password looks munged. Not sending prompt");
+        lazy.log("new password looks munged. Not sending prompt");
         return;
       }
 
@@ -2105,8 +2045,8 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           usernameField = docState.mockUsernameOnlyField;
         }
       }
-      if (usernameField && usernameField.value.match(/\.{3,}|\*{3,}|•{3,}/)) {
-        log(
+      if (usernameField?.value.match(/\.{3,}|\*{3,}|•{3,}/)) {
+        lazy.log(
           `usernameField.value "${usernameField.value}" looks munged, setting to null`
         );
         usernameField = null;
@@ -2121,9 +2061,9 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           this._isAutocompleteDisabled(usernameField) ||
           this._isAutocompleteDisabled(newPasswordField) ||
           this._isAutocompleteDisabled(oldPasswordField)) &&
-        !LoginHelper.storeWhenAutocompleteOff
+        !lazy.LoginHelper.storeWhenAutocompleteOff
       ) {
-        log(`(${logMessagePrefix} ignored -- autocomplete=off found)`);
+        lazy.log(`(${logMessagePrefix} ignored -- autocomplete=off found)`);
         return;
       }
 
@@ -2139,7 +2079,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         ? { name: oldPasswordField.name, value: oldPasswordField.value }
         : null;
 
-      let usernameValue = usernameField ? usernameField.value : null;
+      let usernameValue = usernameField?.value;
       // Dismiss prompt if the username field is a credit card number AND
       // if the password field is a three digit number. Also dismiss prompt if
       // the password is a credit card number and the password field has attribute
@@ -2157,12 +2097,12 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       }
 
       let fieldsModified = this._formHasModifiedFields(form);
-      if (!fieldsModified && LoginHelper.userInputRequiredToCapture) {
+      if (!fieldsModified && lazy.LoginHelper.userInputRequiredToCapture) {
         if (targetField) {
           throw new Error("No user input on targetField");
         }
         // we know no fields in this form had user modifications, so don't prompt
-        log(
+        lazy.log(
           `(${logMessagePrefix} ignored -- submitting values that are not changed by the user)`
         );
         return;
@@ -2177,7 +2117,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           triggeredByFillingGenerated
         )
       ) {
-        log(
+        lazy.log(
           `(${logMessagePrefix} ignored -- already submitted with the same username and password)`
         );
         return;
@@ -2186,7 +2126,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       let { login: autoFilledLogin } =
         docState.fillsByRootElement.get(form.rootElement) || {};
       let browsingContextId = win.windowGlobalChild.browsingContext.id;
-      let formActionOrigin = LoginHelper.getFormActionOrigin(form);
+      let formActionOrigin = lazy.LoginHelper.getFormActionOrigin(form);
 
       detail = {
         browsingContextId,
@@ -2265,7 +2205,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
   }
 
   _stopTreatingAsGeneratedPasswordField(passwordField) {
-    log("_stopTreatingAsGeneratedPasswordField");
+    lazy.log("_stopTreatingAsGeneratedPasswordField");
 
     let fields = this.stateForDocument(passwordField.ownerDocument)
       .generatedPasswordFields;
@@ -2315,15 +2255,15 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     passwordField,
     { triggeredByFillingGenerated = false } = {}
   ) {
-    log("_passwordEditedOrGenerated", passwordField);
+    lazy.log("_passwordEditedOrGenerated", passwordField);
 
-    if (!LoginHelper.enabled && triggeredByFillingGenerated) {
+    if (!lazy.LoginHelper.enabled && triggeredByFillingGenerated) {
       throw new Error(
         "A generated password was filled while the password manager was disabled."
       );
     }
 
-    let loginForm = LoginFormFactory.createFromField(passwordField);
+    let loginForm = lazy.LoginFormFactory.createFromField(passwordField);
 
     if (triggeredByFillingGenerated) {
       this._highlightFilledField(passwordField);
@@ -2332,7 +2272,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       // Once the generated password was filled we no longer want to autocomplete
       // saved logins into a non-empty password field (see LoginAutoComplete.startSearch)
       // because it is confusing.
-      this._fieldsWithPasswordGenerationForcedOn.delete(passwordField);
+      this.#fieldsWithPasswordGenerationForcedOn.delete(passwordField);
     }
 
     this._maybeSendFormInteractionMessage(
@@ -2348,7 +2288,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
   _fillConfirmFieldWithGeneratedPassword(passwordField) {
     // Fill a nearby password input if it looks like a confirm-password field
-    let form = LoginFormFactory.createFromField(passwordField);
+    let form = lazy.LoginFormFactory.createFromField(passwordField);
     let confirmPasswordInput = null;
     let docState = this.stateForDocument(passwordField.ownerDocument);
     // The confirm-password field shouldn't be more than 3 form elements away from the password field we filled
@@ -2367,7 +2307,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       inp => inp !== passwordField && docState.generatedPasswordFields.has(inp)
     );
     if (previousGeneratedPasswordField) {
-      log(
+      lazy.log(
         "_fillConfirmFieldWithGeneratedPassword, previously-filled generated password input found"
       );
       return;
@@ -2382,10 +2322,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let acFieldName = passwordField.getAutocompleteInfo()?.fieldName;
 
     // Match same autocomplete values first
-    if (acFieldName && acFieldName == "new-password") {
+    if (acFieldName == "new-password") {
       let matchIndex = afterFields.findIndex(
         elem =>
-          LoginHelper.isPasswordFieldType(elem) &&
+          lazy.LoginHelper.isPasswordFieldType(elem) &&
           elem.getAutocompleteInfo().fieldName == acFieldName &&
           !elem.disabled &&
           !elem.readOnly
@@ -2401,7 +2341,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         idx++
       ) {
         if (
-          LoginHelper.isPasswordFieldType(afterFields[idx]) &&
+          lazy.LoginHelper.isPasswordFieldType(afterFields[idx]) &&
           !afterFields[idx].disabled &&
           !afterFields[idx].readOnly
         ) {
@@ -2422,7 +2362,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
     if (passwordField.type != "password") {
       // The type may have been changed by the website.
-      log("_togglePasswordFieldMasking: Field isn't type=password");
+      lazy.log("_togglePasswordFieldMasking: Field isn't type=password");
       return;
     }
 
@@ -2472,25 +2412,25 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    * @param {LoginForm} form
    */
   _filterForExactFormOriginLogins(logins, form) {
-    let loginOrigin = LoginHelper.getLoginOrigin(
+    let loginOrigin = lazy.LoginHelper.getLoginOrigin(
       form.ownerDocument.documentURI
     );
-    let formActionOrigin = LoginHelper.getFormActionOrigin(form);
+    let formActionOrigin = lazy.LoginHelper.getFormActionOrigin(form);
     logins = logins.filter(l => {
-      let formActionMatches = LoginHelper.isOriginMatching(
+      let formActionMatches = lazy.LoginHelper.isOriginMatching(
         l.formActionOrigin,
         formActionOrigin,
         {
-          schemeUpgrades: LoginHelper.schemeUpgrades,
+          schemeUpgrades: lazy.LoginHelper.schemeUpgrades,
           acceptWildcardMatch: true,
           acceptDifferentSubdomains: true,
         }
       );
-      let formOriginMatches = LoginHelper.isOriginMatching(
+      let formOriginMatches = lazy.LoginHelper.isOriginMatching(
         l.origin,
         loginOrigin,
         {
-          schemeUpgrades: LoginHelper.schemeUpgrades,
+          schemeUpgrades: lazy.LoginHelper.schemeUpgrades,
           acceptWildcardMatch: true,
           acceptDifferentSubdomains: false,
         }
@@ -2500,7 +2440,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
     // Since the logins are already filtered now to only match the origin and formAction,
     // dedupe to just the username since remaining logins may have different schemes.
-    logins = LoginHelper.dedupeLogins(
+    logins = lazy.LoginHelper.dedupeLogins(
       logins,
       ["username"],
       ["scheme", "timePasswordChanged"],
@@ -2551,11 +2491,11 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       style = null,
     } = {}
   ) {
-    if (ChromeUtils.getClassName(form) === "HTMLFormElement") {
+    if (HTMLFormElement.isInstance(form)) {
       throw new Error("_fillForm should only be called with LoginForm objects");
     }
 
-    log("_fillForm", form.elements);
+    lazy.log("_fillForm", form.elements);
     // Will be set to one of AUTOFILL_RESULT in the `try` block.
     let autofillResult = -1;
     const AUTOFILL_RESULT = {
@@ -2592,8 +2532,8 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       if (
         !foundLogins.length &&
         !(importable?.state === "import" && importable?.browsers) &&
-        (InsecurePasswordUtils.isFormSecure(form) ||
-          !LoginHelper.showInsecureFieldWarning)
+        (lazy.InsecurePasswordUtils.isFormSecure(form) ||
+          !lazy.LoginHelper.showInsecureFieldWarning)
       ) {
         // We don't log() here since this is a very common case.
         autofillResult = AUTOFILL_RESULT.NO_SAVED_LOGINS;
@@ -2609,7 +2549,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           if (!clobberUsername) {
             usernameField = null;
           }
-        } else if (LoginHelper.isUsernameFieldType(inputElement)) {
+        } else if (lazy.LoginHelper.isUsernameFieldType(inputElement)) {
           usernameField = inputElement;
         } else {
           throw new Error("Unexpected input element type.");
@@ -2618,14 +2558,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
       // Need a valid password or username field to do anything.
       if (passwordField == null && usernameField == null) {
-        log("not filling form, no password and username field found");
+        lazy.log("not filling form, no password and username field found");
         autofillResult = AUTOFILL_RESULT.NO_PASSWORD_FIELD;
         return;
       }
 
       // If the password field is disabled or read-only, there's nothing to do.
       if (passwordField?.disabled || passwordField?.readOnly) {
-        log("not filling form, password field disabled or read-only");
+        lazy.log("not filling form, password field disabled or read-only");
         autofillResult = AUTOFILL_RESULT.PASSWORD_DISABLED_READONLY;
         return;
       }
@@ -2636,7 +2576,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       // We would also need this attached to show the insecure login
       // warning, regardless of saved login.
       if (usernameField) {
-        gFormFillService.markAsLoginManagerField(usernameField);
+        lazy.gFormFillService.markAsLoginManagerField(usernameField);
         usernameField.addEventListener("keydown", observer);
       }
 
@@ -2644,7 +2584,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         !userTriggered &&
         !form.rootElement.ownerGlobal.windowGlobalChild.sameOriginWithTop
       ) {
-        log("not filling form; it is in a cross-origin subframe");
+        lazy.log("not filling form; it is in a cross-origin subframe");
         autofillResult = AUTOFILL_RESULT.FORM_IN_CROSSORIGIN_SUBFRAME;
         return;
       }
@@ -2667,10 +2607,10 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       // Prevent autofilling insecure forms.
       if (
         !userTriggered &&
-        !LoginHelper.insecureAutofill &&
-        !InsecurePasswordUtils.isFormSecure(form)
+        !lazy.LoginHelper.insecureAutofill &&
+        !lazy.InsecurePasswordUtils.isFormSecure(form)
       ) {
-        log("not filling form since it's insecure");
+        lazy.log("not filling form since it's insecure");
         autofillResult = AUTOFILL_RESULT.INSECURE;
         return;
       }
@@ -2695,14 +2635,14 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           l.username.length <= maxUsernameLen &&
           l.password.length <= maxPasswordLen;
         if (!fit) {
-          log("Ignored", l.username, "login: won't fit");
+          lazy.log("Ignored", l.username, "login: won't fit");
         }
 
         return fit;
       }, this);
 
       if (!logins.length) {
-        log("form not filled, none of the logins fit in the field");
+        lazy.log("form not filled, none of the logins fit in the field");
         autofillResult = AUTOFILL_RESULT.NO_LOGINS_FIT;
         return;
       }
@@ -2714,7 +2654,9 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         if (!userTriggered && passwordField.type != "password") {
           // We don't want to autofill (without user interaction) into a field
           // that's unmasked.
-          log("not autofilling, password field isn't currently type=password");
+          lazy.log(
+            "not autofilling, password field isn't currently type=password"
+          );
           autofillResult = AUTOFILL_RESULT.TYPE_NO_LONGER_PASSWORD;
           return;
         }
@@ -2722,7 +2664,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         // If the password field has the autocomplete value of "new-password"
         // and we're autofilling without user interaction, there's nothing to do.
         if (!userTriggered && passwordACFieldName == "new-password") {
-          log(
+          lazy.log(
             "not filling form, password field has the autocomplete new-password value"
           );
           autofillResult = AUTOFILL_RESULT.PASSWORD_AUTOCOMPLETE_NEW_PASSWORD;
@@ -2731,7 +2673,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
         // Don't clobber an existing password.
         if (passwordField.value && !clobberPassword) {
-          log("form not filled, the password field was already filled");
+          lazy.log("form not filled, the password field was already filled");
           autofillResult = AUTOFILL_RESULT.EXISTING_PASSWORD;
           return;
         }
@@ -2754,7 +2696,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           l => l.username.toLowerCase() == username
         );
         if (!matchingLogins.length) {
-          log(
+          lazy.log(
             "Password not filled. None of the stored logins match the username already present."
           );
           autofillResult = AUTOFILL_RESULT.EXISTING_USERNAME;
@@ -2786,7 +2728,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         }
 
         if (matchingLogins.length != 1) {
-          log("Multiple logins for form, so not filling any.");
+          lazy.log("Multiple logins for form, so not filling any.");
           autofillResult = AUTOFILL_RESULT.MULTIPLE_LOGINS;
           return;
         }
@@ -2797,7 +2739,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       // We will always have a selectedLogin at this point.
 
       if (!autofillForm) {
-        log("autofillForms=false but form can be filled");
+        lazy.log("autofillForms=false but form can be filled");
         autofillResult = AUTOFILL_RESULT.NO_AUTOFILL_FORMS;
         return;
       }
@@ -2805,9 +2747,9 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       if (
         !userTriggered &&
         passwordACFieldName == "off" &&
-        !LoginHelper.autofillAutocompleteOff
+        !lazy.LoginHelper.autofillAutocompleteOff
       ) {
-        log(
+        lazy.log(
           "Not autofilling the login because we're respecting autocomplete=off"
         );
         autofillResult = AUTOFILL_RESULT.AUTOCOMPLETE_OFF;
@@ -2832,7 +2774,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
             : null,
         };
         // Ensure the state is updated before setUserInput is called.
-        log(
+        lazy.log(
           "Saving autoFilledLogin",
           autoFilledLogin.guid,
           "for",
@@ -2878,11 +2820,11 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
         this._highlightFilledField(passwordField);
       }
 
-      if (style && style === "generatedPassword") {
+      if (style === "generatedPassword") {
         this._filledWithGeneratedPassword(passwordField);
       }
 
-      log("_fillForm succeeded");
+      lazy.log("_fillForm succeeded");
       if (passwordField) {
         autofillResult = AUTOFILL_RESULT.FILLED;
       } else if (usernameField) {
@@ -2904,7 +2846,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
           .add(autofillResult);
 
         if (usernameField) {
-          let focusedElement = gFormFillService.focusedInput;
+          let focusedElement = lazy.gFormFillService.focusedInput;
           if (
             usernameField == focusedElement &&
             ![
@@ -2912,16 +2854,16 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
               AUTOFILL_STATE.FILLED_USERNAME_ONLY_FORM,
             ].includes(autofillResult)
           ) {
-            log(
+            lazy.log(
               "_fillForm: Opening username autocomplete popup since the form wasn't autofilled"
             );
-            gFormFillService.showPopup();
+            lazy.gFormFillService.showPopup();
           }
         }
       }
 
       if (usernameField) {
-        log("_fillForm: Attaching event listeners to usernameField");
+        lazy.log("_fillForm: Attaching event listeners to usernameField");
         usernameField.addEventListener("focus", observer);
         usernameField.addEventListener("mousedown", observer);
       }
@@ -2937,16 +2879,16 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let state = this.stateForDocument(doc);
     let userHasInteracted;
     let testOnlyUserHasInteracted =
-      LoginHelper.testOnlyUserHasInteractedWithDocument;
+      lazy.LoginHelper.testOnlyUserHasInteractedWithDocument;
     if (Cu.isInAutomation && testOnlyUserHasInteracted !== null) {
       userHasInteracted = testOnlyUserHasInteracted;
     } else {
       userHasInteracted =
-        !LoginHelper.userInputRequiredToCapture ||
+        !lazy.LoginHelper.userInputRequiredToCapture ||
         state.captureLoginTimeStamp != doc.lastUserGestureTimeStamp;
     }
 
-    log("_formHasModifiedFields, userHasInteracted:", userHasInteracted);
+    lazy.log("_formHasModifiedFields, userHasInteracted:", userHasInteracted);
 
     // Skip if user didn't interact with the page since last call or ever
     if (!userHasInteracted) {
@@ -2983,9 +2925,11 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    *                    last-filled values, if previously filled.
    */
   _isLoginAlreadyFilled(aUsernameField) {
-    let formLikeRoot = FormLikeFactory.findRootForField(aUsernameField);
+    let formLikeRoot = lazy.FormLikeFactory.findRootForField(aUsernameField);
     // Look for the existing LoginForm.
-    let existingLoginForm = LoginFormFactory.getForRootElement(formLikeRoot);
+    let existingLoginForm = lazy.LoginFormFactory.getForRootElement(
+      formLikeRoot
+    );
     if (!existingLoginForm) {
       throw new Error(
         "_isLoginAlreadyFilled called with a username field with " +
@@ -2993,7 +2937,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       );
     }
 
-    log("_isLoginAlreadyFilled: existingLoginForm", existingLoginForm);
+    lazy.log("_isLoginAlreadyFilled: existingLoginForm", existingLoginForm);
     let { login: filledLogin } =
       this.stateForDocument(
         aUsernameField.ownerDocument
@@ -3032,7 +2976,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    */
   getUserNameAndPasswordFields(aField) {
     let noResult = [null, null, null];
-    if (ChromeUtils.getClassName(aField) !== "HTMLInputElement") {
+    if (!HTMLInputElement.isInstance(aField)) {
       throw new Error("getUserNameAndPasswordFields: input element required");
     }
 
@@ -3043,16 +2987,15 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     // If the element is not a login form field, return all null.
     if (
       !aField.hasBeenTypePassword &&
-      !LoginHelper.isUsernameFieldType(aField)
+      !lazy.LoginHelper.isUsernameFieldType(aField)
     ) {
       return noResult;
     }
 
-    let form = LoginFormFactory.createFromField(aField);
+    let form = lazy.LoginFormFactory.createFromField(aField);
     let doc = aField.ownerDocument;
-    let formOrigin = LoginHelper.getLoginOrigin(doc.documentURI);
-    let recipes = LoginRecipesContent.getRecipes(
-      this,
+    let formOrigin = lazy.LoginHelper.getLoginOrigin(doc.documentURI);
+    let recipes = lazy.LoginRecipesContent.getRecipes(
       formOrigin,
       doc.defaultView
     );
@@ -3079,9 +3022,9 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
   getFieldContext(aField) {
     // If the element is not a proper form field, return null.
     if (
-      ChromeUtils.getClassName(aField) !== "HTMLInputElement" ||
+      !HTMLInputElement.isInstance(aField) ||
       (!aField.hasBeenTypePassword &&
-        !LoginHelper.isUsernameFieldType(aField)) ||
+        !lazy.LoginHelper.isUsernameFieldType(aField)) ||
       aField.nodePrincipal.isNullPrincipal ||
       aField.nodePrincipal.schemeIs("about") ||
       !aField.ownerDocument
@@ -3142,7 +3085,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
    *                    username-only form).
    */
   getUsernameFieldFromUsernameOnlyForm(formElement, recipe = null) {
-    if (ChromeUtils.getClassName(formElement) !== "HTMLFormElement") {
+    if (!HTMLFormElement.isInstance(formElement)) {
       return null;
     }
 
@@ -3155,7 +3098,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       }
 
       // Ignore input fields whose type are not username compatiable, ex, hidden.
-      if (!LoginHelper.isUsernameFieldType(element)) {
+      if (!lazy.LoginHelper.isUsernameFieldType(element)) {
         continue;
       }
 
@@ -3197,7 +3140,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let docState = this.stateForDocument(inputElement.ownerDocument);
     let result = docState.cachedIsInferredUsernameField.get(inputElement);
     if (result === undefined) {
-      result = LoginHelper.isInferredUsernameField(inputElement);
+      result = lazy.LoginHelper.isInferredUsernameField(inputElement);
       docState.cachedIsInferredUsernameField.set(inputElement, result);
     }
 
@@ -3215,7 +3158,7 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
     let docState = this.stateForDocument(inputElement.ownerDocument);
     let result = docState.cachedIsInferredEmailField.get(inputElement);
     if (result === undefined) {
-      result = LoginHelper.isInferredEmailField(inputElement);
+      result = lazy.LoginHelper.isInferredEmailField(inputElement);
       docState.cachedIsInferredEmailField.set(inputElement, result);
     }
 
@@ -3248,11 +3191,11 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
       // form looks like a sign-in or sign-up form.
       if (
         this.isProbablyAUsernameField(inputElement) ||
-        LoginHelper.isInferredLoginForm(formElement)
+        lazy.LoginHelper.isInferredLoginForm(formElement)
       ) {
         // This is where we collect hints that indicate this is not a username
         // login form.
-        if (!LoginHelper.isInferredNonUsernameField(inputElement)) {
+        if (!lazy.LoginHelper.isInferredNonUsernameField(inputElement)) {
           result = true;
         }
       }
@@ -3261,4 +3204,4 @@ this.LoginManagerChild = class LoginManagerChild extends JSWindowActorChild {
 
     return result;
   }
-};
+}

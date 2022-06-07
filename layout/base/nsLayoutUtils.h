@@ -68,6 +68,7 @@ class nsDisplayItem;
 class nsDisplayList;
 class nsDisplayListBuilder;
 enum class nsDisplayListBuilderMode : uint8_t;
+class RetainedDisplayListBuilder;
 struct AspectRatio;
 class ComputedStyle;
 class DisplayPortUtils;
@@ -163,6 +164,8 @@ class nsLayoutUtils {
   typedef mozilla::gfx::Size Size;
   typedef mozilla::gfx::Matrix4x4 Matrix4x4;
   typedef mozilla::gfx::Matrix4x4Flagged Matrix4x4Flagged;
+  typedef mozilla::gfx::MatrixScales MatrixScales;
+  typedef mozilla::gfx::MatrixScalesDouble MatrixScalesDouble;
   typedef mozilla::gfx::RectCornerRadii RectCornerRadii;
   typedef mozilla::gfx::StrokeOptions StrokeOptions;
   typedef mozilla::image::ImgDrawResult ImgDrawResult;
@@ -171,6 +174,7 @@ class nsLayoutUtils {
   using nsDisplayList = mozilla::nsDisplayList;
   using nsDisplayListBuilder = mozilla::nsDisplayListBuilder;
   using nsDisplayListBuilderMode = mozilla::nsDisplayListBuilderMode;
+  using RetainedDisplayListBuilder = mozilla::RetainedDisplayListBuilder;
 
  public:
   typedef mozilla::layers::FrameMetrics FrameMetrics;
@@ -946,7 +950,7 @@ class nsLayoutUtils {
    * frame if this transform can be drawn 2D, or the identity scale factors
    * otherwise.
    */
-  static gfxSize GetTransformToAncestorScale(const nsIFrame* aFrame);
+  static MatrixScalesDouble GetTransformToAncestorScale(const nsIFrame* aFrame);
 
   /**
    * Gets the scale factors of the transform for aFrame relative to the root
@@ -954,7 +958,8 @@ class nsLayoutUtils {
    * If some frame on the path from aFrame to the display root frame may have an
    * animated scale, returns the identity scale factors.
    */
-  static gfxSize GetTransformToAncestorScaleExcludingAnimated(nsIFrame* aFrame);
+  static MatrixScalesDouble GetTransformToAncestorScaleExcludingAnimated(
+      nsIFrame* aFrame);
 
   /**
    * Gets a scale that includes CSS transforms in this process as well as the
@@ -1399,7 +1404,7 @@ class nsLayoutUtils {
    * @param aSizeInflation number to multiply font size by
    */
   static already_AddRefed<nsFontMetrics> GetFontMetricsForComputedStyle(
-      ComputedStyle* aComputedStyle, nsPresContext* aPresContext,
+      const ComputedStyle* aComputedStyle, nsPresContext* aPresContext,
       float aSizeInflation = 1.0f,
       uint8_t aVariantWidth = NS_FONT_VARIANT_WIDTH_NORMAL);
 
@@ -2066,13 +2071,6 @@ class nsLayoutUtils {
                                      mozilla::Side aSide);
 
   /**
-   * Return the border radius size (width, height) based only on the top-left
-   * corner. This is a special case used for drawing the Windows 10 drop-shadow.
-   */
-  static mozilla::LayoutDeviceSize GetBorderRadiusForMenuDropShadow(
-      const nsIFrame*);
-
-  /**
    * Determine if a widget is likely to require transparency or translucency.
    *   @param aBackgroundFrame The frame that the background is set on. For
    *                           <window>s, this will be the canvas frame.
@@ -2119,15 +2117,14 @@ class nsLayoutUtils {
    * and prefs indicate we should be optimizing for speed over quality
    */
   static mozilla::gfx::ShapedTextFlags GetTextRunFlagsForStyle(
-      ComputedStyle* aComputedStyle, nsPresContext* aPresContext,
-      const nsStyleFont* aStyleFont, const nsStyleText* aStyleText,
-      nscoord aLetterSpacing);
+      const ComputedStyle*, nsPresContext*, const nsStyleFont*,
+      const nsStyleText*, nscoord aLetterSpacing);
 
   /**
    * Get orientation flags for textrun construction.
    */
   static mozilla::gfx::ShapedTextFlags GetTextRunOrientFlagsForStyle(
-      ComputedStyle* aComputedStyle);
+      const ComputedStyle*);
 
   /**
    * Takes two rectangles whose origins must be the same, and computes
@@ -2222,18 +2219,38 @@ class nsLayoutUtils {
   }
 
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
-      mozilla::dom::Element* aElement, uint32_t aSurfaceFlags,
+      mozilla::dom::Element* aElement,
+      const mozilla::Maybe<int32_t>& aResizeWidth,
+      const mozilla::Maybe<int32_t>& aResizeHeight, uint32_t aSurfaceFlags,
       RefPtr<DrawTarget>& aTarget);
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
       mozilla::dom::Element* aElement, uint32_t aSurfaceFlags = 0) {
     RefPtr<DrawTarget> target = nullptr;
-    return SurfaceFromElement(aElement, aSurfaceFlags, target);
+    return SurfaceFromElement(aElement, mozilla::Nothing(), mozilla::Nothing(),
+                              aSurfaceFlags, target);
+  }
+  static mozilla::SurfaceFromElementResult SurfaceFromElement(
+      mozilla::dom::Element* aElement, uint32_t aSurfaceFlags,
+      RefPtr<DrawTarget>& aTarget) {
+    return SurfaceFromElement(aElement, mozilla::Nothing(), mozilla::Nothing(),
+                              aSurfaceFlags, aTarget);
+  }
+  static mozilla::SurfaceFromElementResult SurfaceFromElement(
+      mozilla::dom::Element* aElement,
+      const mozilla::Maybe<int32_t>& aResizeWidth,
+      const mozilla::Maybe<int32_t>& aResizeHeight,
+      uint32_t aSurfaceFlags = 0) {
+    RefPtr<DrawTarget> target = nullptr;
+    return SurfaceFromElement(aElement, aResizeWidth, aResizeHeight,
+                              aSurfaceFlags, target);
   }
 
   // There are a bunch of callers of SurfaceFromElement.  Just mark it as
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   static mozilla::SurfaceFromElementResult SurfaceFromElement(
-      nsIImageLoadingContent* aElement, uint32_t aSurfaceFlags,
+      nsIImageLoadingContent* aElement,
+      const mozilla::Maybe<int32_t>& aResizeWidth,
+      const mozilla::Maybe<int32_t>& aResizeHeight, uint32_t aSurfaceFlags,
       RefPtr<DrawTarget>& aTarget);
   // Need an HTMLImageElement overload, because otherwise the
   // nsIImageLoadingContent and mozilla::dom::Element overloads are ambiguous
@@ -2411,6 +2428,9 @@ class nsLayoutUtils {
 
   static bool DisplayRootHasRetainedDisplayListBuilder(nsIFrame* aFrame);
 
+  static RetainedDisplayListBuilder* GetRetainedDisplayListBuilder(
+      nsIFrame* aFrame);
+
   /**
    * Find a suitable scale for a element (aFrame's content) over the course of
    * any animations and transitions of the CSS transform property on the element
@@ -2421,9 +2441,9 @@ class nsLayoutUtils {
    * @param aVisibleSize is the size of the area we want to paint
    * @param aDisplaySize is the size of the display area of the pres context
    */
-  static Size ComputeSuitableScaleForAnimation(const nsIFrame* aFrame,
-                                               const nsSize& aVisibleSize,
-                                               const nsSize& aDisplaySize);
+  static MatrixScales ComputeSuitableScaleForAnimation(
+      const nsIFrame* aFrame, const nsSize& aVisibleSize,
+      const nsSize& aDisplaySize);
 
   /**
    * Checks whether we want to use the GPU to scale images when

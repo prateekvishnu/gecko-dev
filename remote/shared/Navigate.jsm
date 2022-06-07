@@ -13,16 +13,19 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   clearTimeout: "resource://gre/modules/Timer.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
 
+  Deferred: "chrome://remote/content/shared/Sync.jsm",
   Log: "chrome://remote/content/shared/Log.jsm",
   truncate: "chrome://remote/content/shared/Format.jsm",
 });
 
-XPCOMUtils.defineLazyGetter(this, "logger", () =>
-  Log.get(Log.TYPES.REMOTE_AGENT)
+XPCOMUtils.defineLazyGetter(lazy, "logger", () =>
+  lazy.Log.get(lazy.Log.TYPES.REMOTE_AGENT)
 );
 
 // Used to keep weak references of webProgressListeners alive.
@@ -67,8 +70,8 @@ async function waitForInitialNavigationCompleted(webProgress, options = {}) {
   // If the current document is not the initial "about:blank" and is also
   // no longer loading, assume the navigation is done and return.
   if (!isInitial && !listener.isLoadingDocument) {
-    logger.trace(
-      truncate`[${browsingContext.id}] Document already finished loading: ${browsingContext.currentURI?.spec}`
+    lazy.logger.trace(
+      lazy.truncate`[${browsingContext.id}] Document already finished loading: ${browsingContext.currentURI?.spec}`
     );
 
     // Will resolve the navigated promise.
@@ -93,7 +96,7 @@ class ProgressListener {
   #waitForExplicitStart;
   #webProgress;
 
-  #resolve;
+  #deferredNavigation;
   #seenStartFlag;
   #targetURI;
   #unloadTimerId;
@@ -136,7 +139,7 @@ class ProgressListener {
     this.#waitForExplicitStart = waitForExplicitStart;
     this.#webProgress = webProgress;
 
-    this.#resolve = null;
+    this.#deferredNavigation = null;
     this.#seenStartFlag = false;
     this.#targetURI = null;
     this.#unloadTimerId = null;
@@ -155,7 +158,7 @@ class ProgressListener {
   }
 
   get isStarted() {
-    return this.#resolve !== null;
+    return !!this.#deferredNavigation;
   }
 
   get targetURI() {
@@ -163,7 +166,7 @@ class ProgressListener {
   }
 
   #checkLoadingState(request, options = {}) {
-    const { isStart = false, isStop = false } = options;
+    const { isStart = false, isStop = false, status = 0 } = options;
     const messagePrefix = `[${this.browsingContext.id}] ${this.constructor.name}`;
 
     if (isStart && !this.#seenStartFlag) {
@@ -171,12 +174,12 @@ class ProgressListener {
 
       this.#targetURI = this.#getTargetURI(request);
 
-      logger.trace(
-        truncate`${messagePrefix} state=start: ${this.targetURI?.spec}`
+      lazy.logger.trace(
+        lazy.truncate`${messagePrefix} state=start: ${this.targetURI?.spec}`
       );
 
       if (this.#unloadTimerId !== null) {
-        clearTimeout(this.#unloadTimerId);
+        lazy.clearTimeout(this.#unloadTimerId);
         this.#unloadTimerId = null;
       }
 
@@ -188,8 +191,34 @@ class ProgressListener {
     }
 
     if (isStop && this.#seenStartFlag) {
-      logger.trace(
-        truncate`${messagePrefix} state=stop: ${this.currentURI.spec}`
+      // Treat NS_ERROR_PARSED_DATA_CACHED as a success code
+      // since navigation happened and content has been loaded.
+      if (
+        !Components.isSuccessCode(status) &&
+        status != Cr.NS_ERROR_PARSED_DATA_CACHED
+      ) {
+        // Ignore if the current navigation to the initial document is stopped
+        // because the real document will be loaded instead.
+        if (
+          status == Cr.NS_BINDING_ABORTED &&
+          this.browsingContext.currentWindowGlobal.isInitialDocument
+        ) {
+          return;
+        }
+
+        // The navigation request caused an error.
+        const errorName = ChromeUtils.getXPCOMErrorName(status);
+        lazy.logger.trace(
+          lazy.truncate`${messagePrefix} state=stop: error=0x${status.toString(
+            16
+          )} (${errorName})`
+        );
+        this.stop({ error: new Error(errorName) });
+        return;
+      }
+
+      lazy.logger.trace(
+        lazy.truncate`${messagePrefix} state=stop: ${this.currentURI.spec}`
       );
 
       // If a non initial page finished loading the navigation is done.
@@ -199,7 +228,7 @@ class ProgressListener {
       }
 
       // Otherwise wait for a potential additional page load.
-      logger.trace(
+      lazy.logger.trace(
         `${messagePrefix} Initial document loaded. Wait for a potential further navigation.`
       );
       this.#seenStartFlag = false;
@@ -217,9 +246,9 @@ class ProgressListener {
 
   #setUnloadTimer() {
     if (!this.#expectNavigation) {
-      this.#unloadTimerId = setTimeout(() => {
-        logger.trace(
-          truncate`[${this.browsingContext.id}] No navigation detected: ${this.currentURI?.spec}`
+      this.#unloadTimerId = lazy.setTimeout(() => {
+        lazy.logger.trace(
+          lazy.truncate`[${this.browsingContext.id}] No navigation detected: ${this.currentURI?.spec}`
         );
         // Assume the target is the currently loaded URI.
         this.#targetURI = this.currentURI;
@@ -232,7 +261,30 @@ class ProgressListener {
     this.#checkLoadingState(request, {
       isStart: flag & Ci.nsIWebProgressListener.STATE_START,
       isStop: flag & Ci.nsIWebProgressListener.STATE_STOP,
+      status,
     });
+  }
+
+  onLocationChange(progress, request, location, flag) {
+    const messagePrefix = `[${this.browsingContext.id}] ${this.constructor.name}`;
+
+    // If an error page has been loaded abort the navigation.
+    if (flag & Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE) {
+      lazy.logger.trace(
+        lazy.truncate`${messagePrefix} location=errorPage: ${location.spec}`
+      );
+      this.stop({ error: new Error("Address restricted") });
+      return;
+    }
+
+    // If location has changed in the same document the navigation is done.
+    if (flag & Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT) {
+      this.#targetURI = location;
+      lazy.logger.trace(
+        lazy.truncate`${messagePrefix} location=sameDocument: ${this.targetURI?.spec}`
+      );
+      this.stop();
+    }
   }
 
   /**
@@ -242,7 +294,7 @@ class ProgressListener {
    *     A promise that will resolve when the navigation has been finished.
    */
   start() {
-    if (this.#resolve) {
+    if (this.#deferredNavigation) {
       throw new Error(`Progress listener already started`);
     }
 
@@ -256,13 +308,13 @@ class ProgressListener {
       }
     }
 
-    const promise = new Promise(resolve => (this.#resolve = resolve));
+    this.#deferredNavigation = new lazy.Deferred();
 
-    // Enable all state notifications to get informed about an upcoming load
+    // Enable all location change and state notifications to get informed about an upcoming load
     // as early as possible.
     this.#webProgress.addProgressListener(
       this,
-      Ci.nsIWebProgress.NOTIFY_STATE_ALL
+      Ci.nsIWebProgress.NOTIFY_LOCATION | Ci.nsIWebProgress.NOTIFY_STATE_ALL
     );
 
     webProgressListeners.add(this);
@@ -277,23 +329,29 @@ class ProgressListener {
       this.#setUnloadTimer();
     }
 
-    return promise;
+    return this.#deferredNavigation.promise;
   }
 
   /**
    * Stop observing web progress changes.
+   *
+   * @param {Object=} options
+   * @param {Error=} options.error
+   *     If specified the navigation promise will be rejected with this error.
    */
-  stop() {
-    if (!this.#resolve) {
+  stop(options = {}) {
+    const { error } = options;
+
+    if (!this.#deferredNavigation) {
       throw new Error(`Progress listener not yet started`);
     }
 
-    clearTimeout(this.#unloadTimerId);
+    lazy.clearTimeout(this.#unloadTimerId);
     this.#unloadTimerId = null;
 
     this.#webProgress.removeProgressListener(
       this,
-      Ci.nsIWebProgress.NOTIFY_STATE_ALL
+      Ci.nsIWebProgress.NOTIFY_LOCATION | Ci.nsIWebProgress.NOTIFY_STATE_ALL
     );
     webProgressListeners.delete(this);
 
@@ -302,8 +360,13 @@ class ProgressListener {
       this.#targetURI = this.browsingContext.currentURI;
     }
 
-    this.#resolve();
-    this.#resolve = null;
+    if (error) {
+      this.#deferredNavigation.reject(error);
+    } else {
+      this.#deferredNavigation.resolve();
+    }
+
+    this.#deferredNavigation = null;
   }
 
   toString() {

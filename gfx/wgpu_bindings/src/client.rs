@@ -476,26 +476,6 @@ pub extern "C" fn wgpu_client_make_buffer_id(
 }
 
 #[no_mangle]
-pub extern "C" fn wgpu_client_create_buffer(
-    client: &Client,
-    device_id: id::DeviceId,
-    desc: &wgt::BufferDescriptor<RawString>,
-    bb: &mut ByteBuf,
-) -> id::BufferId {
-    let backend = device_id.backend();
-    let id = client
-        .identities
-        .lock()
-        .select(backend)
-        .buffers
-        .alloc(backend);
-
-    let action = DeviceAction::CreateBuffer(id, desc.map_label(cow_label));
-    *bb = make_byte_buf(&action);
-    id
-}
-
-#[no_mangle]
 pub extern "C" fn wgpu_client_create_texture(
     client: &Client,
     device_id: id::DeviceId,
@@ -1090,28 +1070,6 @@ pub unsafe extern "C" fn wgpu_command_encoder_insert_debug_marker(
     let string = cstr.to_str().unwrap_or_default().to_string();
     let action = CommandEncoderAction::InsertDebugMarker(string);
     *bb = make_byte_buf(&action);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_render_pass_set_index_buffer(
-    pass: &mut wgc::command::RenderPass,
-    buffer: wgc::id::BufferId,
-    index_format: wgt::IndexFormat,
-    offset: wgt::BufferAddress,
-    size: Option<wgt::BufferSize>,
-) {
-    pass.set_index_buffer(buffer, index_format, offset, size);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_render_bundle_set_index_buffer(
-    encoder: &mut wgc::command::RenderBundleEncoder,
-    buffer: wgc::id::BufferId,
-    index_format: wgt::IndexFormat,
-    offset: wgt::BufferAddress,
-    size: Option<wgt::BufferSize>,
-) {
-    encoder.set_index_buffer(buffer, index_format, offset, size);
 }
 
 #[no_mangle]

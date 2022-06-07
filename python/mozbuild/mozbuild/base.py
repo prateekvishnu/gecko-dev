@@ -14,6 +14,7 @@ import six
 import subprocess
 import sys
 import errno
+from pathlib import Path
 
 from mach.mixin.process import ProcessExecutionMixin
 from mozboot.mozconfig import MozconfigFindException
@@ -47,27 +48,6 @@ try:
     import psutil
 except Exception:
     psutil = None
-
-
-def ancestors(path):
-    """Emit the parent directories of a path."""
-    while path:
-        yield path
-        newpath = os.path.dirname(path)
-        if newpath == path:
-            break
-        path = newpath
-
-
-def samepath(path1, path2):
-    # Under Python 3 (but NOT Python 2), MozillaBuild exposes the
-    # os.path.samefile function despite it not working, so only use it if we're
-    # not running under Windows.
-    if hasattr(os.path, "samefile") and os.name != "nt":
-        return os.path.samefile(path1, path2)
-    return os.path.normcase(os.path.realpath(path1)) == os.path.normcase(
-        os.path.realpath(path2)
-    )
 
 
 class BadEnvironmentException(Exception):
@@ -179,7 +159,7 @@ class MozbuildObject(ProcessExecutionMixin):
             mozconfig = info.get("mozconfig")
             return topsrcdir, topobjdir, mozconfig
 
-        for dir_path in ancestors(cwd):
+        for dir_path in [str(path) for path in [cwd] + list(Path(cwd).parents)]:
             # If we find a mozinfo.json, we are in the objdir.
             mozinfo_path = os.path.join(dir_path, "mozinfo.json")
             if os.path.isfile(mozinfo_path):
@@ -198,16 +178,7 @@ class MozbuildObject(ProcessExecutionMixin):
                 topsrcdir, topobjdir, mozconfig = load_mozinfo(mozinfo_path)
 
         if not topsrcdir:
-            topsrcdir = os.path.normcase(
-                os.path.abspath(
-                    os.path.join(os.path.dirname(__file__), "..", "..", "..")
-                )
-            )
-            if sys.platform.startswith("win"):
-                # A bunch of tests depend on the drive letter being capitalized on
-                # Windows. Since the sys.path entries are normcase'd, the __file__
-                # path has a lowercase drive letter. Work around it with capitalize().
-                topsrcdir = topsrcdir.capitalize()
+            topsrcdir = str(Path(__file__).parent.parent.parent.parent.resolve())
 
         topsrcdir = mozpath.normsep(topsrcdir)
         if topobjdir:
@@ -910,7 +881,9 @@ class MachCommandBase(MozbuildObject):
                 # of the wrong objdir when the current objdir is ambiguous.
                 config_topobjdir = dummy.resolve_mozconfig_topobjdir()
 
-                if config_topobjdir and not samepath(topobjdir, config_topobjdir):
+                if config_topobjdir and not Path(topobjdir).samefile(
+                    Path(config_topobjdir)
+                ):
                     raise ObjdirMismatchException(topobjdir, config_topobjdir)
         except BuildEnvironmentNotFoundException:
             pass

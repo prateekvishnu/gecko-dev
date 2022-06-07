@@ -612,7 +612,7 @@ LoadInfo::LoadInfo(
     bool aForceInheritPrincipalDropped, uint64_t aInnerWindowID,
     uint64_t aBrowsingContextID, uint64_t aFrameBrowsingContextID,
     bool aInitialSecurityCheckDone, bool aIsThirdPartyContext,
-    bool aIsThirdPartyContextToTopWindow, bool aIsFormSubmission,
+    const Maybe<bool>& aIsThirdPartyContextToTopWindow, bool aIsFormSubmission,
     bool aSendCSPViolationEvents, const OriginAttributes& aOriginAttributes,
     RedirectHistoryArray&& aRedirectChainIncludingInternalRedirects,
     RedirectHistoryArray&& aRedirectChain,
@@ -978,14 +978,15 @@ LoadInfo::SetIsInThirdPartyContext(bool aIsInThirdPartyContext) {
 NS_IMETHODIMP
 LoadInfo::GetIsThirdPartyContextToTopWindow(
     bool* aIsThirdPartyContextToTopWindow) {
-  *aIsThirdPartyContextToTopWindow = mIsThirdPartyContextToTopWindow;
+  *aIsThirdPartyContextToTopWindow =
+      mIsThirdPartyContextToTopWindow.valueOr(true);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 LoadInfo::SetIsThirdPartyContextToTopWindow(
     bool aIsThirdPartyContextToTopWindow) {
-  mIsThirdPartyContextToTopWindow = aIsThirdPartyContextToTopWindow;
+  mIsThirdPartyContextToTopWindow = Some(aIsThirdPartyContextToTopWindow);
   return NS_OK;
 }
 
@@ -1796,6 +1797,20 @@ NS_IMETHODIMP
 LoadInfo::SetAllowDeprecatedSystemRequests(
     bool aAllowDeprecatedSystemRequests) {
   mAllowDeprecatedSystemRequests = aAllowDeprecatedSystemRequests;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+LoadInfo::GetIsUserTriggeredSave(bool* aIsUserTriggeredSave) {
+  *aIsUserTriggeredSave =
+      mIsUserTriggeredSave ||
+      mInternalContentPolicyType == nsIContentPolicy::TYPE_SAVEAS_DOWNLOAD;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+LoadInfo::SetIsUserTriggeredSave(bool aIsUserTriggeredSave) {
+  mIsUserTriggeredSave = aIsUserTriggeredSave;
   return NS_OK;
 }
 

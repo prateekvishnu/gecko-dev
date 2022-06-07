@@ -54,6 +54,7 @@
 #include "nsIStringBundle.h"
 #include "nsPresContext.h"
 #include "nsIFrame.h"
+#include "nsTextFrame.h"
 #include "nsView.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsIScrollableFrame.h"
@@ -2359,6 +2360,13 @@ void LocalAccessible::Shutdown() {
   // parent
   mStateFlags |= eIsDefunct;
 
+  // Usually, when a subtree is removed, we do this in
+  // DocAccessible::UncacheChildrenInSubtree. However, that won't get called
+  // when the document is shut down, so we handle that here.
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup() && IsTable()) {
+    CachedTableAccessible::Invalidate(this);
+  }
+
   int32_t childCount = mChildren.Length();
   for (int32_t childIdx = 0; childIdx < childCount; childIdx++) {
     mChildren.ElementAt(childIdx)->UnbindFromParent();
@@ -2534,12 +2542,6 @@ void LocalAccessible::BindToParent(LocalAccessible* aParent,
 
 // LocalAccessible protected
 void LocalAccessible::UnbindFromParent() {
-  // Usually, when a subtree is removed, we do this in
-  // DocAccessible::UncacheChildrenInSubtree. However, that won't get called
-  // when the document is shut down, so we handle that here.
-  if (StaticPrefs::accessibility_cache_enabled_AtStartup() && IsTable()) {
-    CachedTableAccessible::Invalidate(this);
-  }
   mParent = nullptr;
   mIndexInParent = -1;
   mIndexOfEmbeddedChild = -1;
@@ -3255,6 +3257,18 @@ already_AddRefed<AccAttributes> LocalAccessible::BundleFieldsForCache(
     }
   }
 
+  // If text changes, we must also update spelling errors.
+  if (aCacheDomain & (CacheDomain::Spelling | CacheDomain::Text) &&
+      IsTextLeaf()) {
+    auto spellingErrors = TextLeafPoint::GetSpellingErrorOffsets(this);
+    if (!spellingErrors.IsEmpty()) {
+      fields->SetAttribute(nsGkAtoms::spelling, std::move(spellingErrors));
+    } else if (aUpdateType == CacheUpdateType::Update) {
+      fields->SetAttribute(nsGkAtoms::spelling, DeleteEntry());
+    }
+  }
+
+  nsIFrame* frame = GetFrame();
   if (aCacheDomain & (CacheDomain::Text | CacheDomain::Bounds) &&
       !HasChildren()) {
     // We cache line start offsets for both text and non-text leaf Accessibles
@@ -3263,9 +3277,9 @@ already_AddRefed<AccAttributes> LocalAccessible::BundleFieldsForCache(
         TextLeafPoint(this, 0).FindNextLineStartSameLocalAcc(
             /* aIncludeOrigin */ true);
     int32_t lineStartOffset = lineStart ? lineStart.mOffset : -1;
-    // We push line starts in two cases:
+    // We push line starts and text bounds in two cases:
     // 1. Text or bounds changed, which means it's very likely that line starts
-    // changed too.
+    // and text bounds changed too.
     // 2. CacheDomain::Bounds was requested (indicating that the frame was
     // reflowed) but the bounds  didn't actually change. This can happen when
     // the spanned text is non-rectangular. For example, an Accessible might
@@ -3290,10 +3304,31 @@ already_AddRefed<AccAttributes> LocalAccessible::BundleFieldsForCache(
       } else if (aUpdateType == CacheUpdateType::Update) {
         fields->SetAttribute(nsGkAtoms::line, DeleteEntry());
       }
+
+      if (frame && frame->IsTextFrame()) {
+        nsTArray<int32_t> charData;
+        nsIFrame* currTextFrame = frame;
+        while (currTextFrame) {
+          nsTArray<nsRect> charBounds;
+          currTextFrame->GetCharacterRectsInRange(
+              0, static_cast<nsTextFrame*>(currTextFrame)->GetContentLength(),
+              charBounds);
+          for (const nsRect& rect : charBounds) {
+            charData.AppendElement(rect.x);
+            charData.AppendElement(rect.y);
+            charData.AppendElement(rect.width);
+            charData.AppendElement(rect.height);
+          }
+          currTextFrame = currTextFrame->GetNextContinuation();
+        }
+
+        if (charData.Length()) {
+          fields->SetAttribute(nsGkAtoms::characterData, std::move(charData));
+        }
+      }
     }
   }
 
-  nsIFrame* frame = GetFrame();
   if (aCacheDomain & CacheDomain::TransformMatrix) {
     if (frame && frame->IsTransformed()) {
       // We need to find a frame to make our transform relative to.
@@ -3412,13 +3447,15 @@ already_AddRefed<AccAttributes> LocalAccessible::BundleFieldsForCache(
       // This is because of things like rowspan="0" which depend on knowing
       // about thead, tbody, etc., which is info we don't have in the a11y tree.
       int32_t value = static_cast<int32_t>(cell->RowExtent());
-      if (value != 1) {
+      MOZ_ASSERT(value > 0);
+      if (value > 1) {
         fields->SetAttribute(nsGkAtoms::rowspan, value);
       } else if (aUpdateType == CacheUpdateType::Update) {
         fields->SetAttribute(nsGkAtoms::rowspan, DeleteEntry());
       }
       value = static_cast<int32_t>(cell->ColExtent());
-      if (value != 1) {
+      MOZ_ASSERT(value > 0);
+      if (value > 1) {
         fields->SetAttribute(nsGkAtoms::colspan, value);
       } else if (aUpdateType == CacheUpdateType::Update) {
         fields->SetAttribute(nsGkAtoms::colspan, DeleteEntry());
@@ -3458,7 +3495,7 @@ already_AddRefed<AccAttributes> LocalAccessible::BundleFieldsForCache(
       }
     }
 
-    if (nsIFrame* frame = GetFrame()) {
+    if (frame) {
       // Note our frame's current computed style so we can track style changes
       // later on.
       mOldComputedStyle = frame->Style();
@@ -3475,6 +3512,10 @@ already_AddRefed<AccAttributes> LocalAccessible::BundleFieldsForCache(
         // will ne notified via nsAS::NotifyOfResolutionChange
         float resolution = presShell->GetResolution();
         fields->SetAttribute(nsGkAtoms::resolution, resolution);
+        int32_t appUnitsPerDevPixel =
+            presShell->GetPresContext()->AppUnitsPerDevPixel();
+        fields->SetAttribute(nsGkAtoms::_moz_device_pixel_ratio,
+                             appUnitsPerDevPixel);
       }
     }
   }

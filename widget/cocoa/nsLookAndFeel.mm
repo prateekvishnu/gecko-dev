@@ -326,20 +326,6 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme, nscolor
     case ColorID::MozNativevisitedhyperlinktext:
       color = GetColorFromNSColor(NSColor.systemPurpleColor);
       break;
-    // The following colors are supposed to be used as font-smoothing background
-    // colors, in the chrome-only -moz-font-smoothing-background-color property.
-    // This property is used for text on "vibrant" -moz-appearances.
-    // The colors have been obtained from the system on 10.14 using the
-    // program at https://bugzilla.mozilla.org/attachment.cgi?id=9208594 .
-    // We could obtain them at runtime, but doing so may be expensive and
-    // requires the use of the private API
-    // -[NSVisualEffectView fontSmoothingBackgroundColor].
-    case ColorID::MozMacVibrantTitlebarLight:
-      color = NS_RGB(0xe6, 0xe6, 0xe6);
-      break;
-    case ColorID::MozMacVibrantTitlebarDark:
-      color = NS_RGB(0x28, 0x28, 0x28);
-      break;
     case ColorID::MozMacTooltip:
     case ColorID::MozMacMenupopup:
     case ColorID::MozMacMenuitem:
@@ -413,9 +399,6 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
       break;
     case IntID::ScrollArrowStyle:
       aResult = eScrollArrow_None;
-      break;
-    case IntID::ScrollSliderStyle:
-      aResult = eScrollThumbStyle_Proportional;
       break;
     case IntID::UseOverlayScrollbars:
     case IntID::AllowOverlayScrollbarsOverlap:

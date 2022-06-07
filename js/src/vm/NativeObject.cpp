@@ -425,6 +425,17 @@ void NativeObject::shrinkSlots(JSContext* cx, uint32_t oldCapacity,
   slots_ = newHeaderSlots->slots();
 }
 
+void NativeObject::initFixedElements(gc::AllocKind kind, uint32_t length) {
+  uint32_t capacity =
+      gc::GetGCKindSlots(kind) - ObjectElements::VALUES_PER_HEADER;
+
+  setFixedElements();
+  new (getElementsHeader()) ObjectElements(capacity, length);
+  getElementsHeader()->flags |= ObjectElements::FIXED;
+
+  MOZ_ASSERT(hasFixedElements());
+}
+
 bool NativeObject::willBeSparseElements(uint32_t requiredCapacity,
                                         uint32_t newElementsHint) {
   MOZ_ASSERT(is<NativeObject>());
@@ -852,6 +863,7 @@ bool NativeObject::growElements(JSContext* cx, uint32_t reqCapacity) {
 
   ObjectElements* newheader = reinterpret_cast<ObjectElements*>(newHeaderSlots);
   elements_ = newheader->elements() + numShifted;
+  getElementsHeader()->flags &= ~ObjectElements::FIXED;
   getElementsHeader()->capacity = newCapacity;
 
   Debug_SetSlotRangeToCrashOnTouch(elements_ + initlen, newCapacity - initlen);
@@ -1431,14 +1443,9 @@ bool js::NativeDefineProperty(JSContext* cx, HandleNativeObject obj,
     }
   } else if (obj->is<TypedArrayObject>()) {
     // 9.4.5.3 step 3. Indexed properties of typed arrays are special.
-    Rooted<TypedArrayObject*> tobj(cx, &obj->as<TypedArrayObject>());
-    mozilla::Maybe<uint64_t> index;
-    if (!ToTypedArrayIndex(cx, id, &index)) {
-      return false;
-    }
-
-    if (index) {
+    if (mozilla::Maybe<uint64_t> index = ToTypedArrayIndex(id)) {
       MOZ_ASSERT(!cx->isHelperThreadContext());
+      Rooted<TypedArrayObject*> tobj(cx, &obj->as<TypedArrayObject>());
       return DefineTypedArrayElement(cx, tobj, index.value(), desc_, result);
     }
   } else if (obj->is<ArgumentsObject>()) {
@@ -1729,12 +1736,7 @@ static bool DefineNonexistentProperty(JSContext* cx, HandleNativeObject obj,
     }
   } else if (obj->is<TypedArrayObject>()) {
     // 9.4.5.5 step 2. Indexed properties of typed arrays are special.
-    mozilla::Maybe<uint64_t> index;
-    if (!ToTypedArrayIndex(cx, id, &index)) {
-      return false;
-    }
-
-    if (index) {
+    if (mozilla::Maybe<uint64_t> index = ToTypedArrayIndex(id)) {
       // This method is only called for non-existent properties, which
       // means any absent indexed property must be out of range.
       MOZ_ASSERT(index.value() >= obj->as<TypedArrayObject>().length());

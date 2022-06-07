@@ -298,6 +298,7 @@ where
         in_media_query: false,
         for_smil_animation: false,
         for_non_inherited_property: None,
+        container_info: None,
         font_metrics_provider,
         quirks_mode,
         rule_cache_conditions: RefCell::new(rule_cache_conditions),
@@ -424,7 +425,7 @@ fn tweak_when_ignoring_colors(
 
     fn alpha_channel(color: &Color, context: &computed::Context) -> u8 {
         // We assume here currentColor is opaque.
-        let color = color.to_computed_value(context).to_rgba(RGBA::new(0, 0, 0, 255));
+        let color = color.to_computed_value(context).into_rgba(RGBA::new(0, 0, 0, 255));
         color.alpha
     }
 

@@ -9,12 +9,9 @@
 
 #include "nsIDOMGeoPositionCoords.h"
 #include "nsIDOMGeoPosition.h"
-#include "nsString.h"
 #include "nsCOMPtr.h"
-#include "mozilla/Attributes.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
-#include "mozilla/dom/Nullable.h"
 #include "js/TypeDecls.h"
 
 ////////////////////////////////////////////////////
@@ -62,8 +59,7 @@ class nsGeoPosition final : public nsIDOMGeoPosition {
 // WebIDL wrappers for the classes above
 ////////////////////////////////////////////////////
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class GeolocationCoordinates;
 
@@ -94,7 +90,6 @@ class GeolocationPosition final : public nsISupports, public nsWrapperCache {
   nsCOMPtr<nsIDOMGeoPosition> mGeoPosition;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_GeolocationPosition_h */

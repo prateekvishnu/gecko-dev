@@ -357,6 +357,13 @@ pref("browser.urlbar.accessibility.tabToSearch.announceResults", true);
 // Control autoFill behavior
 pref("browser.urlbar.autoFill", true);
 
+// Whether enabling adaptive history autofill.
+pref("browser.urlbar.autoFill.adaptiveHistory.enabled", false);
+
+// Minimum char length of the user's search string to enable adaptive history
+// autofill.
+pref("browser.urlbar.autoFill.adaptiveHistory.minCharsThreshold", 0);
+
 // Whether to warm up network connections for autofill or search results.
 pref("browser.urlbar.speculativeConnect.enabled", true);
 
@@ -1424,7 +1431,8 @@ pref("services.sync.prefs.sync.privacy.trackingprotection.enabled", true);
 pref("services.sync.prefs.sync.privacy.trackingprotection.cryptomining.enabled", true);
 pref("services.sync.prefs.sync.privacy.trackingprotection.fingerprinting.enabled", true);
 pref("services.sync.prefs.sync.privacy.trackingprotection.pbmode.enabled", true);
-pref("services.sync.prefs.sync.privacy.resistFingerprinting", true);
+// We do not sync `privacy.resistFingerprinting` by default as it's an undocumented,
+// not-recommended footgun - see bug 1763278 for more.
 pref("services.sync.prefs.sync.privacy.reduceTimerPrecision", true);
 pref("services.sync.prefs.sync.privacy.resistFingerprinting.reduceTimerPrecision.microseconds", true);
 pref("services.sync.prefs.sync.privacy.resistFingerprinting.reduceTimerPrecision.jitter", true);
@@ -1544,6 +1552,7 @@ pref("browser.newtabpage.activity-stream.discoverystream.newSponsoredLabel.enabl
 pref("browser.newtabpage.activity-stream.discoverystream.essentialReadsHeader.enabled", false);
 pref("browser.newtabpage.activity-stream.discoverystream.editorsPicksHeader.enabled", false);
 pref("browser.newtabpage.activity-stream.discoverystream.spoc-positions", "1,5,7,11,18,20");
+pref("browser.newtabpage.activity-stream.discoverystream.widget-positions", "");
 
 pref("browser.newtabpage.activity-stream.discoverystream.spocs-endpoint", "");
 pref("browser.newtabpage.activity-stream.discoverystream.spocs-endpoint-query", "");
@@ -1584,6 +1593,14 @@ pref("browser.newtabpage.activity-stream.feeds.section.topstories", true);
 pref("browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar", true);
 
 pref("browser.newtabpage.activity-stream.logowordmark.alwaysVisible", true);
+
+// URLs from the user's history that contain this search param will be hidden
+// from the top sites. The value is a string with one of the following forms:
+// - "" (empty) - Disable this feature
+// - "key" - Search param named "key" with any or no value
+// - "key=" - Search param named "key" with no value
+// - "key=value" - Search param named "key" with value "value"
+pref("browser.newtabpage.activity-stream.hideTopSitesWithSearchParam", "mfadid=adm");
 
 // Used to display triplet cards on newtab
 pref("trailhead.firstrun.newtab.triplets", "");
@@ -1849,6 +1866,9 @@ pref("browser.contentblocking.reject-and-isolate-cookies.preferences.ui.enabled"
 //   OCSP cache partitioning:
 //     "ocsp": OCSP cache partitioning enabled
 //     "-ocsp": OCSP cache partitioning disabled
+//   Query parameter stripping:
+//     "qps": Query parameter stripping enabled
+//     "-qps": Query parameter stripping disabled
 //   Cookie behavior:
 //     "cookieBehavior0": cookie behaviour BEHAVIOR_ACCEPT
 //     "cookieBehavior1": cookie behaviour BEHAVIOR_REJECT_FOREIGN
@@ -1864,7 +1884,7 @@ pref("browser.contentblocking.reject-and-isolate-cookies.preferences.ui.enabled"
 //     "cookieBehaviorPBM4": cookie behaviour BEHAVIOR_REJECT_TRACKER
 //     "cookieBehaviorPBM5": cookie behaviour BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN
 // One value from each section must be included in the browser.contentblocking.features.strict pref.
-pref("browser.contentblocking.features.strict", "tp,tpPrivate,cookieBehavior5,cookieBehaviorPBM5,cm,fp,stp,lvl2,rp,rpTop,ocsp");
+pref("browser.contentblocking.features.strict", "tp,tpPrivate,cookieBehavior5,cookieBehaviorPBM5,cm,fp,stp,lvl2,rp,rpTop,ocsp,qps");
 
 // Hide the "Change Block List" link for trackers/tracking content in the custom
 // Content Blocking/ETP panel. By default, it will not be visible. There is also
@@ -2078,11 +2098,7 @@ pref("extensions.pocket.showHome", true);
 pref("extensions.pocket.loggedOutVariant", "control");
 
 // Enable the new Pocket panels.
-#ifdef NIGHTLY_BUILD
-  pref("extensions.pocket.refresh.layout.enabled", true);
-#else
-  pref("extensions.pocket.refresh.layout.enabled", false);
-#endif
+pref("extensions.pocket.refresh.layout.enabled", true);
 
 // Just for the new Pocket panels, enables the email signup button.
 pref("extensions.pocket.refresh.emailButton.enabled", false);
@@ -2199,16 +2215,6 @@ pref("app.normandy.onsync_skew_sec", 600);
   pref("intl.multilingual.liveReloadBidirectional", false);
   pref("intl.multilingual.aboutWelcome.languageMismatchEnabled", false);
 #endif
-
-// Simulate conditions that will happen when the browser
-// is running with Fission enabled. This is meant to assist
-// development and testing of Fission.
-// The current simulated conditions are:
-// - Don't propagate events from subframes to JS child actors
-pref("fission.frontend.simulate-events", false);
-// - Only deliver subframe messages that specifies
-//   their destination (using the BrowsingContext id).
-pref("fission.frontend.simulate-messages", false);
 
 // Coverage ping is disabled by default.
 pref("toolkit.coverage.enabled", false);
@@ -2449,12 +2455,8 @@ pref("devtools.netmonitor.audits.slow", 500);
 // Enable the EventSource Inspector
 pref("devtools.netmonitor.features.serverSentEvents", true);
 
-#if defined(NIGHTLY_BUILD)
 // Enable the new Edit and Resend panel
   pref("devtools.netmonitor.features.newEditAndResend", true);
-#else
-  pref("devtools.netmonitor.features.newEditAndResend", false);
-#endif
 
 pref("devtools.netmonitor.customRequest", '{}');
 
@@ -2546,6 +2548,9 @@ pref("devtools.webconsole.groupWarningMessages", true);
 
 // Saved state of the Display content messages checkbox in the browser console.
 pref("devtools.browserconsole.contentMessages", false);
+
+// Enable network monitoring the browser toolbox console/browser console.
+pref("devtools.browserconsole.enableNetworkMonitoring", false);
 
 // Enable client-side mapping service for source maps
 pref("devtools.source-map.client-service.enabled", true);
@@ -2683,6 +2688,10 @@ pref("browser.snapshots.score.IsUsedRemoved", -10);
 // the last decimal map to the keys of `Snapshots.recommendationSources`.
 pref("browser.snapshots.source.CommonReferrer", 3);
 pref("browser.snapshots.source.Overlapping", 3);
+pref("browser.snapshots.source.TimeOfDay", 3);
+
+// Other preferences affecting snapshots scoring.
+pref("browser.snapshots.relevancy.timeOfDayIntervalSeconds", 3600);
 
 // Expiration days for snapshots.
 pref("browser.places.snapshots.expiration.days", 210);

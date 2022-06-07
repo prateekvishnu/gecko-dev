@@ -420,6 +420,13 @@ GeckoChildProcessHost::GeckoChildProcessHost(GeckoProcessType aProcessType,
     if (NS_SUCCEEDED(rv)) {
       contentTempDir->GetNativePath(mTmpDirName);
     }
+  } else if (aProcessType == GeckoProcessType_RDD) {
+    // The RDD process makes limited use of EGL.  If Mesa's shader
+    // cache is enabled and the directory isn't explicitly set, then
+    // it will try to getpwuid() the user which can cause problems
+    // with sandboxing.  Because we shouldn't need shader caching in
+    // this process, we just disable the cache to prevent that.
+    mLaunchOptions->env_map["MESA_GLSL_CACHE_DISABLE"] = "true";
   }
 #endif
 #if defined(MOZ_ENABLE_FORKSERVER)
@@ -594,6 +601,10 @@ void GeckoChildProcessHost::PrepareLaunch() {
 #  if defined(MOZ_SANDBOX)
   // We need to get the pref here as the process is launched off main thread.
   if (mProcessType == GeckoProcessType_Content) {
+    // Win32k Lockdown state must be initialized on the main thread.
+    // This is our last chance to do it before it is read on the IPC Launch
+    // thread
+    GetWin32kLockdownState();
     mSandboxLevel = GetEffectiveContentSandboxLevel();
     mEnableSandboxLogging =
         Preferences::GetBool("security.sandbox.logging.enabled");
@@ -1117,13 +1128,17 @@ bool PosixProcessLauncher::DoSetup() {
     mLaunchOptions->env_map["LD_LIBRARY_PATH"] = new_ld_lib_path.get();
 
 #  elif OS_MACOSX  // defined(OS_LINUX) || defined(OS_BSD)
+    // With signed production Mac builds, the dynamic linker (dyld) will
+    // ignore dyld environment variables preventing the use of variables
+    // such as DYLD_LIBRARY_PATH and DYLD_INSERT_LIBRARIES.
+
     // If we're running with gtests, add the gtest XUL ahead of normal XUL on
     // the DYLD_LIBRARY_PATH so that plugin-container.app loads it instead.
     nsCString new_dyld_lib_path(path.get());
     if (PR_GetEnv("MOZ_RUN_GTEST")) {
       new_dyld_lib_path = path + "/gtest:"_ns + new_dyld_lib_path;
+      mLaunchOptions->env_map["DYLD_LIBRARY_PATH"] = new_dyld_lib_path.get();
     }
-    mLaunchOptions->env_map["DYLD_LIBRARY_PATH"] = new_dyld_lib_path.get();
 
     // DYLD_INSERT_LIBRARIES is currently unused by default but we allow
     // it to be set by the external environment.
@@ -1452,6 +1467,11 @@ bool WindowsProcessLauncher::DoSetup() {
          ++it) {
       mResults.mSandboxBroker->AllowReadFile(it->c_str());
     }
+
+    if (mResults.mSandboxBroker->IsWin32kLockedDown()) {
+      mCmdLine->AppendLooseValue(
+          UTF8ToWide(geckoargs::sWin32kLockedDown.Name()));
+    }
   }
 #  endif  // defined(MOZ_SANDBOX)
 
@@ -1585,7 +1605,7 @@ void GeckoChildProcessHost::OnChannelConnected(base::ProcessId peer_pid) {
   lock.Notify();
 }
 
-void GeckoChildProcessHost::OnMessageReceived(IPC::Message&& aMsg) {
+void GeckoChildProcessHost::OnMessageReceived(UniquePtr<IPC::Message> aMsg) {
   // We never process messages ourself, just save them up for the next
   // listener.
   mQueue.push(std::move(aMsg));
@@ -1609,7 +1629,8 @@ RefPtr<ProcessHandlePromise> GeckoChildProcessHost::WhenProcessHandleReady() {
   return mHandlePromise;
 }
 
-void GeckoChildProcessHost::GetQueuedMessages(std::queue<IPC::Message>& queue) {
+void GeckoChildProcessHost::GetQueuedMessages(
+    std::queue<UniquePtr<IPC::Message>>& queue) {
   // If this is called off the IO thread, bad things will happen.
   DCHECK(MessageLoopForIO::current());
   swap(queue, mQueue);

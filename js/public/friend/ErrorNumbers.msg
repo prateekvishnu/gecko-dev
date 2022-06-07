@@ -57,7 +57,7 @@ MSG_DEF(JSMSG_INCOMPATIBLE_PROTO,      3, JSEXN_TYPEERR, "{0}.prototype.{1} call
 MSG_DEF(JSMSG_INCOMPATIBLE_PROTO2,     3, JSEXN_TYPEERR, "{0}.prototype[{1}] called on incompatible {2}")
 MSG_DEF(JSMSG_NO_CONSTRUCTOR,          1, JSEXN_TYPEERR, "{0} has no constructor")
 MSG_DEF(JSMSG_BAD_SORT_ARG,            0, JSEXN_TYPEERR, "invalid Array.prototype.sort argument")
-MSG_DEF(JSMSG_BAD_WITHSORTED_ARG,      0, JSEXN_TYPEERR, "non-function passed to Array.prototype.withSorted")
+MSG_DEF(JSMSG_BAD_TOSORTED_ARG,      0, JSEXN_TYPEERR, "non-function passed to Array.prototype.toSorted")
 MSG_DEF(JSMSG_READ_ONLY,               1, JSEXN_TYPEERR, "{0} is read-only")
 MSG_DEF(JSMSG_CANT_DELETE,             1, JSEXN_TYPEERR, "property {0} is non-configurable and can't be deleted")
 MSG_DEF(JSMSG_CANT_TRUNCATE_ARRAY,     0, JSEXN_TYPEERR, "can't delete non-configurable array element")
@@ -180,6 +180,7 @@ MSG_DEF(JSMSG_TOO_MANY_ARGUMENTS,      0, JSEXN_RANGEERR, "too many arguments pr
 // CSP
 MSG_DEF(JSMSG_CSP_BLOCKED_EVAL,        0, JSEXN_EVALERR, "call to eval() blocked by CSP")
 MSG_DEF(JSMSG_CSP_BLOCKED_FUNCTION,    0, JSEXN_EVALERR, "call to Function() blocked by CSP")
+MSG_DEF(JSMSG_CSP_BLOCKED_WASM,        1, JSEXN_WASMCOMPILEERROR, "call to {0}() blocked by CSP")
 
 // Wrappers
 MSG_DEF(JSMSG_ACCESSOR_DEF_DENIED,     1, JSEXN_ERR, "Permission denied to define accessor property {0}")
@@ -217,7 +218,7 @@ MSG_DEF(JSMSG_AS_AFTER_STRING,         0, JSEXN_SYNTAXERR, "missing keyword 'as'
 MSG_DEF(JSMSG_AWAIT_IN_PARAMETER,      0, JSEXN_SYNTAXERR, "await expression can't be used in parameter")
 MSG_DEF(JSMSG_AWAIT_OUTSIDE_ASYNC,     0, JSEXN_SYNTAXERR, "await is only valid in async functions and async generators")
 MSG_DEF(JSMSG_AWAIT_OUTSIDE_ASYNC_OR_MODULE, 0, JSEXN_SYNTAXERR, "await is only valid in async functions, async generators and modules")
-MSG_DEF(JSMSG_TOP_LEVEL_AWAIT_NOT_SUPPORTED, 0, JSEXN_SYNTAXERR, "top level await is not currently supported")
+MSG_DEF(JSMSG_TOP_LEVEL_AWAIT_NOT_SUPPORTED, 0, JSEXN_SYNTAXERR, "top level await is not supported in this context")
 MSG_DEF(JSMSG_BAD_ARROW_ARGS,          0, JSEXN_SYNTAXERR, "invalid arrow-function arguments (parentheses around the arrow-function may help)")
 MSG_DEF(JSMSG_BAD_BINDING,             1, JSEXN_SYNTAXERR, "redefining {0} is deprecated")
 MSG_DEF(JSMSG_BAD_COALESCE_MIXING,     0, JSEXN_SYNTAXERR, "cannot use `??` unparenthesized within `||` and `&&` expressions")
@@ -466,8 +467,6 @@ MSG_DEF(JSMSG_WASM_BAD_BUF_ARG,        0, JSEXN_TYPEERR,     "first argument mus
 MSG_DEF(JSMSG_WASM_BAD_MOD_ARG,        0, JSEXN_TYPEERR,     "first argument must be a WebAssembly.Module")
 MSG_DEF(JSMSG_WASM_BAD_BUF_MOD_ARG,    0, JSEXN_TYPEERR,     "first argument must be a WebAssembly.Module, ArrayBuffer or typed array object")
 MSG_DEF(JSMSG_WASM_BAD_DESC_ARG,       1, JSEXN_TYPEERR,     "first argument must be a {0} descriptor")
-MSG_DEF(JSMSG_WASM_BAD_ELEMENT,        0, JSEXN_TYPEERR,     "\"element\" property of table descriptor must be \"funcref\"")
-MSG_DEF(JSMSG_WASM_BAD_ELEMENT_GENERALIZED, 0, JSEXN_TYPEERR, "\"element\" property of table descriptor must be \"funcref\" or \"externref\"")
 MSG_DEF(JSMSG_WASM_BAD_IMPORT_ARG,     0, JSEXN_TYPEERR,     "second argument must be an object")
 MSG_DEF(JSMSG_WASM_BAD_IMPORT_FIELD,   1, JSEXN_TYPEERR,     "import object field '{0}' is not an Object")
 MSG_DEF(JSMSG_WASM_BAD_REF_NONNULLABLE_VALUE,  0, JSEXN_TYPEERR,     "cannot pass null to non-nullable WebAssembly reference")

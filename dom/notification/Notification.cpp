@@ -208,7 +208,7 @@ class NotificationPermissionRequest : public ContentPermissionRequestBase,
 
   // nsIContentPermissionRequest
   NS_IMETHOD Cancel(void) override;
-  NS_IMETHOD Allow(JS::HandleValue choices) override;
+  NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
 
   NotificationPermissionRequest(nsIPrincipal* aPrincipal,
                                 nsPIDOMWindowInner* aWindow, Promise* aPromise,
@@ -278,15 +278,17 @@ class FocusWindowRunnable final : public Runnable {
       const nsMainThreadPtrHandle<nsPIDOMWindowInner>& aWindow)
       : Runnable("FocusWindowRunnable"), mWindow(aWindow) {}
 
-  NS_IMETHOD
-  Run() override {
+  // MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is MOZ_CAN_RUN_SCRIPT.  See
+  // bug 1535398.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() override {
     AssertIsOnMainThread();
     if (!mWindow->IsCurrentInnerWindow()) {
       // Window has been closed, this observer is not valid anymore
       return NS_OK;
     }
 
-    nsFocusManager::FocusWindow(mWindow->GetOuterWindow(), CallerType::System);
+    nsCOMPtr<nsPIDOMWindowOuter> outerWindow = mWindow->GetOuterWindow();
+    nsFocusManager::FocusWindow(outerWindow, CallerType::System);
     return NS_OK;
   }
 };
@@ -554,7 +556,7 @@ NotificationPermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-NotificationPermissionRequest::Allow(JS::HandleValue aChoices) {
+NotificationPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   MOZ_ASSERT(aChoices.isUndefined());
 
   mPermission = NotificationPermission::Granted;
@@ -1127,7 +1129,9 @@ nsresult NotificationObserver::AdjustPushQuota(const char* aTopic) {
   return pushQuotaManager->NotificationForOriginClosed(origin.get());
 }
 
-NS_IMETHODIMP
+// MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is MOZ_CAN_RUN_SCRIPT.  See
+// bug 1539845.
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP
 MainThreadNotificationObserver::Observe(nsISupports* aSubject,
                                         const char* aTopic,
                                         const char16_t* aData) {
@@ -1144,7 +1148,8 @@ MainThreadNotificationObserver::Observe(nsISupports* aSubject,
 
     bool doDefaultAction = notification->DispatchClickEvent();
     if (doDefaultAction) {
-      nsFocusManager::FocusWindow(window->GetOuterWindow(), CallerType::System);
+      nsCOMPtr<nsPIDOMWindowOuter> outerWindow = window->GetOuterWindow();
+      nsFocusManager::FocusWindow(outerWindow, CallerType::System);
     }
   } else if (!strcmp("alertfinished", aTopic)) {
     notification->UnpersistNotification();

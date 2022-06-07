@@ -714,7 +714,7 @@ int32_t CustomElementRegistry::InferNamespace(
 bool CustomElementRegistry::JSObjectToAtomArray(
     JSContext* aCx, JS::Handle<JSObject*> aConstructor, const nsString& aName,
     nsTArray<RefPtr<nsAtom>>& aArray, ErrorResult& aRv) {
-  JS::RootedValue iterable(aCx, JS::UndefinedValue());
+  JS::Rooted<JS::Value> iterable(aCx, JS::UndefinedValue());
   if (!JS_GetUCProperty(aCx, aConstructor, aName.get(), aName.Length(),
                         &iterable)) {
     aRv.NoteJSContextException(aCx);
@@ -975,50 +975,46 @@ void CustomElementRegistry::Define(
       }
     }
 
-    if (StaticPrefs::dom_webcomponents_disabledFeatures_enabled()) {
-      /**
-       * 14.6. Let disabledFeatures be an empty sequence<DOMString>.
-       * 14.7. Let disabledFeaturesIterable be Get(constructor,
-       *       "disabledFeatures"). Rethrow any exceptions.
-       * 14.8. If disabledFeaturesIterable is not undefined, then set
-       *       disabledFeatures to the result of converting
-       *       disabledFeaturesIterable to a sequence<DOMString>.
-       *       Rethrow any exceptions from the conversion.
-       */
-      if (!JSObjectToAtomArray(aCx, constructor, u"disabledFeatures"_ns,
-                               disabledFeatures, aRv)) {
-        return;
-      }
-
-      // 14.9. Set disableInternals to true if disabledFeaturesSequence contains
-      //       "internals".
-      disableInternals = disabledFeatures.Contains(
-          static_cast<nsStaticAtom*>(nsGkAtoms::internals));
-
-      // 14.10. Set disableShadow to true if disabledFeaturesSequence contains
-      //        "shadow".
-      disableShadow = disabledFeatures.Contains(
-          static_cast<nsStaticAtom*>(nsGkAtoms::shadow));
+    /**
+     * 14.6. Let disabledFeatures be an empty sequence<DOMString>.
+     * 14.7. Let disabledFeaturesIterable be Get(constructor,
+     *       "disabledFeatures"). Rethrow any exceptions.
+     * 14.8. If disabledFeaturesIterable is not undefined, then set
+     *       disabledFeatures to the result of converting
+     *       disabledFeaturesIterable to a sequence<DOMString>.
+     *       Rethrow any exceptions from the conversion.
+     */
+    if (!JSObjectToAtomArray(aCx, constructor, u"disabledFeatures"_ns,
+                             disabledFeatures, aRv)) {
+      return;
     }
 
-    if (StaticPrefs::dom_webcomponents_formAssociatedCustomElement_enabled()) {
-      // 14.11. Let formAssociatedValue be Get(constructor, "formAssociated").
-      //        Rethrow any exceptions.
-      JS::Rooted<JS::Value> formAssociatedValue(aCx);
-      if (!JS_GetProperty(aCx, constructor, "formAssociated",
-                          &formAssociatedValue)) {
-        aRv.NoteJSContextException(aCx);
-        return;
-      }
+    // 14.9. Set disableInternals to true if disabledFeaturesSequence contains
+    //       "internals".
+    disableInternals = disabledFeatures.Contains(
+        static_cast<nsStaticAtom*>(nsGkAtoms::internals));
 
-      // 14.12. Set formAssociated to the result of converting
-      //        formAssociatedValue to a boolean. Rethrow any exceptions from
-      //        the conversion.
-      if (!ValueToPrimitive<bool, eDefault>(
-              aCx, formAssociatedValue, "formAssociated", &formAssociated)) {
-        aRv.NoteJSContextException(aCx);
-        return;
-      }
+    // 14.10. Set disableShadow to true if disabledFeaturesSequence contains
+    //        "shadow".
+    disableShadow = disabledFeatures.Contains(
+        static_cast<nsStaticAtom*>(nsGkAtoms::shadow));
+
+    // 14.11. Let formAssociatedValue be Get(constructor, "formAssociated").
+    //        Rethrow any exceptions.
+    JS::Rooted<JS::Value> formAssociatedValue(aCx);
+    if (!JS_GetProperty(aCx, constructor, "formAssociated",
+                        &formAssociatedValue)) {
+      aRv.NoteJSContextException(aCx);
+      return;
+    }
+
+    // 14.12. Set formAssociated to the result of converting
+    //        formAssociatedValue to a boolean. Rethrow any exceptions from
+    //        the conversion.
+    if (!ValueToPrimitive<bool, eDefault>(aCx, formAssociatedValue,
+                                          "formAssociated", &formAssociated)) {
+      aRv.NoteJSContextException(aCx);
+      return;
     }
   }  // Unset mIsCustomDefinitionRunning
 
@@ -1337,7 +1333,7 @@ already_AddRefed<nsISupports> CustomElementRegistry::CallGetCustomInterface(
 
   // Initialize a AutoJSAPI to enter the compartment of the callback.
   AutoJSAPI jsapi;
-  JS::RootedObject funcGlobal(RootingCx(), func->CallbackGlobalOrNull());
+  JS::Rooted<JSObject*> funcGlobal(RootingCx(), func->CallbackGlobalOrNull());
   if (!funcGlobal || !jsapi.Init(funcGlobal)) {
     return nullptr;
   }
@@ -1346,12 +1342,12 @@ already_AddRefed<nsISupports> CustomElementRegistry::CallGetCustomInterface(
   JSContext* cx = jsapi.cx();
 
   // Convert our IID to a JSValue to call our callback.
-  JS::RootedValue jsiid(cx);
+  JS::Rooted<JS::Value> jsiid(cx);
   if (!xpc::ID2JSValue(cx, aIID, &jsiid)) {
     return nullptr;
   }
 
-  JS::RootedObject customInterface(cx);
+  JS::Rooted<JSObject*> customInterface(cx);
   func->Call(aElement, jsiid, &customInterface);
   if (!customInterface) {
     return nullptr;

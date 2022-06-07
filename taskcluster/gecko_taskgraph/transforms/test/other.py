@@ -8,6 +8,8 @@ import re
 
 from mozbuild.schedules import INCLUSIVE_COMPONENTS
 from mozbuild.util import ReadOnlyDict
+from taskgraph.util.attributes import keymatch
+from taskgraph.util.keyed_by import evaluate_keyed_by
 from taskgraph.util.taskcluster import get_artifact_path, get_index_url
 from voluptuous import (
     Any,
@@ -17,8 +19,6 @@ from voluptuous import (
 
 from gecko_taskgraph.transforms.base import TransformSequence
 from gecko_taskgraph.transforms.test.variant import TEST_VARIANTS
-from gecko_taskgraph.util.attributes import keymatch
-from gecko_taskgraph.util.keyed_by import evaluate_keyed_by
 from gecko_taskgraph.util.platforms import platform_family
 from gecko_taskgraph.util.schema import (
     resolve_keyed_by,
@@ -342,30 +342,35 @@ def setup_browsertime(config, tasks):
                 "linux64-chromedriver-99",
                 "linux64-chromedriver-100",
                 "linux64-chromedriver-101",
+                "linux64-chromedriver-102",
             ],
             "macosx.*": [
                 "mac64-chromedriver-98",
                 "mac64-chromedriver-99",
                 "mac64-chromedriver-100",
                 "mac64-chromedriver-101",
+                "mac64-chromedriver-102",
             ],
             "windows.*aarch64.*": [
                 "win32-chromedriver-98",
                 "win32-chromedriver-99",
                 "win32-chromedriver-100",
                 "win32-chromedriver-101",
+                "win32-chromedriver-102",
             ],
             "windows.*-32.*": [
                 "win32-chromedriver-98",
                 "win32-chromedriver-99",
                 "win32-chromedriver-100",
                 "win32-chromedriver-101",
+                "win32-chromedriver-102",
             ],
             "windows.*-64.*": [
                 "win32-chromedriver-98",
                 "win32-chromedriver-99",
                 "win32-chromedriver-100",
                 "win32-chromedriver-101",
+                "win32-chromedriver-102",
             ],
         }
 
@@ -725,18 +730,11 @@ def disable_try_only_platforms(config, tasks):
 def ensure_spi_disabled_on_all_but_spi(config, tasks):
     for task in tasks:
         variant = task["attributes"].get("unittest_variant", "")
-        has_setpref = (
-            "gtest" not in task["suite"]
-            and "cppunit" not in task["suite"]
-            and "jittest" not in task["suite"]
-            and "junit" not in task["suite"]
-            and "raptor" not in task["suite"]
-        )
+        has_no_setpref = ("gtest", "cppunit", "jittest", "junit", "raptor")
 
         if (
-            has_setpref
-            and variant != "socketprocess"
-            and variant != "socketprocess_networking"
+            all(s not in task["suite"] for s in has_no_setpref)
+            and "socketprocess" not in variant
         ):
             task["mozharness"]["extra-options"].append(
                 "--setpref=media.peerconnection.mtransport_process=false"

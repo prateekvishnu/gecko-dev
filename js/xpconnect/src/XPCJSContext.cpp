@@ -38,6 +38,7 @@
 #include "nsCCUncollectableMarker.h"
 #include "nsCycleCollectionNoteRootCallback.h"
 #include "nsCycleCollector.h"
+#include "nsJSEnvironment.h"
 #include "jsapi.h"
 #include "js/ArrayBuffer.h"
 #include "js/ContextOptions.h"
@@ -797,8 +798,6 @@ void xpc::SetPrefableRealmOptions(JS::RealmOptions& options) {
       .setCoopAndCoepEnabled(
           StaticPrefs::browser_tabs_remote_useCrossOriginOpenerPolicy() &&
           StaticPrefs::browser_tabs_remote_useCrossOriginEmbedderPolicy())
-      .setWritableStreamsEnabled(
-          StaticPrefs::javascript_options_writable_streams())
       .setPropertyErrorMessageFixEnabled(sPropertyErrorMessageFixEnabled)
       .setWeakRefsEnabled(GetWeakRefsEnabled())
       .setIteratorHelpersEnabled(sIteratorHelpersEnabled)
@@ -1487,6 +1486,8 @@ void XPCJSContext::AfterProcessTask(uint32_t aNewRecursionDepth) {
   // this value again. Clear it to prevent leaks.
   SetPendingException(nullptr);
 }
+
+void XPCJSContext::MaybePokeGC() { nsJSContext::MaybePokeGC(); }
 
 bool XPCJSContext::IsSystemCaller() const {
   return nsContentUtils::IsSystemCaller(Context());

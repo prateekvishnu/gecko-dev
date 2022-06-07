@@ -110,12 +110,23 @@ enum class DisplayListArenaObjectId {
   COUNT
 };
 
-extern LazyLogModule sDisplayListLog;
-#define DL_LOG(lvl, ...) MOZ_LOG(sDisplayListLog, lvl, (__VA_ARGS__))
+extern LazyLogModule sContentDisplayListLog;
+extern LazyLogModule sParentDisplayListLog;
+
+LazyLogModule& GetLoggerByProcess();
+
+#define DL_LOG(lvl, ...) MOZ_LOG(GetLoggerByProcess(), lvl, (__VA_ARGS__))
 #define DL_LOGI(...) DL_LOG(LogLevel::Info, __VA_ARGS__)
-#define DL_LOGD(...) DL_LOG(LogLevel::Debug, __VA_ARGS__)
-#define DL_LOGV(...) DL_LOG(LogLevel::Verbose, __VA_ARGS__)
-#define DL_LOG_TEST(lvl) MOZ_LOG_TEST(sDisplayListLog, lvl)
+#define DL_LOG_TEST(lvl) MOZ_LOG_TEST(GetLoggerByProcess(), lvl)
+
+#ifdef DEBUG
+#  define DL_LOGD(...) DL_LOG(LogLevel::Debug, __VA_ARGS__)
+#  define DL_LOGV(...) DL_LOG(LogLevel::Verbose, __VA_ARGS__)
+#else
+// Disable Debug and Verbose logs for release builds.
+#  define DL_LOGD(...)
+#  define DL_LOGV(...)
+#endif
 
 /*
  * An nsIFrame can have many different visual parts. For example an image frame
@@ -384,8 +395,6 @@ class nsDisplayListBuilder {
   bool IsForGenerateGlyphMask() const {
     return mMode == nsDisplayListBuilderMode::GenerateGlyph;
   }
-
-  bool IsForContent() const { return mIsForContent; }
 
   bool BuildCompositorHitTestInfo() const {
     return mBuildCompositorHitTestInfo;
@@ -1490,17 +1499,6 @@ class nsDisplayListBuilder {
   }
   bool ContainsBlendMode() const { return mContainsBlendMode; }
 
-  /**
-   * mContainsBackdropFilter is true if we proccessed a display item that
-   * has a backdrop filter set. We track this so we can insert a
-   * nsDisplayBackdropRootContainer in the stacking context of the nearest
-   * ancestor that forms a backdrop root.
-   */
-  void SetContainsBackdropFilter(bool aContainsBackdropFilter) {
-    mContainsBackdropFilter = aContainsBackdropFilter;
-  }
-  bool ContainsBackdropFilter() const { return mContainsBackdropFilter; }
-
   DisplayListClipState& ClipState() { return mClipState; }
   const ActiveScrolledRoot* CurrentActiveScrolledRoot() {
     return mCurrentActiveScrolledRoot;
@@ -1739,7 +1737,7 @@ class nsDisplayListBuilder {
                                     const nsRect& aDirtyRect);
 
   friend class nsDisplayBackgroundImage;
-  friend struct RetainedDisplayListBuilder;
+  friend class RetainedDisplayListBuilder;
 
   /**
    * Returns whether a frame acts as an animated geometry root, optionally
@@ -1918,7 +1916,6 @@ class nsDisplayListBuilder {
   bool mPartialBuildFailed;
   bool mIsInActiveDocShell;
   bool mBuildAsyncZoomContainer;
-  bool mContainsBackdropFilter;
   bool mIsRelativeToLayoutViewport;
   bool mUseOverlayScrollbars;
   bool mAlwaysLayerizeScrollbars;
@@ -1926,7 +1923,6 @@ class nsDisplayListBuilder {
   Maybe<float> mVisibleThreshold;
   gfx::CompositorHitTestInfo mCompositorHitTestInfo;
 
-  bool mIsForContent;
   bool mIsReusingStackingContextItems;
 
   // Stores reusable items collected during display list preprocessing.
@@ -2037,10 +2033,8 @@ MOZ_ALWAYS_INLINE T* MakeDisplayItemWithIndex(nsDisplayListBuilder* aBuilder,
              "Container items must have container display item flag set.");
 #endif
 
-  if (aBuilder->IsForPainting() && aBuilder->IsForContent()) {
-    DL_LOGV("Created display item %p (%s) (frame: %p)", item, item->Name(),
-            aFrame);
-  }
+  DL_LOGV("Created display item %p (%s) (frame: %p)", item, item->Name(),
+          aFrame);
 
   return item;
 }
@@ -2106,9 +2100,7 @@ class nsDisplayItem {
    */
   virtual void Destroy(nsDisplayListBuilder* aBuilder) {
     const DisplayItemType type = GetType();
-    if (aBuilder->IsForPainting() && aBuilder->IsForContent()) {
-      DL_LOGV("Destroying display item %p (%s)", this, Name());
-    }
+    DL_LOGV("Destroying display item %p (%s)", this, Name());
 
     if (IsReusedItem()) {
       aBuilder->RemoveReusedDisplayItem(this);
@@ -3058,7 +3050,8 @@ class nsDisplayList {
       MOZ_RELEASE_ASSERT(IsEmpty(), "Nonempty list left over?");
     }
 #endif
-    Clear();
+
+    DeallocateNodes();
   }
 
   nsDisplayList(nsDisplayList&& aOther)
@@ -3151,18 +3144,27 @@ class nsDisplayList {
    * Clears the display list.
    */
   void Clear() {
-    Node* current = mBottom;
-    Node* next = nullptr;
-
-    while (current) {
-      next = current->mNext;
-      Deallocate(current);
-      current = next;
-    }
-
+    DeallocateNodes();
     SetEmpty();
   }
 
+  /**
+   * Creates a shallow copy of this display list to |aDestination|.
+   */
+  void CopyTo(nsDisplayList* aDestination) const {
+    for (auto* item : *this) {
+      aDestination->AppendToTop(item);
+    }
+  }
+
+  /**
+   * Calls the function |aFn| for each display item in the display list.
+   */
+  void ForEach(const std::function<void(nsDisplayItem*)>& aFn) {
+    for (auto* item : *this) {
+      aFn(item);
+    }
+  }
   /**
    * Remove all items from the list and call their destructors.
    */
@@ -3370,7 +3372,18 @@ class nsDisplayList {
     mBuilder->Destroy(DisplayListArenaObjectId::LISTNODE, aNode);
   }
 
-  void SetEmpty() {
+  void DeallocateNodes() {
+    Node* current = mBottom;
+    Node* next = nullptr;
+
+    while (current) {
+      next = current->mNext;
+      Deallocate(current);
+      current = next;
+    }
+  }
+
+  inline void SetEmpty() {
     mBottom = nullptr;
     mTop = nullptr;
     mLength = 0;
@@ -3400,42 +3413,52 @@ class nsDisplayListSet {
    * @return a list where one should place the border and/or background for
    * this frame (everything from steps 1 and 2 of CSS 2.1 appendix E)
    */
-  nsDisplayList* BorderBackground() const { return mBorderBackground; }
+  nsDisplayList* BorderBackground() const { return mLists[0]; }
   /**
    * @return a list where one should place the borders and/or backgrounds for
    * block-level in-flow descendants (step 4 of CSS 2.1 appendix E)
    */
-  nsDisplayList* BlockBorderBackgrounds() const {
-    return mBlockBorderBackgrounds;
-  }
+  nsDisplayList* BlockBorderBackgrounds() const { return mLists[1]; }
   /**
    * @return a list where one should place descendant floats (step 5 of
    * CSS 2.1 appendix E)
    */
-  nsDisplayList* Floats() const { return mFloats; }
+  nsDisplayList* Floats() const { return mLists[2]; }
   /**
    * @return a list where one should place the (pseudo) stacking contexts
    * for descendants of this frame (everything from steps 3, 7 and 8
    * of CSS 2.1 appendix E)
    */
-  nsDisplayList* PositionedDescendants() const { return mPositioned; }
+  nsDisplayList* PositionedDescendants() const { return mLists[3]; }
   /**
    * @return a list where one should place the outlines
    * for this frame and its descendants (step 9 of CSS 2.1 appendix E)
    */
-  nsDisplayList* Outlines() const { return mOutlines; }
+  nsDisplayList* Outlines() const { return mLists[4]; }
   /**
    * @return a list where one should place all other content
    */
-  nsDisplayList* Content() const { return mContent; }
+  nsDisplayList* Content() const { return mLists[5]; }
 
+  const std::array<nsDisplayList*, 6>& Lists() const { return mLists; }
+
+  /**
+   * Clears all the display lists in the set.
+   */
+  void Clear() {
+    for (auto* list : mLists) {
+      MOZ_ASSERT(list);
+      list->Clear();
+    }
+  }
+
+  /**
+   * Deletes all the display items in the set.
+   */
   void DeleteAll(nsDisplayListBuilder* aBuilder) {
-    BorderBackground()->DeleteAll(aBuilder);
-    BlockBorderBackgrounds()->DeleteAll(aBuilder);
-    Floats()->DeleteAll(aBuilder);
-    PositionedDescendants()->DeleteAll(aBuilder);
-    Outlines()->DeleteAll(aBuilder);
-    Content()->DeleteAll(aBuilder);
+    for (auto* list : mLists) {
+      list->DeleteAll(aBuilder);
+    }
   }
 
   nsDisplayListSet(nsDisplayList* aBorderBackground,
@@ -3443,12 +3466,8 @@ class nsDisplayListSet {
                    nsDisplayList* aFloats, nsDisplayList* aContent,
                    nsDisplayList* aPositionedDescendants,
                    nsDisplayList* aOutlines)
-      : mBorderBackground(aBorderBackground),
-        mBlockBorderBackgrounds(aBlockBorderBackgrounds),
-        mFloats(aFloats),
-        mContent(aContent),
-        mPositioned(aPositionedDescendants),
-        mOutlines(aOutlines) {}
+      : mLists{aBorderBackground, aBlockBorderBackgrounds, aFloats,
+               aContent,          aPositionedDescendants,  aOutlines} {}
 
   /**
    * A copy constructor that lets the caller override the BorderBackground
@@ -3456,12 +3475,36 @@ class nsDisplayListSet {
    */
   nsDisplayListSet(const nsDisplayListSet& aLists,
                    nsDisplayList* aBorderBackground)
-      : mBorderBackground(aBorderBackground),
-        mBlockBorderBackgrounds(aLists.BlockBorderBackgrounds()),
-        mFloats(aLists.Floats()),
-        mContent(aLists.Content()),
-        mPositioned(aLists.PositionedDescendants()),
-        mOutlines(aLists.Outlines()) {}
+      : mLists(aLists.mLists) {
+    mLists[0] = aBorderBackground;
+  }
+
+  /**
+   * Returns true if all the display lists in the display list set are empty.
+   */
+  bool IsEmpty() const {
+    for (auto* list : mLists) {
+      if (!list->IsEmpty()) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Calls the function |aFn| for each display item in the display list set.
+   */
+  void ForEach(const std::function<void(nsDisplayItem*)>& aFn) const {
+    for (auto* list : mLists) {
+      list->ForEach(aFn);
+    }
+  }
+
+  /**
+   * Creates a shallow copy of this display list set to |aDestination|.
+   */
+  void CopyTo(const nsDisplayListSet& aDestination) const;
 
   /**
    * Move all display items in our lists to top of the corresponding lists in
@@ -3474,13 +3517,7 @@ class nsDisplayListSet {
   // it.  Don't let us be heap-allocated!
   void* operator new(size_t sz) noexcept(true);
 
- protected:
-  nsDisplayList* mBorderBackground;
-  nsDisplayList* mBlockBorderBackgrounds;
-  nsDisplayList* mFloats;
-  nsDisplayList* mContent;
-  nsDisplayList* mPositioned;
-  nsDisplayList* mOutlines;
+  std::array<nsDisplayList*, 6> mLists;
 };
 
 /**
@@ -3495,12 +3532,6 @@ struct nsDisplayListCollection : public nsDisplayListSet {
                nsDisplayList{aBuilder}, nsDisplayList{aBuilder},
                nsDisplayList{aBuilder}, nsDisplayList{aBuilder}} {}
 
-  /*
-  explicit nsDisplayListCollection(nsDisplayListBuilder* aBuilder,
-                                   nsDisplayList* aBorderBackground)
-      : nsDisplayListSet(aBorderBackground, &mLists[1], &mLists[2], &mLists[3],
-                         &mLists[4], &mLists[5]) {}
-*/
   /**
    * Sort all lists by content order.
    */
@@ -3977,7 +4008,9 @@ class nsDisplaySolidColor : public nsDisplaySolidColorBase {
   nsDisplaySolidColor(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                       const nsRect& aBounds, nscolor aColor,
                       bool aCanBeReused = true)
-      : nsDisplaySolidColorBase(aBuilder, aFrame, aColor), mBounds(aBounds) {
+      : nsDisplaySolidColorBase(aBuilder, aFrame, aColor),
+        mBounds(aBounds),
+        mIsCheckerboardBackground(false) {
     NS_ASSERTION(NS_GET_A(aColor) > 0,
                  "Don't create invisible nsDisplaySolidColors!");
     MOZ_COUNT_CTOR(nsDisplaySolidColor);
@@ -3993,6 +4026,7 @@ class nsDisplaySolidColor : public nsDisplaySolidColorBase {
   nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) const override;
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   void WriteDebugInfo(std::stringstream& aStream) override;
+  void SetIsCheckerboardBackground() { mIsCheckerboardBackground = true; }
   bool CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
@@ -4010,6 +4044,7 @@ class nsDisplaySolidColor : public nsDisplaySolidColorBase {
 
  private:
   nsRect mBounds;
+  bool mIsCheckerboardBackground;
   Maybe<int32_t> mOverrideZIndex;
 };
 
@@ -5042,7 +5077,8 @@ class nsDisplayOpacity : public nsDisplayWrapList {
   nsDisplayOpacity(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                    nsDisplayList* aList,
                    const ActiveScrolledRoot* aActiveScrolledRoot,
-                   bool aForEventsOnly, bool aNeedsActiveLayer);
+                   bool aForEventsOnly, bool aNeedsActiveLayer,
+                   bool aWrapsBackdropFilter);
 
   nsDisplayOpacity(nsDisplayListBuilder* aBuilder,
                    const nsDisplayOpacity& aOther)
@@ -5050,7 +5086,8 @@ class nsDisplayOpacity : public nsDisplayWrapList {
         mOpacity(aOther.mOpacity),
         mForEventsOnly(aOther.mForEventsOnly),
         mNeedsActiveLayer(aOther.mNeedsActiveLayer),
-        mChildOpacityState(ChildOpacityState::Unknown) {
+        mChildOpacityState(ChildOpacityState::Unknown),
+        mWrapsBackdropFilter(aOther.mWrapsBackdropFilter) {
     MOZ_COUNT_CTOR(nsDisplayOpacity);
     // We should not try to merge flattened opacities.
     MOZ_ASSERT(aOther.mChildOpacityState != ChildOpacityState::Applied);
@@ -5159,6 +5196,7 @@ class nsDisplayOpacity : public nsDisplayWrapList {
 #else
   ChildOpacityState mChildOpacityState;
 #endif
+  bool mWrapsBackdropFilter;
 };
 
 class nsDisplayBlendMode : public nsDisplayWrapList {
@@ -5503,8 +5541,6 @@ class nsDisplaySubDocument : public nsDisplayOwnLayer {
 
   nsIFrame* FrameForInvalidation() const override;
   void RemoveFrame(nsIFrame* aFrame) override;
-
-  void Disown();
 
  protected:
   ViewID mScrollParentId;
@@ -5871,11 +5907,13 @@ class nsDisplayMasksAndClipPaths : public nsDisplayEffectsBase {
  public:
   nsDisplayMasksAndClipPaths(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                              nsDisplayList* aList,
-                             const ActiveScrolledRoot* aActiveScrolledRoot);
+                             const ActiveScrolledRoot* aActiveScrolledRoot,
+                             bool aWrapsBackdropFilter);
   nsDisplayMasksAndClipPaths(nsDisplayListBuilder* aBuilder,
                              const nsDisplayMasksAndClipPaths& aOther)
       : nsDisplayEffectsBase(aBuilder, aOther),
-        mDestRects(aOther.mDestRects.Clone()) {
+        mDestRects(aOther.mDestRects.Clone()),
+        mWrapsBackdropFilter(aOther.mWrapsBackdropFilter) {
     MOZ_COUNT_CTOR(nsDisplayMasksAndClipPaths);
   }
 
@@ -5940,41 +5978,16 @@ class nsDisplayMasksAndClipPaths : public nsDisplayEffectsBase {
   NS_DISPLAY_ALLOW_CLONING()
 
   nsTArray<nsRect> mDestRects;
-};
-
-class nsDisplayBackdropRootContainer : public nsDisplayWrapList {
- public:
-  nsDisplayBackdropRootContainer(nsDisplayListBuilder* aBuilder,
-                                 nsIFrame* aFrame, nsDisplayList* aList,
-                                 const ActiveScrolledRoot* aActiveScrolledRoot)
-      : nsDisplayWrapList(aBuilder, aFrame, aList, aActiveScrolledRoot, true) {
-    MOZ_COUNT_CTOR(nsDisplayBackdropRootContainer);
-  }
-
-  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayBackdropRootContainer)
-
-  NS_DISPLAY_DECL_NAME("BackdropRootContainer", TYPE_BACKDROP_ROOT_CONTAINER)
-
-  void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
-
-  bool CreateWebRenderCommands(
-      wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
-      const StackingContextHelper& aSc,
-      layers::RenderRootStateManager* aManager,
-      nsDisplayListBuilder* aDisplayListBuilder) override;
-
-  bool ShouldFlattenAway(nsDisplayListBuilder* aBuilder) override {
-    return !aBuilder->IsPaintingForWebRender();
-  }
-
-  bool CreatesStackingContextHelper() override { return true; }
+  bool mWrapsBackdropFilter;
 };
 
 class nsDisplayBackdropFilters : public nsDisplayWrapList {
  public:
   nsDisplayBackdropFilters(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                           nsDisplayList* aList, const nsRect& aBackdropRect)
+                           nsDisplayList* aList, const nsRect& aBackdropRect,
+                           nsIFrame* aStyleFrame)
       : nsDisplayWrapList(aBuilder, aFrame, aList),
+        mStyle(aFrame == aStyleFrame ? nullptr : aStyleFrame->Style()),
         mBackdropRect(aBackdropRect) {
     MOZ_COUNT_CTOR(nsDisplayBackdropFilters);
   }
@@ -5990,16 +6003,16 @@ class nsDisplayBackdropFilters : public nsDisplayWrapList {
       nsDisplayListBuilder* aDisplayListBuilder) override;
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
 
-  static bool CanCreateWebRenderCommands(nsDisplayListBuilder* aBuilder,
-                                         nsIFrame* aFrame);
-
   bool ShouldFlattenAway(nsDisplayListBuilder* aBuilder) override {
     return !aBuilder->IsPaintingForWebRender();
   }
 
   bool CreatesStackingContextHelper() override { return true; }
 
+  nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) const override;
+
  private:
+  RefPtr<ComputedStyle> mStyle;
   nsRect mBackdropRect;
 };
 
@@ -6013,12 +6026,15 @@ class nsDisplayBackdropFilters : public nsDisplayWrapList {
 class nsDisplayFilters : public nsDisplayEffectsBase {
  public:
   nsDisplayFilters(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                   nsDisplayList* aList);
+                   nsDisplayList* aList, nsIFrame* aStyleFrame,
+                   bool aWrapsBackdropFilter);
 
   nsDisplayFilters(nsDisplayListBuilder* aBuilder,
                    const nsDisplayFilters& aOther)
       : nsDisplayEffectsBase(aBuilder, aOther),
-        mEffectsBounds(aOther.mEffectsBounds) {
+        mStyle(aOther.mStyle),
+        mEffectsBounds(aOther.mEffectsBounds),
+        mWrapsBackdropFilter(aOther.mWrapsBackdropFilter) {
     MOZ_COUNT_CTOR(nsDisplayFilters);
   }
 
@@ -6082,9 +6098,11 @@ class nsDisplayFilters : public nsDisplayEffectsBase {
  private:
   NS_DISPLAY_ALLOW_CLONING()
 
+  RefPtr<ComputedStyle> mStyle;
   // relative to mFrame
   nsRect mEffectsBounds;
   nsRect mVisibleRect;
+  bool mWrapsBackdropFilter;
 };
 
 /* A display item that applies a transformation to all of its descendant
@@ -6237,7 +6255,6 @@ class nsDisplayTransform : public nsPaintedDisplayItem {
 
   float GetHitDepthAtPoint(nsDisplayListBuilder* aBuilder,
                            const nsPoint& aPoint);
-
   /**
    * TransformRect takes in as parameters a rectangle (in aFrame's coordinate
    * space) and returns the smallest rectangle (in aFrame's coordinate space)
@@ -6264,6 +6281,10 @@ class nsDisplayTransform : public nsPaintedDisplayItem {
   static bool UntransformRect(const nsRect& aTransformedBounds,
                               const nsRect& aChildBounds,
                               const nsIFrame* aFrame, nsRect* aOutRect);
+  static bool UntransformRect(const nsRect& aTransformedBounds,
+                              const nsRect& aChildBounds,
+                              const Matrix4x4& aMatrix, float aAppUnitsPerPixel,
+                              nsRect* aOutRect);
 
   bool UntransformRect(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
                        nsRect* aOutRect) const;
@@ -6347,6 +6368,8 @@ class nsDisplayTransform : public nsPaintedDisplayItem {
     INCLUDE_PRESERVE3D_ANCESTORS = 1 << 1,
     INCLUDE_PERSPECTIVE = 1 << 2,
   };
+  static constexpr uint32_t kTransformRectFlags =
+      INCLUDE_PERSPECTIVE | OFFSET_BY_ORIGIN | INCLUDE_PRESERVE3D_ANCESTORS;
   static Matrix4x4 GetResultingTransformMatrix(const nsIFrame* aFrame,
                                                const nsPoint& aOrigin,
                                                float aAppUnitsPerPixel,

@@ -39,6 +39,9 @@ use style_traits::{SpecifiedValueInfo, StyleParseErrorKind, ToCss};
 pub type Image =
     generic::Image<Gradient, MozImageRect, SpecifiedImageUrl, Color, Percentage, Resolution>;
 
+// Images should remain small, see https://github.com/servo/servo/pull/18430
+size_of_test!(Image, 16);
+
 /// Specified values for a CSS gradient.
 /// <https://drafts.csswg.org/css-images/#gradients>
 pub type Gradient = generic::Gradient<
@@ -718,12 +721,12 @@ impl Gradient {
         if items.is_empty() {
             items = vec![
                 generic::GradientItem::ComplexColorStop {
-                    color: Color::transparent().into(),
-                    position: Percentage::zero().into(),
+                    color: Color::transparent(),
+                    position: LengthPercentage::zero_percent(),
                 },
                 generic::GradientItem::ComplexColorStop {
-                    color: Color::transparent().into(),
-                    position: Percentage::hundred().into(),
+                    color: Color::transparent(),
+                    position: LengthPercentage::hundred_percent(),
                 },
             ];
         } else if items.len() == 1 {

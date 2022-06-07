@@ -8,6 +8,7 @@ const EXPORTED_SYMBOLS = ["QuickSuggestTestUtils"];
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   CONTEXTUAL_SERVICES_PING_TYPES:
@@ -17,7 +18,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   ExperimentManager: "resource://nimbus/lib/ExperimentManager.jsm",
   NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
   PartnerLinkAttribution: "resource:///modules/PartnerLinkAttribution.jsm",
-  Services: "resource://gre/modules/Services.jsm",
   sinon: "resource://testing-common/Sinon.jsm",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.jsm",
   TestUtils: "resource://testing-common/TestUtils.jsm",
@@ -194,7 +194,8 @@ class QSTestUtils {
     this.registerCleanupFunction?.(cleanup);
 
     if (results) {
-      UrlbarQuickSuggest._addResults(results);
+      UrlbarQuickSuggest._resultsByKeyword.clear();
+      await UrlbarQuickSuggest._addResults(results);
     }
     if (config) {
       this.setConfig(config);

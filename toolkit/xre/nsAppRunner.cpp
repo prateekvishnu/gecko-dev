@@ -698,7 +698,7 @@ nsIXULRuntime::ContentWin32kLockdownState GetLiveWin32kLockdownState() {
   // HasUserValue The Pref functions can only be called on main thread
   MOZ_ASSERT(NS_IsMainThread());
   mozilla::EnsureWin32kInitialized();
-  gfx::gfxVars::Initialize();
+  gfxPlatform::GetPlatform();
 
   if (gSafeMode) {
     return nsIXULRuntime::ContentWin32kLockdownState::DisabledBySafeMode;
@@ -1887,15 +1887,15 @@ nsXULAppInfo::RemoveCrashReportAnnotation(const nsACString& key) {
 }
 
 NS_IMETHODIMP
-nsXULAppInfo::IsAnnotationWhitelistedForPing(const nsACString& aValue,
-                                             bool* aIsWhitelisted) {
+nsXULAppInfo::IsAnnotationAllowlistedForPing(const nsACString& aValue,
+                                             bool* aIsAllowlisted) {
   CrashReporter::Annotation annotation;
 
   if (!AnnotationFromString(annotation, PromiseFlatCString(aValue).get())) {
     return NS_ERROR_INVALID_ARG;
   }
 
-  *aIsWhitelisted = CrashReporter::IsAnnotationWhitelistedForPing(annotation);
+  *aIsAllowlisted = CrashReporter::IsAnnotationAllowlistedForPing(annotation);
 
   return NS_OK;
 }
@@ -1985,10 +1985,7 @@ nsXULAppInfo::Callback(nsISupports* aData) {
 
 static const nsXULAppInfo kAppInfo;
 namespace mozilla {
-nsresult AppInfoConstructor(nsISupports* aOuter, REFNSIID aIID,
-                            void** aResult) {
-  NS_ENSURE_NO_AGGREGATION(aOuter);
-
+nsresult AppInfoConstructor(REFNSIID aIID, void** aResult) {
   return const_cast<nsXULAppInfo*>(&kAppInfo)->QueryInterface(aIID, aResult);
 }
 }  // namespace mozilla
@@ -2119,15 +2116,9 @@ nsSingletonFactory::nsSingletonFactory(nsISupports* aSingleton)
 NS_IMPL_ISUPPORTS(nsSingletonFactory, nsIFactory)
 
 NS_IMETHODIMP
-nsSingletonFactory::CreateInstance(nsISupports* aOuter, const nsIID& aIID,
-                                   void** aResult) {
-  NS_ENSURE_NO_AGGREGATION(aOuter);
-
+nsSingletonFactory::CreateInstance(const nsIID& aIID, void** aResult) {
   return mSingleton->QueryInterface(aIID, aResult);
 }
-
-NS_IMETHODIMP
-nsSingletonFactory::LockFactory(bool) { return NS_OK; }
 
 /**
  * Set our windowcreator on the WindowWatcher service.
@@ -3041,14 +3032,6 @@ static nsresult SelectProfile(nsToolkitProfileService* aProfileSvc,
   if (EnvHasValue("MOZ_RESET_PROFILE_RESTART")) {
     gDoProfileReset = true;
     gDoMigration = true;
-    SaveToEnv("MOZ_RESET_PROFILE_RESTART=");
-    // We only want to restore the previous session if the profile refresh was
-    // triggered by user. And if it was a user-triggered profile refresh
-    // through, say, the safeMode dialog or the troubleshooting page, the
-    // MOZ_RESET_PROFILE_RESTART env variable would be set. Hence we set
-    // MOZ_RESET_PROFILE_MIGRATE_SESSION here so that Firefox profile migrator
-    // would migrate old session data later.
-    SaveToEnv("MOZ_RESET_PROFILE_MIGRATE_SESSION=1");
   }
 
   // reset-profile and migration args need to be checked before any profiles are
@@ -5087,6 +5070,16 @@ int XREMain::XRE_mainStartup(bool* aExitFlag) {
   }
 
   if (gDoProfileReset) {
+    if (EnvHasValue("MOZ_RESET_PROFILE_RESTART")) {
+      SaveToEnv("MOZ_RESET_PROFILE_RESTART=");
+      // We only want to restore the previous session if the profile refresh was
+      // triggered by user. And if it was a user-triggered profile refresh
+      // through, say, the safeMode dialog or the troubleshooting page, the
+      // MOZ_RESET_PROFILE_RESTART env variable would be set. Hence we set
+      // MOZ_RESET_PROFILE_MIGRATE_SESSION here so that Firefox profile migrator
+      // would migrate old session data later.
+      SaveToEnv("MOZ_RESET_PROFILE_MIGRATE_SESSION=1");
+    }
     // Unlock the source profile.
     mProfileLock->Unlock();
 
@@ -5490,7 +5483,7 @@ nsresult XREMain::XRE_mainRun() {
 
     // As FilePreferences need the profile directory, we must initialize right
     // here.
-    mozilla::FilePreferences::InitDirectoriesWhitelist();
+    mozilla::FilePreferences::InitDirectoriesAllowlist();
     mozilla::FilePreferences::InitPrefs();
 
     OverrideDefaultLocaleIfNeeded();
@@ -5885,6 +5878,15 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
   mAppData->sandboxPermissionsService = aConfig.sandboxPermissionsService;
 #endif
 
+  // Once we unset the exception handler, we lose the ability to properly
+  // detect hangs -- they show up as crashes.  We do this as late as possible.
+  // In particular, after ProcessRuntime is destroyed on Windows.
+  auto unsetExceptionHandler = MakeScopeExit([&] {
+    if (mAppData->flags & NS_XRE_ENABLE_CRASH_REPORTER)
+      return CrashReporter::UnsetExceptionHandler();
+    return NS_OK;
+  });
+
   mozilla::IOInterposerInit ioInterposerGuard;
 
 #if defined(XP_WIN)
@@ -5972,9 +5974,6 @@ int XREMain::XRE_main(int argc, char* argv[], const BootstrapConfig& aConfig) {
 #  endif
   }
 #endif
-
-  if (mAppData->flags & NS_XRE_ENABLE_CRASH_REPORTER)
-    CrashReporter::UnsetExceptionHandler();
 
   XRE_DeinitCommandLine();
 
