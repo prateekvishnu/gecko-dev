@@ -46,7 +46,6 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventStateManager.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/MouseEvents.h"
@@ -1110,11 +1109,9 @@ void nsMenuPopupFrame::HidePopup(bool aDeselectMenu, nsPopupState aNewState) {
   // current hover state, we should clear it manually. This code may not the
   // best solution, but we can leave it here until we find the better approach.
   NS_ASSERTION(mContent->IsElement(), "How do we have a non-element?");
-  EventStates state = mContent->AsElement()->State();
-
-  if (state.HasState(NS_EVENT_STATE_HOVER)) {
+  if (mContent->AsElement()->State().HasState(dom::ElementState::HOVER)) {
     EventStateManager* esm = PresContext()->EventStateManager();
-    esm->SetContentState(nullptr, NS_EVENT_STATE_HOVER);
+    esm->SetContentState(nullptr, dom::ElementState::HOVER);
   }
 
   nsMenuFrame* menuFrame = do_QueryFrame(GetParent());
@@ -2548,14 +2545,13 @@ void nsMenuPopupFrame::CreatePopupView() {
   // Create a view
   nsView* parentView = viewManager->GetRootView();
   nsViewVisibility visibility = nsViewVisibility_kHide;
-  int32_t zIndex = INT32_MAX;
-  bool autoZIndex = false;
 
   NS_ASSERTION(parentView, "no parent view");
 
   // Create a view
   nsView* view = viewManager->CreateView(GetRect(), parentView, visibility);
-  viewManager->SetViewZIndex(view, autoZIndex, zIndex);
+  auto zIndex = ZIndex();
+  viewManager->SetViewZIndex(view, zIndex.isNothing(), zIndex.valueOr(0));
   // XXX put view last in document order until we can do better
   viewManager->InsertChild(parentView, view, nullptr, true);
 
