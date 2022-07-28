@@ -5,7 +5,7 @@
 @namespace html url("http://www.w3.org/1999/xhtml");
 
 :root {
-  --toolbarbutton-icon-fill-attention: -moz-accent-color;
+  --toolbarbutton-icon-fill-attention: AccentColor;
   --warning-icon-bgcolor: #FFA436;
 }
 
@@ -393,6 +393,10 @@ toolbar {
   animation-name: overflow-animation;
   animation-timing-function: steps(52);
   animation-duration: calc(52 * 16.667ms);
+}
+
+#unified-extensions-button {
+  list-style-image: url("chrome://mozapps/skin/extensions/extension.svg");
 }
 
 #email-link-button {

@@ -1054,6 +1054,53 @@ inline AspectRatio StyleAspectRatio::ToLayoutRatio() const {
                     : AspectRatio();
 }
 
+inline void StyleFontWeight::ToString(nsACString& aString) const {
+  Servo_FontWeight_ToCss(this, &aString);
+}
+
+inline void StyleFontStretch::ToString(nsACString& aString) const {
+  Servo_FontStretch_ToCss(this, &aString);
+}
+
+inline void StyleFontStyle::ToString(nsACString& aString) const {
+  Servo_FontStyle_ToCss(this, &aString);
+}
+
+inline bool StyleFontWeight::IsBold() const { return *this >= BOLD_THRESHOLD; }
+
+inline bool StyleFontStyle::IsItalic() const { return *this == ITALIC; }
+
+inline bool StyleFontStyle::IsOblique() const {
+  return !IsItalic() && !IsNormal();
+}
+
+inline float StyleFontStyle::ObliqueAngle() const { return ToFloat(); }
+
+using FontStretch = StyleFontStretch;
+using FontSlantStyle = StyleFontStyle;
+using FontWeight = StyleFontWeight;
+
+template <>
+inline double StyleComputedTimingFunction::At(double aPortion,
+                                              bool aBeforeFlag) const {
+  return Servo_EasingFunctionAt(
+      this, aPortion,
+      aBeforeFlag ? StyleEasingBeforeFlag::Set : StyleEasingBeforeFlag::Unset);
+}
+
+template <>
+inline void StyleComputedTimingFunction::AppendToString(
+    nsACString& aOut) const {
+  return Servo_SerializeEasing(this, &aOut);
+}
+
+template <>
+inline double StyleComputedTimingFunction::GetPortion(
+    const Maybe<StyleComputedTimingFunction>& aFn, double aPortion,
+    bool aBeforeFlag) {
+  return aFn ? aFn->At(aPortion, aBeforeFlag) : aPortion;
+}
+
 }  // namespace mozilla
 
 #endif

@@ -24,7 +24,6 @@
 #include "frontend/SharedContext.h"
 #include "frontend/StencilXdr.h"        // XDRStencilEncoder, XDRStencilDecoder
 #include "gc/AllocKind.h"               // gc::AllocKind
-#include "gc/Rooting.h"                 // RootedAtom
 #include "gc/Tracer.h"                  // TraceNullableRoot
 #include "js/CallArgs.h"                // JSNative
 #include "js/CompileOptions.h"          // JS::DecodeOptions
@@ -37,6 +36,7 @@
 #include "vm/BigIntType.h"   // ParseBigIntLiteral, BigIntLiteralIsZero
 #include "vm/BindingKind.h"  // BindingKind
 #include "vm/EnvironmentObject.h"
+#include "vm/ErrorContext.h"
 #include "vm/GeneratorAndAsyncKind.h"  // GeneratorKind, FunctionAsyncKind
 #include "vm/HelperThreads.h"          // js::StartOffThreadParseScript
 #include "vm/HelperThreadState.h"
@@ -795,7 +795,7 @@ bool CompilationInput::initScriptSource(JSContext* cx) {
 }
 
 bool CompilationInput::initForStandaloneFunctionInNonSyntacticScope(
-    JSContext* cx, HandleScope functionEnclosingScope) {
+    JSContext* cx, Handle<Scope*> functionEnclosingScope) {
   MOZ_ASSERT(!functionEnclosingScope->as<GlobalScope>().isSyntactic());
 
   target = CompilationTarget::StandaloneFunctionInNonSyntacticScope;
@@ -1148,14 +1148,14 @@ void JS::InstantiationStorage::trace(JSTracer* trc) {
 
 RegExpObject* RegExpStencil::createRegExp(
     JSContext* cx, const CompilationAtomCache& atomCache) const {
-  RootedAtom atom(cx, atomCache.getExistingAtomAt(cx, atom_));
+  Rooted<JSAtom*> atom(cx, atomCache.getExistingAtomAt(cx, atom_));
   return RegExpObject::createSyntaxChecked(cx, atom, flags(), TenuredObject);
 }
 
 RegExpObject* RegExpStencil::createRegExpAndEnsureAtom(
     JSContext* cx, ParserAtomsTable& parserAtoms,
     CompilationAtomCache& atomCache) const {
-  RootedAtom atom(cx, parserAtoms.toJSAtom(cx, atom_, atomCache));
+  Rooted<JSAtom*> atom(cx, parserAtoms.toJSAtom(cx, atom_, atomCache));
   if (!atom) {
     return nullptr;
   }
@@ -1192,12 +1192,12 @@ Scope* ScopeStencil::enclosingExistingScope(
 Scope* ScopeStencil::createScope(JSContext* cx, CompilationInput& input,
                                  CompilationGCOutput& gcOutput,
                                  BaseParserScopeData* baseScopeData) const {
-  RootedScope enclosingScope(cx, enclosingExistingScope(input, gcOutput));
+  Rooted<Scope*> enclosingScope(cx, enclosingExistingScope(input, gcOutput));
   return createScope(cx, input.atomCache, enclosingScope, baseScopeData);
 }
 
 Scope* ScopeStencil::createScope(JSContext* cx, CompilationAtomCache& atomCache,
-                                 HandleScope enclosingScope,
+                                 Handle<Scope*> enclosingScope,
                                  BaseParserScopeData* baseScopeData) const {
   switch (kind()) {
     case ScopeKind::Function: {
@@ -1317,7 +1317,7 @@ static bool CreateLazyScript(JSContext* cx,
 // NOTE: Keep this in sync with `js::NewFunctionWithProto`.
 static JSFunction* CreateFunctionFast(JSContext* cx,
                                       CompilationAtomCache& atomCache,
-                                      HandleShape shape,
+                                      Handle<Shape*> shape,
                                       const ScriptStencil& script,
                                       const ScriptStencilExtra& scriptExtra) {
   MOZ_ASSERT(
@@ -1380,7 +1380,7 @@ static JSFunction* CreateFunction(JSContext* cx,
 
   JSNative maybeNative = isAsmJS ? InstantiateAsmJS : nullptr;
 
-  RootedAtom displayAtom(cx);
+  Rooted<JSAtom*> displayAtom(cx);
   if (script.functionAtom) {
     displayAtom.set(atomCache.getExistingAtomAt(cx, script.functionAtom));
     MOZ_ASSERT(displayAtom);
@@ -1465,14 +1465,16 @@ static bool InstantiateFunctions(JSContext* cx, CompilationAtomCache& atomCache,
   // Most JSFunctions will be have the same Shape so we can compute it now to
   // allow fast object creation. Generators / Async will use the slow path
   // instead.
-  RootedShape functionShape(cx, GlobalObject::getFunctionShapeWithDefaultProto(
-                                    cx, /* extended = */ false));
+  Rooted<Shape*> functionShape(cx,
+                               GlobalObject::getFunctionShapeWithDefaultProto(
+                                   cx, /* extended = */ false));
   if (!functionShape) {
     return false;
   }
 
-  RootedShape extendedShape(cx, GlobalObject::getFunctionShapeWithDefaultProto(
-                                    cx, /* extended = */ true));
+  Rooted<Shape*> extendedShape(cx,
+                               GlobalObject::getFunctionShapeWithDefaultProto(
+                                   cx, /* extended = */ true));
   if (!extendedShape) {
     return false;
   }
@@ -1493,9 +1495,9 @@ static bool InstantiateFunctions(JSContext* cx, CompilationAtomCache& atomCache,
 
     JSFunction* fun;
     if (useFastPath) {
-      HandleShape shape = scriptStencil.functionFlags.isExtended()
-                              ? extendedShape
-                              : functionShape;
+      Handle<Shape*> shape = scriptStencil.functionFlags.isExtended()
+                                 ? extendedShape
+                                 : functionShape;
       fun =
           CreateFunctionFast(cx, atomCache, shape, scriptStencil, scriptExtra);
     } else {
@@ -2059,7 +2061,7 @@ JSScript* CompilationStencil::instantiateSelfHostedTopLevelForRealm(
 
 JSFunction* CompilationStencil::instantiateSelfHostedLazyFunction(
     JSContext* cx, CompilationAtomCache& atomCache, ScriptIndex index,
-    HandleAtom name) {
+    Handle<JSAtom*> name) {
   GeneratorKind generatorKind = scriptExtra[index].immutableFlags.hasFlag(
                                     ImmutableScriptFlagsEnum::IsGenerator)
                                     ? GeneratorKind::Generator
@@ -2069,7 +2071,7 @@ JSFunction* CompilationStencil::instantiateSelfHostedLazyFunction(
                                     ? FunctionAsyncKind::AsyncFunction
                                     : FunctionAsyncKind::SyncFunction;
 
-  RootedAtom funName(cx);
+  Rooted<JSAtom*> funName(cx);
   if (scriptData[index].hasSelfHostedCanonicalName()) {
     // SetCanonicalName was used to override the name.
     funName = atomCache.getExistingAtomAt(
@@ -2164,7 +2166,7 @@ bool CompilationStencil::delazifySelfHostedFunction(
   //       the CompilationInput between different realms.
   for (size_t i = scopeIndex; i < scopeLimit; i++) {
     ScopeStencil& data = scopeData[i];
-    RootedScope enclosingScope(
+    Rooted<Scope*> enclosingScope(
         cx, data.hasEnclosing() ? gcOutput.get().getScope(data.enclosing())
                                 : &cx->global()->emptyGlobalScope());
 
@@ -4687,9 +4689,10 @@ static already_AddRefed<JS::Stencil> CompileGlobalScriptToStencilImpl(
   ScopeKind scopeKind =
       options.nonSyntacticScope ? ScopeKind::NonSyntactic : ScopeKind::Global;
 
+  MainThreadErrorContext ec(cx);
   Rooted<CompilationInput> input(cx, CompilationInput(options));
   RefPtr<JS::Stencil> stencil = js::frontend::CompileGlobalScriptToStencil(
-      cx, input.get(), srcBuf, scopeKind);
+      cx, &ec, cx->tempLifoAlloc(), input.get(), srcBuf, scopeKind);
   if (!stencil) {
     return nullptr;
   }
@@ -4717,9 +4720,10 @@ static already_AddRefed<JS::Stencil> CompileModuleScriptToStencilImpl(
   JS::CompileOptions options(cx, optionsInput);
   options.setModule();
 
+  MainThreadErrorContext ec(cx);
   Rooted<CompilationInput> input(cx, CompilationInput(options));
   RefPtr<JS::Stencil> stencil =
-      js::frontend::ParseModuleToStencil(cx, input.get(), srcBuf);
+      js::frontend::ParseModuleToStencil(cx, &ec, input.get(), srcBuf);
   if (!stencil) {
     return nullptr;
   }

@@ -829,7 +829,9 @@ impl BatchBuilder {
         surface_spatial_node_index: SpatialNodeIndex,
         z_generator: &mut ZBufferIdGenerator,
     ) {
-        let brush_flags = if prim_instance.anti_aliased {
+        let is_anti_aliased = ctx.data_stores.prim_has_anti_aliasing(prim_instance);
+
+        let brush_flags = if is_anti_aliased {
             BrushFlags::FORCE_AA
         } else {
             BrushFlags::empty()
@@ -848,8 +850,15 @@ impl BatchBuilder {
             }
         };
 
-        #[cfg(debug_assertions)] //TODO: why is this needed?
-        debug_assert_eq!(prim_instance.prepared_frame_id, render_tasks.frame_id());
+        // If this primitive is a backdrop, that means that it is known to cover
+        // the entire picture cache background. In that case, the renderer will
+        // use the backdrop color as a clear color, and so we can drop this
+        // primitive and any prior primitives from the batch lists for this
+        // picture cache slice.
+        if vis_flags.contains(PrimitiveVisibilityFlags::IS_BACKDROP) {
+            self.clear_batches();
+            return;
+        }
 
         let transform_id = transforms
             .get_id(
@@ -865,16 +874,6 @@ impl BatchBuilder {
         let prim_info = &prim_instance.vis;
         let bounding_rect = &prim_info.clip_chain.pic_coverage_rect;
 
-        // If this primitive is a backdrop, that means that it is known to cover
-        // the entire picture cache background. In that case, the renderer will
-        // use the backdrop color as a clear color, and so we can drop this
-        // primitive and any prior primitives from the batch lists for this
-        // picture cache slice.
-        if vis_flags.contains(PrimitiveVisibilityFlags::IS_BACKDROP) {
-            self.clear_batches();
-            return;
-        }
-
         let z_id = z_generator.next();
 
         let prim_rect = ctx.data_stores.get_local_prim_rect(
@@ -888,7 +887,7 @@ impl BatchBuilder {
             batch_features |= BatchFeatures::REPETITION;
         }
 
-        if transform_kind != TransformedRectKind::AxisAligned || prim_instance.anti_aliased {
+        if transform_kind != TransformedRectKind::AxisAligned || is_anti_aliased {
             batch_features |= BatchFeatures::ANTIALIASING;
         }
 
@@ -918,7 +917,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -976,7 +975,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     specified_blend_mode
                 } else {
@@ -985,7 +984,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -1049,7 +1048,7 @@ impl BatchBuilder {
                         min: prim_rect.min - run.reference_frame_relative_offset,
                         max: run.snapped_reference_frame_relative_offset.to_point(),
                     },
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -1312,7 +1311,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -1321,7 +1320,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -1363,7 +1362,7 @@ impl BatchBuilder {
                         let brush_flags = brush_flags | BrushFlags::PERSPECTIVE_INTERPOLATION;
 
                         let surface = &ctx.surfaces[raster_config.surface_index.0];
-                        let mut local_clip_rect = prim_info.combined_local_clip_rect;
+                        let mut local_clip_rect = prim_info.clip_chain.local_clip_rect;
 
                         // If we are drawing with snapping enabled, form a simple transform that just applies
                         // the scale / translation from the raster transform. Otherwise, in edge cases where the
@@ -1392,7 +1391,7 @@ impl BatchBuilder {
                             let transform = ScaleOffset::new(sx, sy, tx, ty);
 
                             let raster_clip_rect = map_local_to_raster
-                                .map(&prim_info.combined_local_clip_rect)
+                                .map(&prim_info.clip_chain.local_clip_rect)
                                 .unwrap();
                             local_clip_rect = transform.unmap_rect(&raster_clip_rect);
 
@@ -1409,7 +1408,7 @@ impl BatchBuilder {
                         let mut is_opaque = prim_info.clip_task_index == ClipTaskIndex::INVALID
                             && surface.is_opaque
                             && transform_kind == TransformedRectKind::AxisAligned
-                            && !prim_instance.anti_aliased;
+                            && !is_anti_aliased;
 
                         let pic_task_id = picture.primary_render_task_id.unwrap();
 
@@ -1927,7 +1926,7 @@ impl BatchBuilder {
 
                                         let prim_header = PrimitiveHeader {
                                             local_rect: prim_rect,
-                                            local_clip_rect: prim_info.combined_local_clip_rect,
+                                            local_clip_rect: prim_info.clip_chain.local_clip_rect,
                                             specific_prim_address: GpuCacheAddress::INVALID,
                                             transform_id: transforms
                                                 .get_id(
@@ -2122,7 +2121,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2131,7 +2130,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -2177,7 +2176,7 @@ impl BatchBuilder {
                 let blend_mode = if !prim_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2201,7 +2200,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -2288,7 +2287,7 @@ impl BatchBuilder {
                 let blend_mode = if !prim_common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2306,7 +2305,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };
@@ -2350,7 +2349,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     match image_data.alpha_type {
                         AlphaType::PremultipliedAlpha => BlendMode::PremultipliedAlpha,
@@ -2395,7 +2394,7 @@ impl BatchBuilder {
 
                     let prim_header = PrimitiveHeader {
                         local_rect: prim_rect,
-                        local_clip_rect: prim_info.combined_local_clip_rect,
+                        local_clip_rect: prim_info.clip_chain.local_clip_rect,
                         specific_prim_address: prim_cache_address,
                         transform_id,
                     };
@@ -2494,7 +2493,7 @@ impl BatchBuilder {
 
                 let mut prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: GpuCacheAddress::INVALID,
                     transform_id,
                 };
@@ -2502,7 +2501,7 @@ impl BatchBuilder {
                 let blend_mode = if !prim_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2599,7 +2598,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: gpu_cache.get_address(&common_data.gpu_cache_handle),
                     transform_id,
                 };
@@ -2614,7 +2613,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2716,7 +2715,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: gpu_cache.get_address(&common_data.gpu_cache_handle),
                     transform_id,
                 };
@@ -2732,7 +2731,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2835,7 +2834,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: gpu_cache.get_address(&common_data.gpu_cache_handle),
                     transform_id,
                 };
@@ -2851,7 +2850,7 @@ impl BatchBuilder {
                 let blend_mode = if !common_data.opacity.is_opaque ||
                     prim_info.clip_task_index != ClipTaskIndex::INVALID ||
                     transform_kind == TransformedRectKind::Complex ||
-                    prim_instance.anti_aliased
+                    is_anti_aliased
                 {
                     BlendMode::PremultipliedAlpha
                 } else {
@@ -2944,7 +2943,7 @@ impl BatchBuilder {
 
                 let prim_header = PrimitiveHeader {
                     local_rect: prim_rect,
-                    local_clip_rect: prim_info.combined_local_clip_rect,
+                    local_clip_rect: prim_info.clip_chain.local_clip_rect,
                     specific_prim_address: prim_cache_address,
                     transform_id,
                 };

@@ -133,7 +133,6 @@
 #include "SystemTimeConverter.h"
 #include "WinTaskbar.h"
 #include "WidgetUtils.h"
-#include "WinContentSystemParameters.h"
 #include "WinWindowOcclusionTracker.h"
 #include "nsIWidgetListener.h"
 #include "mozilla/dom/Document.h"
@@ -261,7 +260,6 @@ using namespace mozilla::plugins;
  **************************************************************/
 static const wchar_t kUser32LibName[] = L"user32.dll";
 
-bool nsWindow::sDropShadowEnabled = true;
 uint32_t nsWindow::sInstanceCount = 0;
 bool nsWindow::sSwitchKeyboardLayout = false;
 BOOL nsWindow::sIsOleInitialized = FALSE;
@@ -672,10 +670,16 @@ static bool IsMouseVanishKey(WPARAM aVirtKey) {
     case VK_RIGHT:
     case VK_PRIOR:  // PgUp
     case VK_NEXT:   // PgDn
+    case 0xff:      // Undefined.  May be sent for Fn key.
       return false;
     default:
-      // Return true unless Ctrl is pressed
-      return (GetKeyState(VK_CONTROL) & 0x8000) != 0x8000;
+      // Vanish unless Ctrl or Alt is also pressed, or if a key in
+      // a relevant range is pressed.
+      // The range between VK_F1 and VK_LAUNCH_APP2 includes control,
+      // function, browser, volume and media keys, all of which we ignore.
+      return (GetKeyState(VK_CONTROL) & 0x8000) != 0x8000 &&
+             (GetKeyState(VK_MENU) & 0x8000) != 0x8000 &&
+             (aVirtKey < VK_F1 || aVirtKey > VK_LAUNCH_APP2);
   }
 }
 
@@ -1015,13 +1019,7 @@ nsresult nsWindow::Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
     }
   }
 
-  const wchar_t* className;
-  if (aInitData->mDropShadow) {
-    className = GetWindowPopupClass();
-  } else {
-    className = GetWindowClass();
-  }
-
+  const wchar_t* className = GetWindowClass();
   if (aInitData->mWindowType == eWindowType_toplevel && !aParent &&
       !sFirstTopLevelWindowCreated) {
     sFirstTopLevelWindowCreated = true;
@@ -1112,7 +1110,8 @@ nsresult nsWindow::Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
   }
 
   if (aInitData->mIsPrivate) {
-    if (Preferences::GetBool("browser.privacySegmentation.enabled", false)) {
+    if (Preferences::GetBool(
+            "browser.privacySegmentation.windowSeparation.enabled", false)) {
       RefPtr<IPropertyStore> pPropStore;
       if (!FAILED(SHGetPropertyStoreForWindow(mWnd, IID_IPropertyStore,
                                               getter_AddRefs(pPropStore)))) {
@@ -1354,16 +1353,13 @@ const wchar_t* nsWindow::GetWindowClass() const {
       return RegisterWindowClass(kClassNameHidden, 0, gStockApplicationIcon);
     case eWindowType_dialog:
       return RegisterWindowClass(kClassNameDialog, 0, 0);
+    case eWindowType_popup:
+      return RegisterWindowClass(kClassNameDropShadow, CS_DROPSHADOW,
+                                 gStockApplicationIcon);
     default:
       return RegisterWindowClass(GetMainWindowClass(), 0,
                                  gStockApplicationIcon);
   }
-}
-
-// Return the proper popup window class
-const wchar_t* nsWindow::GetWindowPopupClass() const {
-  return RegisterWindowClass(kClassNameDropShadow, CS_XP_DROPSHADOW,
-                             gStockApplicationIcon);
 }
 
 /**************************************************************
@@ -1679,23 +1675,27 @@ void nsWindow::Show(bool bState) {
   }
 
   if (mWindowType == eWindowType_popup) {
-    // See bug 603793. When we try to draw D3D9/10 windows with a drop shadow
-    // without the DWM on a secondary monitor, windows fails to composite
-    // our windows correctly. We therefor switch off the drop shadow for
-    // pop-up windows when the DWM is disabled and two monitors are
-    // connected.
-    if (HasBogusPopupsDropShadowOnMultiMonitor() &&
-        WinUtils::GetMonitorCount() > 1 &&
-        !gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
-      if (sDropShadowEnabled) {
-        ::SetClassLongA(mWnd, GCL_STYLE, 0);
-        sDropShadowEnabled = false;
+    const bool shouldUseDropShadow = [&] {
+      if (mTransparencyMode == eTransparencyTransparent) {
+        return false;
       }
-    } else {
-      if (!sDropShadowEnabled) {
-        ::SetClassLongA(mWnd, GCL_STYLE, CS_DROPSHADOW);
-        sDropShadowEnabled = true;
+      if (HasBogusPopupsDropShadowOnMultiMonitor() &&
+          WinUtils::GetMonitorCount() > 1 &&
+          !gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
+        // See bug 603793. When we try to draw D3D9/10 windows with a drop
+        // shadow without the DWM on a secondary monitor, windows fails to
+        // composite our windows correctly. We therefor switch off the drop
+        // shadow for pop-up windows when the DWM is disabled and two monitors
+        // are connected.
+        return false;
       }
+      return true;
+    }();
+
+    static bool sShadowEnabled = true;
+    if (sShadowEnabled != shouldUseDropShadow) {
+      ::SetClassLongA(mWnd, GCL_STYLE, shouldUseDropShadow ? CS_DROPSHADOW : 0);
+      sShadowEnabled = shouldUseDropShadow;
     }
 
     // WS_EX_COMPOSITED conflicts with the WS_EX_LAYERED style and causes
@@ -5149,9 +5149,6 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
       break;
 
     case WM_THEMECHANGED: {
-      // Before anything else, push updates to child processes
-      WinContentSystemParameters::GetSingleton()->OnThemeChanged();
-
       // Update non-client margin offsets
       UpdateNonClientMargins();
       nsUXThemeData::UpdateNativeThemeInfo();
@@ -5392,7 +5389,7 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
       }
 
       // There is a case that rendered result is not kept. Bug 1237617
-      if (wParam == TRUE && !gfxEnv::DisableForcePresent() &&
+      if (wParam == TRUE && !gfxEnv::MOZ_DISABLE_FORCE_PRESENT() &&
           gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
         NS_DispatchToMainThread(NewRunnableMethod(
             "nsWindow::ForcePresent", this, &nsWindow::ForcePresent));

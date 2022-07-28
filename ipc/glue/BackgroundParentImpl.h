@@ -7,8 +7,6 @@
 #ifndef mozilla_ipc_backgroundparentimpl_h__
 #define mozilla_ipc_backgroundparentimpl_h__
 
-#include "mozilla/Attributes.h"
-#include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/ipc/PBackgroundParent.h"
 
 namespace mozilla::ipc {
@@ -23,12 +21,16 @@ class BackgroundParentImpl : public PBackgroundParent {
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
   PBackgroundTestParent* AllocPBackgroundTestParent(
-      const nsCString& aTestArg) override;
+      const nsACString& aTestArg) override;
 
   mozilla::ipc::IPCResult RecvPBackgroundTestConstructor(
-      PBackgroundTestParent* aActor, const nsCString& aTestArg) override;
+      PBackgroundTestParent* aActor, const nsACString& aTestArg) override;
 
   bool DeallocPBackgroundTestParent(PBackgroundTestParent* aActor) override;
+
+  already_AddRefed<PBackgroundFileSystemParent>
+  AllocPBackgroundFileSystemParent(
+      const PrincipalInfo& aPrincipalInfo) override;
 
   already_AddRefed<PBackgroundIDBFactoryParent>
   AllocPBackgroundIDBFactoryParent(const LoggingInfo& aLoggingInfo) override;
@@ -105,23 +107,23 @@ class BackgroundParentImpl : public PBackgroundParent {
   mozilla::ipc::IPCResult RecvLSClearPrivateBrowsing() override;
 
   PBackgroundLocalStorageCacheParent* AllocPBackgroundLocalStorageCacheParent(
-      const PrincipalInfo& aPrincipalInfo, const nsCString& aOriginKey,
+      const PrincipalInfo& aPrincipalInfo, const nsACString& aOriginKey,
       const uint32_t& aPrivateBrowsingId) override;
 
   mozilla::ipc::IPCResult RecvPBackgroundLocalStorageCacheConstructor(
       PBackgroundLocalStorageCacheParent* aActor,
-      const PrincipalInfo& aPrincipalInfo, const nsCString& aOriginKey,
+      const PrincipalInfo& aPrincipalInfo, const nsACString& aOriginKey,
       const uint32_t& aPrivateBrowsingId) override;
 
   bool DeallocPBackgroundLocalStorageCacheParent(
       PBackgroundLocalStorageCacheParent* aActor) override;
 
   PBackgroundStorageParent* AllocPBackgroundStorageParent(
-      const nsString& aProfilePath,
+      const nsAString& aProfilePath,
       const uint32_t& aPrivateBrowsingId) override;
 
   mozilla::ipc::IPCResult RecvPBackgroundStorageConstructor(
-      PBackgroundStorageParent* aActor, const nsString& aProfilePath,
+      PBackgroundStorageParent* aActor, const nsAString& aProfilePath,
       const uint32_t& aPrivateBrowsingId) override;
 
   bool DeallocPBackgroundStorageParent(
@@ -144,13 +146,13 @@ class BackgroundParentImpl : public PBackgroundParent {
   bool DeallocPTemporaryIPCBlobParent(PTemporaryIPCBlobParent* aActor) override;
 
   PFileCreatorParent* AllocPFileCreatorParent(
-      const nsString& aFullPath, const nsString& aType, const nsString& aName,
-      const Maybe<int64_t>& aLastModified, const bool& aExistenceCheck,
-      const bool& aIsFromNsIFile) override;
+      const nsAString& aFullPath, const nsAString& aType,
+      const nsAString& aName, const Maybe<int64_t>& aLastModified,
+      const bool& aExistenceCheck, const bool& aIsFromNsIFile) override;
 
   mozilla::ipc::IPCResult RecvPFileCreatorConstructor(
-      PFileCreatorParent* actor, const nsString& aFullPath,
-      const nsString& aType, const nsString& aName,
+      PFileCreatorParent* actor, const nsAString& aFullPath,
+      const nsAString& aType, const nsAString& aName,
       const Maybe<int64_t>& aLastModified, const bool& aExistenceCheck,
       const bool& aIsFromNsIFile) override;
 
@@ -196,7 +198,7 @@ class BackgroundParentImpl : public PBackgroundParent {
 
   already_AddRefed<mozilla::psm::PVerifySSLServerCertParent>
   AllocPVerifySSLServerCertParent(
-      const nsTArray<ByteArray>& aPeerCertChain, const nsCString& aHostName,
+      const nsTArray<ByteArray>& aPeerCertChain, const nsACString& aHostName,
       const int32_t& aPort, const OriginAttributes& aOriginAttributes,
       const Maybe<ByteArray>& aStapledOCSPResponse,
       const Maybe<ByteArray>& aSctsFromTLSExtension,
@@ -206,7 +208,7 @@ class BackgroundParentImpl : public PBackgroundParent {
 
   mozilla::ipc::IPCResult RecvPVerifySSLServerCertConstructor(
       PVerifySSLServerCertParent* aActor, nsTArray<ByteArray>&& aPeerCertChain,
-      const nsCString& aHostName, const int32_t& aPort,
+      const nsACString& aHostName, const int32_t& aPort,
       const OriginAttributes& aOriginAttributes,
       const Maybe<ByteArray>& aStapledOCSPResponse,
       const Maybe<ByteArray>& aSctsFromTLSExtension,
@@ -214,13 +216,26 @@ class BackgroundParentImpl : public PBackgroundParent {
       const uint32_t& aProviderFlags,
       const uint32_t& aCertVerifierFlags) override;
 
+  virtual already_AddRefed<mozilla::psm::PSelectTLSClientAuthCertParent>
+  AllocPSelectTLSClientAuthCertParent(
+      const nsACString& aHostName, const OriginAttributes& aOriginAttributes,
+      const int32_t& aPort, const uint32_t& aProviderFlags,
+      const uint32_t& aProviderTlsFlags, const ByteArray& aServerCertBytes,
+      const nsTArray<ByteArray>& aCANames) override;
+  virtual mozilla::ipc::IPCResult RecvPSelectTLSClientAuthCertConstructor(
+      PSelectTLSClientAuthCertParent* actor, const nsACString& aHostName,
+      const OriginAttributes& aOriginAttributes, const int32_t& aPort,
+      const uint32_t& aProviderFlags, const uint32_t& aProviderTlsFlags,
+      const ByteArray& aServerCertBytes,
+      nsTArray<ByteArray>&& aCANames) override;
+
   PBroadcastChannelParent* AllocPBroadcastChannelParent(
-      const PrincipalInfo& aPrincipalInfo, const nsCString& aOrigin,
-      const nsString& aChannel) override;
+      const PrincipalInfo& aPrincipalInfo, const nsACString& aOrigin,
+      const nsAString& aChannel) override;
 
   mozilla::ipc::IPCResult RecvPBroadcastChannelConstructor(
       PBroadcastChannelParent* actor, const PrincipalInfo& aPrincipalInfo,
-      const nsCString& origin, const nsString& channel) override;
+      const nsACString& origin, const nsAString& channel) override;
 
   bool DeallocPBroadcastChannelParent(PBroadcastChannelParent* aActor) override;
 
@@ -238,18 +253,15 @@ class BackgroundParentImpl : public PBackgroundParent {
 
   mozilla::ipc::IPCResult RecvShutdownServiceWorkerRegistrar() override;
 
-  dom::cache::PCacheStorageParent* AllocPCacheStorageParent(
+  already_AddRefed<dom::cache::PCacheStorageParent> AllocPCacheStorageParent(
       const dom::cache::Namespace& aNamespace,
       const PrincipalInfo& aPrincipalInfo) override;
 
-  bool DeallocPCacheStorageParent(
-      dom::cache::PCacheStorageParent* aActor) override;
-
   PUDPSocketParent* AllocPUDPSocketParent(const Maybe<PrincipalInfo>& pInfo,
-                                          const nsCString& aFilter) override;
+                                          const nsACString& aFilter) override;
   mozilla::ipc::IPCResult RecvPUDPSocketConstructor(
       PUDPSocketParent*, const Maybe<PrincipalInfo>& aPrincipalInfo,
-      const nsCString& aFilter) override;
+      const nsACString& aFilter) override;
   bool DeallocPUDPSocketParent(PUDPSocketParent*) override;
 
   PMessagePortParent* AllocPMessagePortParent(
@@ -362,10 +374,11 @@ class BackgroundParentImpl : public PBackgroundParent {
       const IPCServiceWorkerRegistrationDescriptor& aDescriptor) override;
 
   PEndpointForReportParent* AllocPEndpointForReportParent(
-      const nsString& aGroupName, const PrincipalInfo& aPrincipalInfo) override;
+      const nsAString& aGroupName,
+      const PrincipalInfo& aPrincipalInfo) override;
 
   mozilla::ipc::IPCResult RecvPEndpointForReportConstructor(
-      PEndpointForReportParent* actor, const nsString& aGroupName,
+      PEndpointForReportParent* actor, const nsAString& aGroupName,
       const PrincipalInfo& aPrincipalInfo) override;
 
   mozilla::ipc::IPCResult RecvEnsureRDDProcessAndCreateBridge(
@@ -378,7 +391,7 @@ class BackgroundParentImpl : public PBackgroundParent {
       PEndpointForReportParent* aActor) override;
 
   mozilla::ipc::IPCResult RecvRemoveEndpoint(
-      const nsString& aGroupName, const nsCString& aEndpointURL,
+      const nsAString& aGroupName, const nsACString& aEndpointURL,
       const PrincipalInfo& aPrincipalInfo) override;
 
   dom::PMediaTransportParent* AllocPMediaTransportParent() override;

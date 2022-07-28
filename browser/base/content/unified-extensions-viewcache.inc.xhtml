@@ -1,0 +1,23 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+<!--
+  This is the template used for the `unified-extensions-item` custom element,
+  defined in `browser/base/content/browser-addons.js`.
+-->
+<html:template id="unified-extensions-item-template">
+  <image class="unified-extensions-item-icon"
+         role="presentation"
+         src="chrome://mozapps/skin/extensions/extensionGeneric.svg" />
+
+  <vbox class="unified-extensions-item-contents">
+    <label class="unified-extensions-item-name" />
+    <label class="unified-extensions-item-message">
+      <!-- A notification could be printed here -->
+    </label>
+  </vbox>
+
+  <toolbarbutton class="unified-extensions-item-open-submenu subviewbutton subviewbutton-iconic"
+                 data-l10n-id="unified-extensions-item-open-submenu" />
+</html:template>

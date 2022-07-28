@@ -344,9 +344,11 @@ void nsHttpChannel::ReleaseMainThreadOnlyReferences() {
 nsresult nsHttpChannel::Init(nsIURI* uri, uint32_t caps, nsProxyInfo* proxyInfo,
                              uint32_t proxyResolveFlags, nsIURI* proxyURI,
                              uint64_t channelId,
-                             ExtContentPolicyType aContentPolicyType) {
-  nsresult rv = HttpBaseChannel::Init(uri, caps, proxyInfo, proxyResolveFlags,
-                                      proxyURI, channelId, aContentPolicyType);
+                             ExtContentPolicyType aContentPolicyType,
+                             nsILoadInfo* aLoadInfo) {
+  nsresult rv =
+      HttpBaseChannel::Init(uri, caps, proxyInfo, proxyResolveFlags, proxyURI,
+                            channelId, aContentPolicyType, aLoadInfo);
   if (NS_FAILED(rv)) return rv;
 
   LOG1(("nsHttpChannel::Init [this=%p]\n", this));
@@ -394,14 +396,16 @@ nsresult nsHttpChannel::PrepareToConnect() {
 
 #ifdef XP_WIN
   // If Windows 10 SSO is enabled, we potentially add auth information to
-  // secure top level loads (DOCUMENTs) that aren't anonymous or
-  // private browsing.
+  // secure top level loads (DOCUMENTs) and iframes (SUBDOCUMENTs) that
+  // aren't anonymous or private browsing.
   if (StaticPrefs::network_http_windows_sso_enabled() &&
-      mURI->SchemeIs("https") &&
-      mLoadInfo->GetExternalContentPolicyType() ==
-          ExtContentPolicy::TYPE_DOCUMENT &&
-      !(mLoadFlags & LOAD_ANONYMOUS) && !mPrivateBrowsing) {
-    AddWindowsSSO(this);
+      mURI->SchemeIs("https") && !(mLoadFlags & LOAD_ANONYMOUS) &&
+      !mPrivateBrowsing) {
+    ExtContentPolicyType type = mLoadInfo->GetExternalContentPolicyType();
+    if (type == ExtContentPolicy::TYPE_DOCUMENT ||
+        type == ExtContentPolicy::TYPE_SUBDOCUMENT) {
+      AddWindowsSSO(this);
+    }
   }
 #endif
 
@@ -961,7 +965,7 @@ void nsHttpChannel::SpeculativeConnect() {
       mConnectionInfo, callbacks,
       mCaps & (NS_HTTP_DISALLOW_SPDY | NS_HTTP_TRR_MODE_MASK |
                NS_HTTP_DISABLE_IPV4 | NS_HTTP_DISABLE_IPV6 |
-               NS_HTTP_DISALLOW_HTTP3),
+               NS_HTTP_DISALLOW_HTTP3 | NS_HTTP_REFRESH_DNS),
       gHttpHandler->EchConfigEnabled());
 }
 
@@ -1130,6 +1134,10 @@ nsresult nsHttpChannel::SetupTransaction() {
 
   if (mLoadFlags & LOAD_ANONYMOUS_ALLOW_CLIENT_CERT) {
     mCaps |= NS_HTTP_LOAD_ANONYMOUS_CONNECT_ALLOW_CLIENT_CERT;
+  }
+
+  if (nsContentUtils::ShouldResistFingerprinting(this)) {
+    mCaps |= NS_HTTP_USE_RFP;
   }
 
   // Use the URI path if not proxying (transparent proxying such as proxy
@@ -1800,9 +1808,8 @@ nsresult nsHttpChannel::ProcessHSTSHeader(nsITransportSecurityInfo* aSecInfo) {
   }
 
   uint32_t failureResult;
-  uint32_t headerSource = nsISiteSecurityService::SOURCE_ORGANIC_REQUEST;
-  rv = sss->ProcessHeader(mURI, securityHeader, aSecInfo, headerSource,
-                          originAttributes, nullptr, nullptr, &failureResult);
+  rv = sss->ProcessHeader(mURI, securityHeader, aSecInfo, originAttributes,
+                          nullptr, nullptr, &failureResult);
   if (NS_FAILED(rv)) {
     nsAutoString consoleErrorCategory(u"Invalid HSTS Headers"_ns);
     nsAutoString consoleErrorTag;
@@ -8745,59 +8752,157 @@ nsresult nsHttpChannel::CallOrWaitForResume(
   return aFunc(this);
 }
 
-// Step 10 of HTTP-network-or-cache fetch
+// This is loosely based on:
+// https://fetch.spec.whatwg.org/#serializing-a-request-origin
+static bool HasNullRequestOrigin(nsHttpChannel* aChannel, nsIURI* aURI,
+                                 bool isAddonRequest) {
+  // Step 1. If request has a redirect-tainted origin, then return "null".
+  if (aChannel->HasRedirectTaintedOrigin()) {
+    if (StaticPrefs::network_http_origin_redirectTainted()) {
+      return true;
+    }
+  }
+
+  // Non-standard: Only allow HTTP and HTTPS origins.
+  if (!ReferrerInfo::IsReferrerSchemeAllowed(aURI)) {
+    // And moz-extension: for add-on initiated requests.
+    if (!aURI->SchemeIs("moz-extension") || !isAddonRequest) {
+      return true;
+    }
+  }
+
+  // Non-standard: Hide onion URLs.
+  if (StaticPrefs::network_http_referer_hideOnionSource()) {
+    nsAutoCString host;
+    if (NS_SUCCEEDED(aURI->GetAsciiHost(host)) &&
+        StringEndsWith(host, ".onion"_ns)) {
+      return ReferrerInfo::IsCrossOriginRequest(aChannel);
+    }
+  }
+
+  // Step 2. Return request’s origin, serialized.
+  return false;
+}
+
+// Step 8.12. of HTTP-network-or-cache fetch
+//
+// https://fetch.spec.whatwg.org/#append-a-request-origin-header
 void nsHttpChannel::SetOriginHeader() {
-  if (mRequestHead.IsGet() || mRequestHead.IsHead()) {
+  auto* triggeringPrincipal =
+      BasePrincipal::Cast(mLoadInfo->TriggeringPrincipal());
+
+  if (triggeringPrincipal->IsSystemPrincipal()) {
+    // We can't infer an Origin header from the system principal,
+    // this means system requests use whatever Origin header was specified.
     return;
   }
-  nsresult rv;
+  bool isAddonRequest = triggeringPrincipal->AddonPolicy() ||
+                        triggeringPrincipal->ContentScriptAddonPolicy();
 
+  // Non-standard: Handle already existing Origin header.
   nsAutoCString existingHeader;
   Unused << mRequestHead.GetHeader(nsHttp::Origin, existingHeader);
   if (!existingHeader.IsEmpty()) {
     LOG(("nsHttpChannel::SetOriginHeader Origin header already present"));
-    nsCOMPtr<nsIURI> uri;
-    rv = NS_NewURI(getter_AddRefs(uri), existingHeader);
-    if (NS_SUCCEEDED(rv) &&
-        ReferrerInfo::ShouldSetNullOriginHeader(this, uri)) {
+    auto const shouldNullifyOriginHeader =
+        [&existingHeader, isAddonRequest](nsHttpChannel* aChannel) {
+          nsCOMPtr<nsIURI> uri;
+          nsresult rv = NS_NewURI(getter_AddRefs(uri), existingHeader);
+          if (NS_FAILED(rv)) {
+            return false;
+          }
+
+          if (HasNullRequestOrigin(aChannel, uri, isAddonRequest)) {
+            return true;
+          }
+
+          nsCOMPtr<nsILoadInfo> info = aChannel->LoadInfo();
+          if (info->GetTainting() == mozilla::LoadTainting::CORS) {
+            return false;
+          }
+
+          return ReferrerInfo::ShouldSetNullOriginHeader(aChannel, uri);
+        };
+
+    if (!existingHeader.EqualsLiteral("null") &&
+        shouldNullifyOriginHeader(this)) {
       LOG(("nsHttpChannel::SetOriginHeader null Origin by Referrer-Policy"));
-      rv = mRequestHead.SetHeader(nsHttp::Origin, "null"_ns, false /* merge */);
-      MOZ_ASSERT(NS_SUCCEEDED(rv));
+      MOZ_ALWAYS_SUCCEEDS(
+          mRequestHead.SetHeader(nsHttp::Origin, "null"_ns, false /* merge */));
     }
     return;
   }
 
   if (StaticPrefs::network_http_sendOriginHeader() == 0) {
-    // Origin header suppressed by user setting
+    // Custom user setting: 0 means never send Origin header.
     return;
   }
 
-  nsCOMPtr<nsIURI> referrer;
-  auto* basePrin = BasePrincipal::Cast(mLoadInfo->TriggeringPrincipal());
-  basePrin->GetURI(getter_AddRefs(referrer));
-  if (!referrer || !dom::ReferrerInfo::IsReferrerSchemeAllowed(referrer)) {
-    return;
-  }
-
-  nsAutoCString origin("null");
-  nsContentUtils::GetASCIIOrigin(referrer, origin);
-
-  // Restrict Origin to same-origin loads if requested by user
-  if (StaticPrefs::network_http_sendOriginHeader() == 1) {
-    nsAutoCString currentOrigin;
-    nsContentUtils::GetASCIIOrigin(mURI, currentOrigin);
-    if (!origin.EqualsIgnoreCase(currentOrigin.get())) {
-      // Origin header suppressed by user setting
+  // Step 1. Let serializedOrigin be the result of byte-serializing a request
+  // origin with request.
+  nsAutoCString serializedOrigin;
+  nsCOMPtr<nsIURI> uri;
+  {
+    if (NS_FAILED(triggeringPrincipal->GetURI(getter_AddRefs(uri)))) {
       return;
+    }
+
+    if (!uri) {
+      if (isAddonRequest) {
+        // For add-on compatibility prefer sending no header at all
+        // instead of `Origin: null`.
+        return;
+      }
+
+      // Otherwise use "null" when the triggeringPrincipal's URI is nullptr.
+      serializedOrigin.AssignLiteral("null");
+    } else if (HasNullRequestOrigin(this, uri, isAddonRequest)) {
+      serializedOrigin.AssignLiteral("null");
+    } else {
+      nsContentUtils::GetASCIIOrigin(uri, serializedOrigin);
     }
   }
 
-  if (ReferrerInfo::ShouldSetNullOriginHeader(this, referrer)) {
-    origin.AssignLiteral("null");
+  // Step 2. If request’s response tainting is "cors" or request’s mode is
+  // "websocket", then append (`Origin`, serializedOrigin) to request’s header
+  // list.
+  //
+  // Warning: The current spec isn't web-compatible see
+  // https://github.com/whatwg/fetch/issues/1022.
+  //
+  // But we can't just switch to using `request’s mode is "cors" here`,
+  // because that would also send the Origin header for same-origin
+  // GET requests with CORS. Instead we maintain our old behavior and
+  // move the check into ReferrerInfo::ShouldSetNullOriginHeader.
+  if (mLoadInfo->GetTainting() == mozilla::LoadTainting::CORS) {
+    MOZ_ALWAYS_SUCCEEDS(mRequestHead.SetHeader(nsHttp::Origin, serializedOrigin,
+                                               false /* merge */));
+    return;
   }
 
-  rv = mRequestHead.SetHeader(nsHttp::Origin, origin, false /* merge */);
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
+  // Step 3. Otherwise, if request’s method is neither `GET` nor `HEAD`, then:
+  if (mRequestHead.IsGet() || mRequestHead.IsHead()) {
+    return;
+  }
+
+  if (!serializedOrigin.EqualsLiteral("null")) {
+    // Step 3.1. Switch on request’s referrer policy:
+    if (ReferrerInfo::ShouldSetNullOriginHeader(this, uri)) {
+      serializedOrigin.AssignLiteral("null");
+    } else if (StaticPrefs::network_http_sendOriginHeader() == 1) {
+      // Restrict Origin to same-origin loads if requested by user
+      nsAutoCString currentOrigin;
+      nsContentUtils::GetASCIIOrigin(mURI, currentOrigin);
+      if (!serializedOrigin.EqualsIgnoreCase(currentOrigin.get())) {
+        // Origin header suppressed by user setting.
+        serializedOrigin.AssignLiteral("null");
+      }
+    }
+  }
+
+  // Step 3.2. Append (`Origin`, serializedOrigin) to request’s header list.
+  MOZ_ALWAYS_SUCCEEDS(mRequestHead.SetHeader(nsHttp::Origin, serializedOrigin,
+                                             false /* merge */));
 }
 
 void nsHttpChannel::SetDoNotTrack() {
@@ -9421,13 +9526,12 @@ nsresult nsHttpChannel::RedirectToInterceptedChannel() {
 
   ExtContentPolicyType type = mLoadInfo->GetExternalContentPolicyType();
 
-  nsresult rv = intercepted->Init(
-      mURI, mCaps, static_cast<nsProxyInfo*>(mProxyInfo.get()),
-      mProxyResolveFlags, mProxyURI, mChannelId, type);
-
   nsCOMPtr<nsILoadInfo> redirectLoadInfo =
       CloneLoadInfoForRedirect(mURI, nsIChannelEventSink::REDIRECT_INTERNAL);
-  intercepted->SetLoadInfo(redirectLoadInfo);
+
+  nsresult rv = intercepted->Init(
+      mURI, mCaps, static_cast<nsProxyInfo*>(mProxyInfo.get()),
+      mProxyResolveFlags, mProxyURI, mChannelId, type, redirectLoadInfo);
 
   rv = SetupReplacementChannel(mURI, intercepted, true,
                                nsIChannelEventSink::REDIRECT_INTERNAL);
@@ -9491,7 +9595,8 @@ void nsHttpChannel::ReEvaluateReferrerAfterTrackingStatusIsKnown() {
               ReferrerInfo::GetDefaultReferrerPolicy(nullptr, nullptr,
                                                      isPrivate)) {
         nsCOMPtr<nsIReferrerInfo> newReferrerInfo =
-            referrerInfo->CloneWithNewPolicy(ReferrerPolicy::_empty);
+            referrerInfo->CloneWithNewPolicy(
+                ReferrerInfo::GetDefaultReferrerPolicy(this, mURI, isPrivate));
         // The arguments passed to SetReferrerInfoInternal here should mirror
         // the arguments passed in
         // HttpChannelChild::RecvOverrideReferrerInfoDuringBeginConnect().

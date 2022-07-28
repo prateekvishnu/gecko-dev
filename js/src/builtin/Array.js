@@ -17,7 +17,7 @@ function ArrayEvery(callbackfn/*, thisArg*/) {
         ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, callbackfn));
 
     /* Step 5. */
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Steps 6-7. */
     /* Steps a (implicit), and d. */
@@ -51,7 +51,7 @@ function ArraySome(callbackfn/*, thisArg*/) {
         ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, callbackfn));
 
     /* Step 5. */
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Steps 6-7. */
     /* Steps a (implicit), and d. */
@@ -134,7 +134,7 @@ function ArrayForEach(callbackfn/*, thisArg*/) {
         ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, callbackfn));
 
     /* Step 5. */
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Steps 6-7. */
     /* Steps a (implicit), and d. */
@@ -147,7 +147,7 @@ function ArrayForEach(callbackfn/*, thisArg*/) {
     }
 
     /* Step 8. */
-    return void 0;
+    return undefined;
 }
 // Inlining this enables inlining of the callback function.
 SetIsInlinableLargeFunction(ArrayForEach);
@@ -167,7 +167,7 @@ function ArrayMap(callbackfn/*, thisArg*/) {
         ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, callbackfn));
 
     /* Step 4. */
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Steps 5. */
     var A = ArraySpeciesCreate(O, len);
@@ -204,7 +204,7 @@ function ArrayFilter(callbackfn/*, thisArg*/) {
         ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, callbackfn));
 
     /* Step 4. */
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Step 5. */
     var A = ArraySpeciesCreate(O, 0);
@@ -233,7 +233,7 @@ function ArrayFilter(callbackfn/*, thisArg*/) {
 //
 // Array.prototype.groupBy
 // https://tc39.es/proposal-array-grouping/#sec-array.prototype.groupby
-function ArrayGroupBy(callbackfn/*, thisArg*/) {
+function ArrayGroup(callbackfn/*, thisArg*/) {
     /* Step 1. Let O be ? ToObject(this value). */
     var O = ToObject(this);
 
@@ -248,7 +248,7 @@ function ArrayGroupBy(callbackfn/*, thisArg*/) {
     /* Step 5. Let groups be a new empty List. */
     var groups = new_List();
 
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Steps 4, 6. */
     for (var k = 0; k < len; k++) {
@@ -295,9 +295,9 @@ function ArrayGroupBy(callbackfn/*, thisArg*/) {
 
 // Array Grouping proposal
 //
-// Array.prototype.groupByToMap
+// Array.prototype.groupToMap
 // https://tc39.es/proposal-array-grouping/#sec-array.prototype.groupbymap
-function ArrayGroupByToMap(callbackfn/*, thisArg*/) {
+function ArrayGroupToMap(callbackfn/*, thisArg*/) {
 
     /* Step 1. Let O be ? ToObject(this value). */
     var O = ToObject(this);
@@ -322,7 +322,7 @@ function ArrayGroupByToMap(callbackfn/*, thisArg*/) {
     var C = GetBuiltinConstructor("Map");
     var map = new C();
 
-    var T = arguments.length > 1 ? arguments[1] : void 0;
+    var T = arguments.length > 1 ? arguments[1] : undefined;
 
     /* Combine Step 6. and Step 8.
      *
@@ -422,7 +422,8 @@ function ArrayReduce(callbackfn/*, initialValue*/) {
         /* Step b */
         if (k in O) {
             /* Step c. */
-            accumulator = callbackfn(accumulator, O[k], k, O);
+            accumulator = callContentFunction(callbackfn, undefined,
+                                              accumulator, O[k], k, O);
         }
     }
 
@@ -481,7 +482,8 @@ function ArrayReduceRight(callbackfn/*, initialValue*/) {
         /* Step b */
         if (k in O) {
             /* Step c. */
-            accumulator = callbackfn(accumulator, O[k], k, O);
+            accumulator = callContentFunction(callbackfn, undefined,
+                                              accumulator, O[k], k, O);
         }
     }
 
@@ -772,7 +774,7 @@ function ArrayFrom(items, mapfn = undefined, thisArg = undefined) {
             ThrowTypeError(JSMSG_NOT_ITERABLE, DecompileArg(0, items));
 
         // Steps 5.a-b.
-        var A = IsConstructor(C) ? new C() : [];
+        var A = IsConstructor(C) ? constructContentFunction(C, C) : [];
 
         // Step 5.c.
         var iterator = MakeIteratorWrapper(items, usingIterator);
@@ -814,7 +816,8 @@ function ArrayFrom(items, mapfn = undefined, thisArg = undefined) {
     var len = ToLength(arrayLike.length);
 
     // Steps 12-14.
-    var A = IsConstructor(C) ? new C(len) : std_Array(len);
+    var A = IsConstructor(C) ? constructContentFunction(C, C, len)
+                             : std_Array(len);
 
     // Steps 15-16.
     for (var k = 0; k < len; k++) {
@@ -971,7 +974,7 @@ function ArraySpeciesCreate(originalArray, length) {
         ThrowTypeError(JSMSG_NOT_CONSTRUCTOR, "constructor property");
 
     // Step 8.
-    return new C(length);
+    return constructContentFunction(C, C, length);
 }
 
 // ES 2017 draft (April 8, 2016) 22.1.3.1.1
@@ -1290,3 +1293,69 @@ function ArrayToSorted(comparefn) {
 }
 
 #endif
+
+// https://github.com/tc39/proposal-array-find-from-last
+// Array.prototype.findLast ( predicate, thisArg )
+function ArrayFindLast(predicate/*, thisArg*/) {
+    /* Steps 1. */
+    var O = ToObject(this);
+
+    /* Steps 2. */
+    var len = ToLength(O.length);
+
+    /* Step 3. */
+    if (arguments.length === 0) {
+        ThrowTypeError(JSMSG_MISSING_FUN_ARG, 0, "Array.prototype.findLast");
+    }
+    if (!IsCallable(predicate)) {
+        ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, predicate));
+    }
+
+    var T = arguments.length > 1 ? arguments[1] : undefined;
+
+    /* Step 4-5. */
+    for (var k = len - 1; k >= 0; k--) {
+        /* Steps 5.a-b. */
+        var kValue = O[k];
+        /* Steps 5.c-d. */
+        if (callContentFunction(predicate, T, kValue, k, O)) {
+            return kValue;
+        }
+    }
+
+    /* Step 6. */
+    return undefined;
+}
+
+// https://github.com/tc39/proposal-array-find-from-last
+// Array.prototype.findLastIndex ( predicate, thisArg )
+function ArrayFindLastIndex(predicate/*, thisArg*/) {
+    /* Steps 1. */
+    var O = ToObject(this);
+
+    /* Steps 2. */
+    var len = ToLength(O.length);
+
+    /* Step 3. */
+    if (arguments.length === 0) {
+        ThrowTypeError(JSMSG_MISSING_FUN_ARG, 0, "Array.prototype.findLastIndex");
+    }
+    if (!IsCallable(predicate)) {
+        ThrowTypeError(JSMSG_NOT_FUNCTION, DecompileArg(0, predicate));
+    }
+
+    var T = arguments.length > 1 ? arguments[1] : undefined;
+
+    /* Step 4-5. */
+    for (var k = len - 1; k >= 0; k--) {
+        /* Steps 5.a-b. */
+        var kValue = O[k];
+        /* Steps 5.c-d. */
+        if (callContentFunction(predicate, T, kValue, k, O)) {
+            return k;
+        }
+    }
+
+    /* Step 6. */
+    return -1;
+}

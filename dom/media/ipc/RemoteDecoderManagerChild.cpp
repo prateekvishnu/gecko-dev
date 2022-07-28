@@ -23,7 +23,7 @@
 #include "nsIObserver.h"
 #include "mozilla/StaticPrefs_media.h"
 
-#ifdef MOZ_WMF
+#ifdef MOZ_WMF_MEDIA_ENGINE
 #  include "MFMediaEngineChild.h"
 #endif
 
@@ -58,12 +58,12 @@ static StaticRefPtr<RemoteDecoderManagerChild>
     sRemoteDecoderManagerChildForGPUProcess;
 static UniquePtr<nsTArray<RefPtr<Runnable>>> sRecreateTasks;
 
-static StaticDataMutex<Maybe<PDMFactory::MediaCodecsSupported>> sGPUSupported(
+static StaticDataMutex<Maybe<media::MediaCodecsSupported>> sGPUSupported(
     "RDMC::sGPUSupported");
-static StaticDataMutex<Maybe<PDMFactory::MediaCodecsSupported>> sRDDSupported(
+static StaticDataMutex<Maybe<media::MediaCodecsSupported>> sRDDSupported(
     "RDMC::sRDDSupported");
-static StaticDataMutex<Maybe<PDMFactory::MediaCodecsSupported>>
-    sUtilitySupported("RDMC::sUtilitySupported");
+static StaticDataMutex<Maybe<media::MediaCodecsSupported>> sUtilitySupported(
+    "RDMC::sUtilitySupported");
 
 class ShutdownObserver final : public nsIObserver {
  public:
@@ -226,7 +226,7 @@ nsISerialEventTarget* RemoteDecoderManagerChild::GetManagerThread() {
 bool RemoteDecoderManagerChild::Supports(
     RemoteDecodeIn aLocation, const SupportDecoderParams& aParams,
     DecoderDoctorDiagnostics* aDiagnostics) {
-  Maybe<PDMFactory::MediaCodecsSupported> supported;
+  Maybe<media::MediaCodecsSupported> supported;
   switch (aLocation) {
     case RemoteDecodeIn::RddProcess: {
       auto supportedRDD = sRDDSupported.Lock();
@@ -264,7 +264,8 @@ bool RemoteDecoderManagerChild::Supports(
   // We can ignore the SupportDecoderParams argument for now as creation of the
   // decoder will actually fail later and fallback PDMs will be tested on later.
   return PDMFactory::SupportsMimeType(aParams.MimeType(), *supported,
-                                      aLocation);
+                                      aLocation) !=
+         media::DecodeSupport::Unsupported;
 }
 
 /* static */
@@ -280,7 +281,7 @@ RemoteDecoderManagerChild::CreateAudioDecoder(
 
   bool useUtilityAudioDecoding = StaticPrefs::media_utility_process_enabled() &&
                                  aLocation == RemoteDecodeIn::UtilityProcess;
-#ifdef MOZ_WMF
+#ifdef MOZ_WMF_MEDIA_ENGINE
   // If the media engine Id is specified, using the media engine in the RDD
   // process instead.
   useUtilityAudioDecoding = useUtilityAudioDecoding &&
@@ -591,7 +592,7 @@ PMFMediaEngineChild* RemoteDecoderManagerChild::AllocPMFMediaEngineChild() {
 
 bool RemoteDecoderManagerChild::DeallocPMFMediaEngineChild(
     PMFMediaEngineChild* actor) {
-#ifdef MOZ_WMF
+#ifdef MOZ_WMF_MEDIA_ENGINE
   MFMediaEngineChild* child = static_cast<MFMediaEngineChild*>(actor);
   child->IPDLActorDestroyed();
 #endif
@@ -797,8 +798,7 @@ void RemoteDecoderManagerChild::HandleFatalError(const char* aMsg) const {
 }
 
 void RemoteDecoderManagerChild::SetSupported(
-    RemoteDecodeIn aLocation,
-    const PDMFactory::MediaCodecsSupported& aSupported) {
+    RemoteDecodeIn aLocation, const media::MediaCodecsSupported& aSupported) {
   switch (aLocation) {
     case RemoteDecodeIn::GpuProcess: {
       auto supported = sGPUSupported.Lock();

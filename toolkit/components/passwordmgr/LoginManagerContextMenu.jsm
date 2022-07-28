@@ -6,10 +6,9 @@
 
 const EXPORTED_SYMBOLS = ["LoginManagerContextMenu"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const lazy = {};
 
@@ -18,14 +17,6 @@ ChromeUtils.defineModuleGetter(
   "LoginHelper",
   "resource://gre/modules/LoginHelper.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "LoginManagerParent",
-  "resource://gre/modules/LoginManagerParent.jsm"
-);
-XPCOMUtils.defineLazyGetter(lazy, "log", () => {
-  return lazy.LoginHelper.createLogger("LoginManagerContextMenu");
-});
 
 /**
  * Password manager object for the browser contextual menu.

@@ -1,12 +1,12 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+/* eslint-env mozilla/frame-script */
+
 // This file expects frame-head.js to be loaded in the environment.
 /* import-globals-from frame-head.js */
 
 "use strict";
-
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 // Test that the docShell profile timeline API returns the right
 // markers for XMLHttpRequest events.

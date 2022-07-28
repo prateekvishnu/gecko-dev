@@ -122,7 +122,7 @@ class AccAttributes {
   }
 
   template <typename T>
-  Maybe<const T&> GetAttribute(nsAtom* aAttrName) {
+  Maybe<const T&> GetAttribute(nsAtom* aAttrName) const {
     if (auto value = mData.Lookup(aAttrName)) {
       if constexpr (std::is_same_v<nsString, T>) {
         if (value->is<UniquePtr<nsString>>()) {
@@ -156,7 +156,7 @@ class AccAttributes {
   }
 
   // Get stringified value
-  bool GetAttribute(nsAtom* aAttrName, nsAString& aAttrValue);
+  bool GetAttribute(nsAtom* aAttrName, nsAString& aAttrValue) const;
 
   bool HasAttribute(nsAtom* aAttrName) { return mData.Contains(aAttrName); }
 

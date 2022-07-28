@@ -235,6 +235,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   bool ShouldResistFingerprinting() const final;
   uint32_t GetPrincipalHashValue() const final;
   mozilla::OriginTrials Trials() const final;
+  mozilla::dom::FontFaceSet* Fonts() final;
 
   // nsIGlobalJSObjectHolder
   JSObject* GetGlobalJSObject() final { return GetWrapper(); }
@@ -252,6 +253,8 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
 
   // nsIScriptObjectPrincipal
   virtual nsIPrincipal* GetPrincipal() override;
+
+  virtual nsIPrincipal* GetEffectiveCookiePrincipal() override;
 
   virtual nsIPrincipal* GetEffectiveStoragePrincipal() override;
 
@@ -826,7 +829,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   void SetCSSViewportWidthAndHeight(nscoord width, nscoord height);
   // Arguments to this function should have values in device pixels
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  nsresult SetDocShellWidthAndHeight(int32_t width, int32_t height);
+  nsresult SetDocShellSize(const mozilla::LayoutDeviceIntSize& aInnerSize);
 
   static bool CanSetProperty(const char* aPrefName);
 
@@ -850,8 +853,8 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
 
   // Outer windows only.
   nsresult GetInnerSize(mozilla::CSSSize& aSize);
-  nsIntSize GetOuterSize(mozilla::dom::CallerType aCallerType,
-                         mozilla::ErrorResult& aError);
+  mozilla::CSSIntSize GetOuterSize(mozilla::dom::CallerType aCallerType,
+                                   mozilla::ErrorResult& aError);
   void SetOuterSize(int32_t aLengthCSSPixels, bool aIsWidth,
                     mozilla::dom::CallerType aCallerType,
                     mozilla::ErrorResult& aError);
@@ -871,25 +874,14 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
 
   bool IsInModalState();
 
-  // Convenience functions for the many methods that need to scale
-  // from device to CSS pixels.  This computes it with cached scale in
-  // PresContext which may be not recent information of the widget.
-  // Note: if PresContext is not available, they will assume a 1:1 ratio.
-  int32_t DevToCSSIntPixels(int32_t px);
-  nsIntSize DevToCSSIntPixels(nsIntSize px);
-
   // Convenience functions for the methods which call methods of nsIBaseWindow
   // because it takes/returns device pixels.  Unfortunately, mPresContext may
   // have older scale value for the corresponding widget.  Therefore, these
   // helper methods convert between CSS pixels and device pixels with aWindow.
-  int32_t DevToCSSIntPixelsForBaseWindow(int32_t aDevicePixels,
-                                         nsIBaseWindow* aWindow);
-  nsIntSize DevToCSSIntPixelsForBaseWindow(nsIntSize aDeviceSize,
-                                           nsIBaseWindow* aWindow);
-  int32_t CSSToDevIntPixelsForBaseWindow(int32_t aCSSPixels,
-                                         nsIBaseWindow* aWindow);
-  nsIntSize CSSToDevIntPixelsForBaseWindow(nsIntSize aCSSSize,
-                                           nsIBaseWindow* aWindow);
+  //
+  // FIXME(emilio): Seems like updating the pres context dpi sync shouldn't be
+  // all that much work and should avoid some hackiness?
+  mozilla::CSSToLayoutDeviceScale CSSToDevScaleForBaseWindow(nsIBaseWindow*);
 
   void SetFocusedElement(mozilla::dom::Element* aElement,
                          uint32_t aFocusMethod = 0,
@@ -1107,6 +1099,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   RefPtr<mozilla::dom::Storage> mLocalStorage;
 
   nsCOMPtr<nsIPrincipal> mDocumentPrincipal;
+  nsCOMPtr<nsIPrincipal> mDocumentCookiePrincipal;
   nsCOMPtr<nsIPrincipal> mDocumentStoragePrincipal;
   nsCOMPtr<nsIPrincipal> mDocumentPartitionedPrincipal;
 

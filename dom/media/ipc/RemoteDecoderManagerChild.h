@@ -41,7 +41,7 @@ class RemoteDecoderManagerChild final
 
   static void Init();
   static void SetSupported(RemoteDecodeIn aLocation,
-                           const PDMFactory::MediaCodecsSupported& aSupported);
+                           const media::MediaCodecsSupported& aSupported);
 
   // Can be called from any thread.
   static bool Supports(RemoteDecodeIn aLocation,
@@ -62,16 +62,11 @@ class RemoteDecoderManagerChild final
   void DeallocateSurfaceDescriptor(
       const SurfaceDescriptorGPUVideo& aSD) override;
 
-  bool AllocShmem(size_t aSize,
-                  mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
-                  mozilla::ipc::Shmem* aShmem) override {
-    return PRemoteDecoderManagerChild::AllocShmem(aSize, aShmType, aShmem);
+  bool AllocShmem(size_t aSize, mozilla::ipc::Shmem* aShmem) override {
+    return PRemoteDecoderManagerChild::AllocShmem(aSize, aShmem);
   }
-  bool AllocUnsafeShmem(size_t aSize,
-                        mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
-                        mozilla::ipc::Shmem* aShmem) override {
-    return PRemoteDecoderManagerChild::AllocUnsafeShmem(aSize, aShmType,
-                                                        aShmem);
+  bool AllocUnsafeShmem(size_t aSize, mozilla::ipc::Shmem* aShmem) override {
+    return PRemoteDecoderManagerChild::AllocUnsafeShmem(aSize, aShmem);
   }
 
   // Can be called from any thread, dispatches the request to the IPDL thread

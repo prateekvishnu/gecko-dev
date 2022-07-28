@@ -237,7 +237,7 @@ IntrinsicSize SVGOuterSVGFrame::GetIntrinsicSize() {
     intrinsicSize.height.emplace(std::max(val, 0));
   }
 
-  return containAxes.ContainIntrinsicSize(intrinsicSize, GetWritingMode());
+  return containAxes.ContainIntrinsicSize(intrinsicSize, *this);
 }
 
 /* virtual */
@@ -507,7 +507,6 @@ void SVGOuterSVGFrame::Reflow(nsPresContext* aPresContext,
   NS_FRAME_TRACE(NS_FRAME_TRACE_CALLS,
                  ("exit SVGOuterSVGFrame::Reflow: size=%d,%d",
                   aDesiredSize.Width(), aDesiredSize.Height()));
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void SVGOuterSVGFrame::DidReflow(nsPresContext* aPresContext,
@@ -556,11 +555,6 @@ class nsDisplayOuterSVG final : public nsPaintedDisplayItem {
   virtual void ComputeInvalidationRegion(
       nsDisplayListBuilder* aBuilder, const nsDisplayItemGeometry* aGeometry,
       nsRegion* aInvalidRegion) const override;
-
-  nsDisplayItemGeometry* AllocateGeometry(
-      nsDisplayListBuilder* aBuilder) override {
-    return new nsDisplayItemGenericImageGeometry(this, aBuilder);
-  }
 
   NS_DISPLAY_DECL_NAME("SVGOuterSVG", TYPE_SVG_OUTER_SVG)
 };
@@ -626,7 +620,6 @@ void nsDisplayOuterSVG::Paint(nsDisplayListBuilder* aBuilder,
                  gfxMatrix::Translation(devPixelOffset);
   SVGUtils::PaintFrameWithEffects(mFrame, *aContext, tm, imgParams,
                                   &contentAreaDirtyRect);
-  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, imgParams.result);
   aContext->Restore();
 
 #if defined(DEBUG) && defined(SVG_DEBUG_PAINT_TIMING)
@@ -658,15 +651,6 @@ void nsDisplayOuterSVG::ComputeInvalidationRegion(
 
   nsDisplayItem::ComputeInvalidationRegion(aBuilder, aGeometry, aInvalidRegion);
   aInvalidRegion->Or(*aInvalidRegion, result);
-
-  const auto* geometry =
-      static_cast<const nsDisplayItemGenericImageGeometry*>(aGeometry);
-
-  if (aBuilder->ShouldSyncDecodeImages() &&
-      geometry->ShouldInvalidateToSyncDecodeImages()) {
-    bool snap;
-    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
-  }
 }
 
 nsresult SVGOuterSVGFrame::AttributeChanged(int32_t aNameSpaceID,

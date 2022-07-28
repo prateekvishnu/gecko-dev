@@ -51,6 +51,10 @@ with Files("*NativeKeyBindings*"):
 
 toolkit = CONFIG["MOZ_WIDGET_TOOLKIT"]
 
+XPCOM_MANIFESTS += [
+    "components.conf",
+]
+
 if toolkit in ("android", "cocoa", "gtk", "uikit", "windows"):
     DIRS += [toolkit]
 
@@ -147,7 +151,6 @@ EXPORTS += [
     "nsBaseAppShell.h",
     "nsBaseDragService.h",
     "nsBaseFilePicker.h",
-    "nsBaseScreen.h",
     "nsBaseWidget.h",
     "nsIDeviceContextSpec.h",
     "nsIRollupListener.h",
@@ -219,14 +222,13 @@ UNIFIED_SOURCES += [
     "InputData.cpp",
     "nsAutoRollup.cpp",
     "nsBaseAppShell.cpp",
-    "nsBaseScreen.cpp",
     "nsClipboardHelper.cpp",
     "nsClipboardProxy.cpp",
     "nsColorPickerProxy.cpp",
-    "nsContentProcessWidgetFactory.cpp",
     "nsDragServiceProxy.cpp",
     "nsFilePickerProxy.cpp",
     "nsHTMLFormatConverter.cpp",
+    "nsIBaseWindow.cpp",
     "nsIDeviceContextSpec.cpp",
     "nsIWidgetListener.cpp",
     "nsPrimitiveHelpers.cpp",

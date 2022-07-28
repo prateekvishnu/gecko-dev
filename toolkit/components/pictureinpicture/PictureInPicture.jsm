@@ -11,13 +11,12 @@ var EXPORTED_SYMBOLS = [
   "PictureInPictureLauncherParent",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const lazy = {};
 XPCOMUtils.defineLazyServiceGetters(lazy, {
@@ -127,6 +126,20 @@ class PictureInPictureParent extends JSWindowActorParent {
         let player = PictureInPicture.getWeakPipPlayer(this);
         if (player) {
           player.setIsMutedState(false);
+        }
+        break;
+      }
+      case "PictureInPicture:ShowSubtitlesButton": {
+        let player = PictureInPicture.getWeakPipPlayer(this);
+        if (player) {
+          player.showSubtitlesButton();
+        }
+        break;
+      }
+      case "PictureInPicture:HideSubtitlesButton": {
+        let player = PictureInPicture.getWeakPipPlayer(this);
+        if (player) {
+          player.hideSubtitlesButton();
         }
         break;
       }
@@ -576,7 +589,7 @@ var PictureInPicture = {
         PiPScreenTop <= centerY &&
         centerY <= PiPScreenTop + PiPScreenHeight
       ) {
-        let oldWidth = width;
+        let oldWidthDesktopPix = width * PipScreenCssToDesktopScale;
 
         // The new PiP window will keep the height of the old
         // PiP window and adjust the width to the correct ratio
@@ -587,6 +600,9 @@ var PictureInPicture = {
           width = 136 > width ? 136 : width;
         }
 
+        let widthDesktopPix = width * PipScreenCssToDesktopScale;
+        let heightDesktopPix = height * PipScreenCssToDesktopScale;
+
         // WIGGLE_ROOM allows the PiP window to be within 5 pixels of the right
         // side of the screen to stay snapped to the right side
         const WIGGLE_ROOM = 5;
@@ -594,10 +610,10 @@ var PictureInPicture = {
         // then move the PiP window to the right the same distance that
         // the width changes from previous width to current width
         let rightScreen = PiPScreenLeft + PiPScreenWidth;
-        let distFromRight = rightScreen - (left + width);
+        let distFromRight = rightScreen - (left + widthDesktopPix);
         if (
           0 < distFromRight &&
-          distFromRight <= WIGGLE_ROOM + (oldWidth - width)
+          distFromRight <= WIGGLE_ROOM + (oldWidthDesktopPix - widthDesktopPix)
         ) {
           left += distFromRight;
         }
@@ -607,22 +623,22 @@ var PictureInPicture = {
         if (left < PiPScreenLeft) {
           // off the left of the screen
           // slide right
-          left += PiPScreenLeft - left;
+          left = PiPScreenLeft;
         }
         if (top < PiPScreenTop) {
           // off the top of the screen
           // slide down
-          top += PiPScreenTop - top;
+          top = PiPScreenTop;
         }
-        if (left + width > PiPScreenLeft + PiPScreenWidth) {
+        if (left + widthDesktopPix > PiPScreenLeft + PiPScreenWidth) {
           // off the right of the screen
           // slide left
-          left += PiPScreenLeft + PiPScreenWidth - left - width;
+          left = PiPScreenLeft + PiPScreenWidth - widthDesktopPix;
         }
-        if (top + height > PiPScreenTop + PiPScreenHeight) {
+        if (top + heightDesktopPix > PiPScreenTop + PiPScreenHeight) {
           // off the bottom of the screen
           // slide up
-          top += PiPScreenTop + PiPScreenHeight - top - height;
+          top = PiPScreenTop + PiPScreenHeight - heightDesktopPix;
         }
         // Convert top / left from desktop to requestingWin-relative CSS pixels.
         top /= requestingCssToDesktopScale;

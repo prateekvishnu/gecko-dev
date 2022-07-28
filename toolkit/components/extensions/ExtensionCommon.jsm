@@ -15,17 +15,14 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionCommon"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
 const lazy = {};
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   ConsoleAPI: "resource://gre/modules/Console.jsm",
@@ -60,8 +57,6 @@ function getConsole() {
     prefix: "WebExtensions",
   });
 }
-
-XPCOMUtils.defineLazyGetter(lazy, "console", getConsole);
 
 const BACKGROUND_SCRIPTS_VIEW_TYPES = ["background", "background_worker"];
 
@@ -1394,7 +1389,7 @@ class SchemaAPIManager extends EventEmitter {
   }
 
   async loadModuleJSON(urls) {
-    let promises = urls.map(url => lazy.fetch(url).then(resp => resp.json()));
+    let promises = urls.map(url => fetch(url).then(resp => resp.json()));
 
     return this.initModuleJSON(await Promise.all(promises));
   }
@@ -1765,7 +1760,6 @@ class SchemaAPIManager extends EventEmitter {
 
     XPCOMUtils.defineLazyModuleGetters(global, {
       ExtensionUtils: "resource://gre/modules/ExtensionUtils.jsm",
-      XPCOMUtils: "resource://gre/modules/XPCOMUtils.jsm",
     });
 
     return global;

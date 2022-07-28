@@ -21,6 +21,11 @@ function getMessage(state, id) {
 function getAllMessagesUiById(state) {
   return state.messages.messagesUiById;
 }
+
+function getAllDisabledMessagesById(state) {
+  return state.messages.disabledMessagesById;
+}
+
 function getAllCssMessagesMatchingElements(state) {
   return state.messages.cssMessagesMatchingElements;
 }
@@ -57,6 +62,10 @@ function getAllWarningGroupsById(state) {
   return state.messages.warningGroupsById;
 }
 
+function getLastMessageId(state) {
+  return state.messages.lastMessageId;
+}
+
 function isMessageInWarningGroup(message, visibleMessages = []) {
   if (!getWarningGroupType(message)) {
     return false;
@@ -71,11 +80,13 @@ module.exports = {
   getMutableMessagesById,
   getAllCssMessagesMatchingElements,
   getAllMessagesUiById,
+  getAllDisabledMessagesById,
   getAllNetworkMessagesUpdateById,
   getAllRepeatById,
   getCurrentGroup,
   getFilteredMessagesCount,
   getGroupsById,
+  getLastMessageId,
   getMessage,
   getVisibleMessages,
   isMessageInWarningGroup,

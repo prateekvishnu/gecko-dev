@@ -47,6 +47,7 @@ EXPORTS += [
     "gfxPattern.h",
     "gfxPlatform.h",
     "gfxPlatformFontList.h",
+    "gfxPlatformWorker.h",
     "gfxPoint.h",
     "gfxQuad.h",
     "gfxQuaternion.h",
@@ -142,6 +143,7 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
 elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
     REQUIRES_UNIFIED_BUILD = True
     EXPORTS += [
+        "gfxDWriteCommon.h",
         "gfxDWriteFonts.h",
         "gfxGDIFont.h",
         "gfxGDIFontList.h",
@@ -212,6 +214,7 @@ UNIFIED_SOURCES += [
     "gfxMathTable.cpp",
     "gfxPattern.cpp",
     "gfxPlatformFontList.cpp",
+    "gfxPlatformWorker.cpp",
     "gfxScriptItemizer.cpp",
     "gfxSkipChars.cpp",
     "gfxSVGGlyphs.cpp",

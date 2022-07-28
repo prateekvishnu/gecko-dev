@@ -32,6 +32,7 @@
 #include "js/Utility.h"
 #include "xpcpublic.h"
 #include "GeckoProfiler.h"
+#include "nsContentSecurityManager.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIContent.h"
 #include "nsJSUtils.h"
@@ -171,7 +172,7 @@ NS_IMPL_CYCLE_COLLECTION(ScriptLoader, mNonAsyncExternalScriptInsertedRequests,
                          mXSLTRequests, mParserBlockingRequest,
                          mBytecodeEncodingQueue, mPreloads,
                          mPendingChildLoaders, mModuleLoader,
-                         mWebExtModuleLoaders)
+                         mWebExtModuleLoaders, mShadowRealmModuleLoaders)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(ScriptLoader)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(ScriptLoader)
@@ -276,6 +277,13 @@ void ScriptLoader::RegisterContentScriptModuleLoader(ModuleLoader* aLoader) {
   MOZ_ASSERT(aLoader->GetScriptLoader() == this);
 
   mWebExtModuleLoaders.AppendElement(aLoader);
+}
+
+void ScriptLoader::RegisterShadowRealmModuleLoader(ModuleLoader* aLoader) {
+  MOZ_ASSERT(aLoader);
+  MOZ_ASSERT(aLoader->GetScriptLoader() == this);
+
+  mShadowRealmModuleLoaders.AppendElement(aLoader);
 }
 
 // Collect telemtry data about the cache information, and the kind of source
@@ -556,14 +564,9 @@ nsresult ScriptLoader::StartClassicLoad(ScriptLoadRequest* aRequest) {
   }
 
   nsSecurityFlags securityFlags =
-      aRequest->CORSMode() == CORS_NONE
-          ? nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL
-          : nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT;
-  if (aRequest->CORSMode() == CORS_ANONYMOUS) {
-    securityFlags |= nsILoadInfo::SEC_COOKIES_SAME_ORIGIN;
-  } else if (aRequest->CORSMode() == CORS_USE_CREDENTIALS) {
-    securityFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
-  }
+      nsContentSecurityManager::ComputeSecurityFlags(
+          aRequest->CORSMode(), nsContentSecurityManager::CORSSecurityMapping::
+                                    CORS_NONE_MAPS_TO_DISABLED_CORS_CHECKS);
 
   securityFlags |= nsILoadInfo::SEC_ALLOW_CHROME;
 
@@ -1160,6 +1163,10 @@ bool ScriptLoader::ProcessInlineScript(nsIScriptElement* aElement,
   request->mBaseURL = mDocument->GetDocBaseURI();
 
   if (request->IsModuleRequest()) {
+    // https://wicg.github.io/import-maps/#document-acquiring-import-maps
+    // Set acquiring import maps to false for inline modules.
+    mModuleLoader->SetAcquiringImportMaps(false);
+
     ModuleLoadRequest* modReq = request->AsModuleRequest();
     if (aElement->GetParserCreated() != NOT_FROM_PARSER) {
       if (aElement->GetScriptAsync()) {
@@ -1700,6 +1707,10 @@ nsresult ScriptLoader::AttemptAsyncScriptCompile(ScriptLoadRequest* aRequest,
         case JS::DelazificationOption::ConcurrentDepthFirst:
           TRACE_FOR_TEST(aRequest->GetScriptLoadContext()->GetScriptElement(),
                          "delazification_concurrent_depth_first");
+          break;
+        case JS::DelazificationOption::ConcurrentLargeFirst:
+          TRACE_FOR_TEST(aRequest->GetScriptLoadContext()->GetScriptElement(),
+                         "delazification_concurrent_large_first");
           break;
         case JS::DelazificationOption::ParseEverythingEagerly:
           TRACE_FOR_TEST(aRequest->GetScriptLoadContext()->GetScriptElement(),
@@ -2680,6 +2691,12 @@ bool ScriptLoader::HasPendingDynamicImports() const {
     }
   }
 
+  for (ModuleLoader* loader : mShadowRealmModuleLoaders) {
+    if (loader->HasPendingDynamicImports()) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -3493,6 +3510,10 @@ void ScriptLoader::ParsingComplete(bool aTerminated) {
   }
 
   for (ModuleLoader* loader : mWebExtModuleLoaders) {
+    loader->CancelAndClearDynamicImports();
+  }
+
+  for (ModuleLoader* loader : mShadowRealmModuleLoaders) {
     loader->CancelAndClearDynamicImports();
   }
 

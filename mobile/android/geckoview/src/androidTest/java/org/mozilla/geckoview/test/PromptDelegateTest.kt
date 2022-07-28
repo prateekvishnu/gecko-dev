@@ -21,6 +21,7 @@ import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.Autocomplete
+import org.junit.Assume.assumeThat
 
 @RunWith(AndroidJUnit4::class)
 @MediumTest
@@ -449,18 +450,18 @@ class PromptDelegateTest : BaseSessionTest() {
             override fun onChoicePrompt(session: GeckoSession, prompt: PromptDelegate.ChoicePrompt): GeckoResult<PromptDelegate.PromptResponse>? {
                 assertThat("There should be two choices", prompt.choices.size, equalTo(2))
                 prompt.setDelegate(promptInstanceDelegate)
-                return GeckoResult()
+                mainSession.evaluateJS("document.querySelector('select').blur()")
+                return result
             }
         })
 
-        mainSession.evaluateJS("document.querySelector('select').addEventListener('click', e => window.setTimeout(() => e.target.blur(), 500))")
         mainSession.synthesizeTap(10, 10)
         sessionRule.waitForResult(result)
     }
 
     @Test
     fun onBeforeUnloadTest() {
-        sessionRule.setPrefsUntilTestEnd(mapOf(
+    	sessionRule.setPrefsUntilTestEnd(mapOf(
                 "dom.require_user_interaction_for_beforeunload" to false
         ))
         mainSession.loadTestPath(BEFORE_UNLOAD)
@@ -498,6 +499,11 @@ class PromptDelegateTest : BaseSessionTest() {
         })
 
         sessionRule.waitForResult(promptResult)
+
+        // Although onBeforeUnloadPrompt is done, nsDocumentViewer might not clear
+        // mInPermitUnloadPrompt flag at this time yet. We need a wait to finish
+        // "nsDocumentViewer::PermitUnload" loop.
+        mainSession.waitForJS("new Promise(resolve => window.setTimeout(resolve, 100))")
 
         // This request will go through and end the test. Doing the negative case first will
         // ensure that if either of this tests fail the test will fail.

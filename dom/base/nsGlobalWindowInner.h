@@ -44,8 +44,6 @@
 #include "mozilla/dom/EventTarget.h"
 #include "mozilla/dom/WindowBinding.h"
 #include "mozilla/dom/WindowProxyHolder.h"
-#include "mozilla/glean/bindings/Glean.h"
-#include "mozilla/glean/bindings/GleanPings.h"
 #include "Units.h"
 #include "nsCheapSets.h"
 #include "mozilla/dom/ImageBitmapBinding.h"
@@ -90,6 +88,11 @@ class PromiseDocumentFlushedResolver;
 namespace mozilla {
 class AbstractThread;
 class ErrorResult;
+
+namespace glean {
+class Glean;
+class GleanPings;
+}  // namespace glean
 
 namespace hal {
 enum class ScreenOrientation : uint32_t;
@@ -246,6 +249,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   bool ShouldResistFingerprinting() const final;
   uint32_t GetPrincipalHashValue() const final;
   mozilla::OriginTrials Trials() const final;
+  mozilla::dom::FontFaceSet* Fonts() final;
 
   JSObject* GetGlobalJSObject() final { return GetWrapper(); }
   JSObject* GetGlobalJSObjectPreserveColor() const final {
@@ -268,6 +272,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
 
   // nsIScriptObjectPrincipal
   virtual nsIPrincipal* GetPrincipal() override;
+
+  virtual nsIPrincipal* GetEffectiveCookiePrincipal() override;
 
   virtual nsIPrincipal* GetEffectiveStoragePrincipal() override;
 
@@ -406,6 +412,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   static bool DeviceSensorsEnabled(JSContext*, JSObject*);
 
   static bool ContentPropertyEnabled(JSContext* aCx, JSObject*);
+
+  static bool CachesEnabled(JSContext* aCx, JSObject*);
 
   bool DoResolve(
       JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aId,
@@ -738,7 +746,8 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   mozilla::dom::Storage* GetSessionStorage(mozilla::ErrorResult& aError);
   mozilla::dom::Storage* GetLocalStorage(mozilla::ErrorResult& aError);
   mozilla::dom::Selection* GetSelection(mozilla::ErrorResult& aError);
-  mozilla::dom::IDBFactory* GetIndexedDB(mozilla::ErrorResult& aError);
+  mozilla::dom::IDBFactory* GetIndexedDB(JSContext* aCx,
+                                         mozilla::ErrorResult& aError);
   already_AddRefed<nsICSSDeclaration> GetComputedStyle(
       mozilla::dom::Element& aElt, const nsAString& aPseudoElt,
       mozilla::ErrorResult& aError) override;
@@ -1454,6 +1463,7 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
   // The document's principals and CSP are only stored if
   // FreeInnerObjects has been called.
   nsCOMPtr<nsIPrincipal> mDocumentPrincipal;
+  nsCOMPtr<nsIPrincipal> mDocumentCookiePrincipal;
   nsCOMPtr<nsIPrincipal> mDocumentStoragePrincipal;
   nsCOMPtr<nsIPrincipal> mDocumentPartitionedPrincipal;
   nsCOMPtr<nsIContentSecurityPolicy> mDocumentCsp;

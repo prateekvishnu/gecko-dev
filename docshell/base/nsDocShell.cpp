@@ -2304,20 +2304,15 @@ nsDocShell::SetRecordProfileTimelineMarkers(bool aValue) {
     return NS_OK;
   }
 
-  RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
-  if (!timelines) {
-    return NS_OK;
-  }
-
   if (aValue) {
-    MOZ_ASSERT(!timelines->HasConsumer(this));
-    timelines->AddConsumer(this);
-    MOZ_ASSERT(timelines->HasConsumer(this));
+    MOZ_ASSERT(!TimelineConsumers::HasConsumer(this));
+    TimelineConsumers::AddConsumer(this);
+    MOZ_ASSERT(TimelineConsumers::HasConsumer(this));
     UseEntryScriptProfiling();
   } else {
-    MOZ_ASSERT(timelines->HasConsumer(this));
-    timelines->RemoveConsumer(this);
-    MOZ_ASSERT(!timelines->HasConsumer(this));
+    MOZ_ASSERT(TimelineConsumers::HasConsumer(this));
+    TimelineConsumers::RemoveConsumer(this);
+    MOZ_ASSERT(!TimelineConsumers::HasConsumer(this));
     UnuseEntryScriptProfiling();
   }
 
@@ -2332,15 +2327,10 @@ nsDocShell::GetRecordProfileTimelineMarkers(bool* aValue) {
 
 nsresult nsDocShell::PopProfileTimelineMarkers(
     JSContext* aCx, JS::MutableHandle<JS::Value> aOut) {
-  RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
-  if (!timelines) {
-    return NS_OK;
-  }
-
   nsTArray<dom::ProfileTimelineMarker> store;
   SequenceRooter<dom::ProfileTimelineMarker> rooter(aCx, &store);
 
-  timelines->PopMarkers(this, aCx, store);
+  TimelineConsumers::PopMarkers(this, aCx, store);
 
   if (!ToJSValue(aCx, store, aOut)) {
     JS_ClearPendingException(aCx);
@@ -3669,7 +3659,7 @@ nsDocShell::DisplayLoadError(nsresult aError, nsIURI* aURI,
         nsCOMPtr<nsISiteSecurityService> sss =
             do_GetService(NS_SSSERVICE_CONTRACTID, &rv);
         NS_ENSURE_SUCCESS(rv, rv);
-        rv = sss->IsSecureURI(aURI, attrsForHSTS, nullptr, nullptr, &isStsHost);
+        rv = sss->IsSecureURI(aURI, attrsForHSTS, &isStsHost);
         NS_ENSURE_SUCCESS(rv, rv);
       } else {
         mozilla::dom::ContentChild* cc =
@@ -4641,20 +4631,14 @@ nsDocShell::Destroy() {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsDocShell::GetUnscaledDevicePixelsPerCSSPixel(double* aScale) {
+double nsDocShell::GetWidgetCSSToDeviceScale() {
   if (mParentWidget) {
-    *aScale = mParentWidget->GetDefaultScale().scale;
-    return NS_OK;
+    return mParentWidget->GetDefaultScale().scale;
   }
-
-  nsCOMPtr<nsIBaseWindow> ownerWindow(do_QueryInterface(mTreeOwner));
-  if (ownerWindow) {
-    return ownerWindow->GetUnscaledDevicePixelsPerCSSPixel(aScale);
+  if (nsCOMPtr<nsIBaseWindow> ownerWindow = do_QueryInterface(mTreeOwner)) {
+    return ownerWindow->GetWidgetCSSToDeviceScale();
   }
-
-  *aScale = 1.0;
-  return NS_OK;
+  return 1.0;
 }
 
 NS_IMETHODIMP
@@ -5797,13 +5781,13 @@ nsDocShell::OnStateChange(nsIWebProgress* aProgress, nsIRequest* aRequest,
         }
       }
 
-      if constexpr (SessionStoreUtils::NATIVE_LISTENER) {
+      if (StaticPrefs::browser_sessionstore_platform_collection_AtStartup()) {
         if (IsForceReloadType(mLoadType)) {
           if (WindowContext* windowContext =
                   mBrowsingContext->GetCurrentWindowContext()) {
             SessionStoreChild::From(windowContext->GetWindowGlobalChild())
-                ->SendResetSessionStore(
-                    mBrowsingContext, mBrowsingContext->GetSessionStoreEpoch());
+                ->ResetSessionStore(mBrowsingContext,
+                                    mBrowsingContext->GetSessionStoreEpoch());
           }
         }
       }
@@ -6541,14 +6525,17 @@ nsresult nsDocShell::EndPageLoad(nsIWebProgress* aProgress,
     // incorrectly overrides session store data from the following load.
     return NS_OK;
   }
-  if constexpr (SessionStoreUtils::NATIVE_LISTENER) {
+  if (StaticPrefs::browser_sessionstore_platform_collection_AtStartup()) {
     if (WindowContext* windowContext =
             mBrowsingContext->GetCurrentWindowContext()) {
-      // TODO(farre): File bug: From a user perspective this would probably be
-      // just fine to run off the change listener timer. Turns out that a flush
-      // is needed. Several tests depend on this behaviour. Could potentially be
-      // an optimization for later. See Bug 1756995.
-      SessionStoreChangeListener::FlushAllSessionStoreData(windowContext);
+      using Change = SessionStoreChangeListener::Change;
+
+      // We've finished loading the page and now we want to collect all the
+      // session store state that the page is initialized with.
+      SessionStoreChangeListener::CollectSessionStoreData(
+          windowContext,
+          EnumSet<Change>(Change::Input, Change::Scroll, Change::SessionHistory,
+                          Change::WireFrame));
     }
   }
 
@@ -8508,9 +8495,10 @@ nsresult nsDocShell::PerformRetargeting(nsDocShellLoadState* aLoadState) {
 
     // Ideally we should use the same loadinfo as within DoURILoad which
     // should match this one when both are applicable.
-    nsCOMPtr<nsILoadInfo> secCheckLoadInfo = new LoadInfo(
-        mScriptGlobal, aLoadState->TriggeringPrincipal(), requestingContext,
-        nsILoadInfo::SEC_ONLY_FOR_EXPLICIT_CONTENTSEC_CHECK, 0);
+    nsCOMPtr<nsILoadInfo> secCheckLoadInfo =
+        new LoadInfo(mScriptGlobal, aLoadState->URI(),
+                     aLoadState->TriggeringPrincipal(), requestingContext,
+                     nsILoadInfo::SEC_ONLY_FOR_EXPLICIT_CONTENTSEC_CHECK, 0);
 
     // Since Content Policy checks are performed within docShell as well as
     // the ContentSecurityManager we need a reliable way to let certain
@@ -10436,7 +10424,8 @@ nsresult nsDocShell::DoURILoad(nsDocShellLoadState* aLoadState,
       aLoadState->GetLoadIdentifier());
   RefPtr<LoadInfo> loadInfo =
       (contentPolicyType == nsIContentPolicy::TYPE_DOCUMENT)
-          ? new LoadInfo(loadingWindow, aLoadState->TriggeringPrincipal(),
+          ? new LoadInfo(loadingWindow, aLoadState->URI(),
+                         aLoadState->TriggeringPrincipal(),
                          topLevelLoadingContext, securityFlags, sandboxFlags)
           : new LoadInfo(loadingPrincipal, aLoadState->TriggeringPrincipal(),
                          loadingNode, securityFlags, contentPolicyType,
@@ -11157,32 +11146,41 @@ bool nsDocShell::OnNewURI(nsIURI* aURI, nsIChannel* aChannel,
   return onLocationChangeNeeded;
 }
 
-bool nsDocShell::CollectWireframe() {
+Maybe<Wireframe> nsDocShell::GetWireframe() {
   const bool collectWireFrame =
       mozilla::SessionHistoryInParent() &&
       StaticPrefs::browser_history_collectWireframes() &&
       mBrowsingContext->IsTopContent() && mActiveEntry;
 
   if (!collectWireFrame) {
-    return false;
+    return Nothing();
   }
 
   RefPtr<Document> doc = mContentViewer->GetDocument();
   Nullable<Wireframe> wireframe;
   doc->GetWireframeWithoutFlushing(false, wireframe);
   if (wireframe.IsNull()) {
+    return Nothing();
+  }
+  return Some(wireframe.Value());
+}
+
+bool nsDocShell::CollectWireframe() {
+  Maybe<Wireframe> wireframe = GetWireframe();
+  if (wireframe.isNothing()) {
     return false;
   }
+
   if (XRE_IsParentProcess()) {
     SessionHistoryEntry* entry =
         mBrowsingContext->Canonical()->GetActiveSessionHistoryEntry();
     if (entry) {
-      entry->SetWireframe(Some(wireframe.Value()));
+      entry->SetWireframe(wireframe);
     }
   } else {
     mozilla::Unused
         << ContentChild::GetSingleton()->SendSessionHistoryEntryWireframe(
-               mBrowsingContext, wireframe.Value());
+               mBrowsingContext, wireframe.ref());
   }
 
   return true;
@@ -11469,6 +11467,7 @@ nsresult nsDocShell::UpdateURLAndHistory(Document* aDocument, nsIURI* aNewURI,
       UpdateActiveEntry(false,
                         /* aPreviousScrollPos = */ Some(scrollPos), aNewURI,
                         /* aOriginalURI = */ nullptr,
+                        /* aReferrerInfo = */ nullptr,
                         /* aTriggeringPrincipal = */ aDocument->NodePrincipal(),
                         csp, title, scrollRestorationIsManual, aData,
                         uriWasModified);
@@ -11511,12 +11510,17 @@ nsresult nsDocShell::UpdateURLAndHistory(Document* aDocument, nsIURI* aNewURI,
     // in our case.  We could also set it to aNewURI, with the same result.
     // We don't use aTitle here, see bug 544535.
     nsString title;
+    nsCOMPtr<nsIReferrerInfo> referrerInfo;
     if (mActiveEntry) {
       title = mActiveEntry->GetTitle();
+      referrerInfo = mActiveEntry->GetReferrerInfo();
+    } else {
+      referrerInfo = nullptr;
     }
     UpdateActiveEntry(
         true, /* aPreviousScrollPos = */ Nothing(), aNewURI, aNewURI,
-        aDocument->NodePrincipal(), aDocument->GetCsp(), title,
+        /* aReferrerInfo = */ referrerInfo, aDocument->NodePrincipal(),
+        aDocument->GetCsp(), title,
         mActiveEntry && mActiveEntry->GetScrollRestorationIsManual(), aData,
         uriWasModified);
   } else {
@@ -11936,10 +11940,10 @@ nsresult nsDocShell::AddToSessionHistory(
 
 void nsDocShell::UpdateActiveEntry(
     bool aReplace, const Maybe<nsPoint>& aPreviousScrollPos, nsIURI* aURI,
-    nsIURI* aOriginalURI, nsIPrincipal* aTriggeringPrincipal,
-    nsIContentSecurityPolicy* aCsp, const nsAString& aTitle,
-    bool aScrollRestorationIsManual, nsIStructuredCloneContainer* aData,
-    bool aURIWasModified) {
+    nsIURI* aOriginalURI, nsIReferrerInfo* aReferrerInfo,
+    nsIPrincipal* aTriggeringPrincipal, nsIContentSecurityPolicy* aCsp,
+    const nsAString& aTitle, bool aScrollRestorationIsManual,
+    nsIStructuredCloneContainer* aData, bool aURIWasModified) {
   MOZ_ASSERT(mozilla::SessionHistoryInParent());
   MOZ_ASSERT(aURI, "uri is null");
   MOZ_ASSERT(mLoadType == LOAD_PUSHSTATE,
@@ -11968,6 +11972,7 @@ void nsDocShell::UpdateActiveEntry(
         aURI, aTriggeringPrincipal, nullptr, nullptr, aCsp, mContentTypeHint);
   }
   mActiveEntry->SetOriginalURI(aOriginalURI);
+  mActiveEntry->SetReferrerInfo(aReferrerInfo);
   mActiveEntry->SetTitle(aTitle);
   mActiveEntry->SetStateData(static_cast<nsStructuredCloneContainer*>(aData));
   mActiveEntry->SetURIWasModified(aURIWasModified);
@@ -12109,8 +12114,6 @@ nsDocShell::PersistLayoutHistoryState() {
     if (scrollRestorationIsManual && layoutState) {
       layoutState->ResetScrollState();
     }
-
-    CollectWireframe();
   }
 
   return rv;
@@ -13423,14 +13426,11 @@ void nsDocShell::NotifyJSRunToCompletionStart(const char* aReason,
                                               JS::Handle<JS::Value> aAsyncStack,
                                               const char* aAsyncCause) {
   // If first start, mark interval start.
-  if (mJSRunToCompletionDepth == 0) {
-    RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
-    if (timelines && timelines->HasConsumer(this)) {
-      timelines->AddMarkerForDocShell(
-          this, mozilla::MakeUnique<JavascriptTimelineMarker>(
-                    aReason, aFunctionName, aFilename, aLineNumber,
-                    MarkerTracingType::START, aAsyncStack, aAsyncCause));
-    }
+  if (mJSRunToCompletionDepth == 0 && TimelineConsumers::HasConsumer(this)) {
+    TimelineConsumers::AddMarkerForDocShell(
+        this, mozilla::MakeUnique<JavascriptTimelineMarker>(
+                  aReason, aFunctionName, aFilename, aLineNumber,
+                  MarkerTracingType::START, aAsyncStack, aAsyncCause));
   }
 
   mJSRunToCompletionDepth++;
@@ -13440,12 +13440,9 @@ void nsDocShell::NotifyJSRunToCompletionStop() {
   mJSRunToCompletionDepth--;
 
   // If last stop, mark interval end.
-  if (mJSRunToCompletionDepth == 0) {
-    RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
-    if (timelines && timelines->HasConsumer(this)) {
-      timelines->AddMarkerForDocShell(this, "Javascript",
-                                      MarkerTracingType::END);
-    }
+  if (mJSRunToCompletionDepth == 0 && TimelineConsumers::HasConsumer(this)) {
+    TimelineConsumers::AddMarkerForDocShell(this, "Javascript",
+                                            MarkerTracingType::END);
   }
 }
 

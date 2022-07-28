@@ -81,9 +81,9 @@ class gfxCharacterMap : public gfxSparseBitSet {
     --mRefCnt;
     NS_LOG_RELEASE(this, mRefCnt, "gfxCharacterMap");
     if (mRefCnt == 0) {
-      NotifyReleased();
-      // |this| has been deleted.
-      return 0;
+      // Because we have a raw pointer in gfxPlatformFontList that we may race
+      // access with, we may not release here.
+      return NotifyMaybeReleased();
     }
     return mRefCnt;
   }
@@ -112,9 +112,9 @@ class gfxCharacterMap : public gfxSparseBitSet {
   bool mShared;
 
  protected:
-  void NotifyReleased();
+  nsrefcnt NotifyMaybeReleased();
 
-  nsAutoRefCnt mRefCnt;
+  mozilla::ThreadSafeAutoRefCnt mRefCnt;
 
  private:
   gfxCharacterMap(const gfxCharacterMap&);
@@ -193,10 +193,10 @@ class gfxFontEntry {
   // If this is false, we might want to fall back to a different face and
   // possibly apply synthetic styling.
   bool IsNormalStyle() const {
-    return IsUpright() && Weight().Min() <= FontWeight::Normal() &&
-           Weight().Max() >= FontWeight::Normal() &&
-           Stretch().Min() <= FontStretch::Normal() &&
-           Stretch().Max() >= FontStretch::Normal();
+    return IsUpright() && Weight().Min() <= FontWeight::NORMAL &&
+           Weight().Max() >= FontWeight::NORMAL &&
+           Stretch().Min() <= FontStretch::NORMAL &&
+           Stretch().Max() >= FontStretch::NORMAL;
   }
 
   // whether a feature is supported by the font (limited to a small set
@@ -329,8 +329,8 @@ class gfxFontEntry {
   // cached instance; but we also don't return already_AddRefed, because
   // the caller may only need to use the font temporarily and doesn't need
   // a strong reference.
-  gfxFont* FindOrMakeFont(const gfxFontStyle* aStyle,
-                          gfxCharacterMap* aUnicodeRangeMap = nullptr);
+  already_AddRefed<gfxFont> FindOrMakeFont(
+      const gfxFontStyle* aStyle, gfxCharacterMap* aUnicodeRangeMap = nullptr);
 
   // Get an existing font table cache entry in aBlob if it has been
   // registered, or return false if not.  Callers must call
@@ -518,9 +518,9 @@ class gfxFontEntry {
 
   uint32_t mLanguageOverride = NO_FONT_LANGUAGE_OVERRIDE;
 
-  WeightRange mWeightRange = WeightRange(FontWeight(500));
-  StretchRange mStretchRange = StretchRange(FontStretch::Normal());
-  SlantStyleRange mStyleRange = SlantStyleRange(FontSlantStyle::Normal());
+  WeightRange mWeightRange = WeightRange(FontWeight::FromInt(500));
+  StretchRange mStretchRange = StretchRange(FontStretch::NORMAL);
+  SlantStyleRange mStyleRange = SlantStyleRange(FontSlantStyle::NORMAL);
 
   // Font metrics overrides (as multiples of used font size); negative values
   // indicate no override to be applied.

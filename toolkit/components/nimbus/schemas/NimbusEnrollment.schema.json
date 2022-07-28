@@ -17,6 +17,10 @@
           "type": "string",
           "description": "Short public description of the experiment displayed on on \"about:studies\""
         },
+        "isRollout": {
+          "type": "boolean",
+          "description": "When this property is set to true, treat this experiment as a rollout. Rollouts are currently handled as single-branch experiments separated from the bucketing namespace for normal experiments. See also: https://mozilla-hub.atlassian.net/browse/SDK-405"
+        },
         "featureIds": {
           "type": "array",
           "items": {
@@ -39,10 +43,6 @@
                     "featureId": {
                       "type": "string",
                       "description": "The identifier for the feature flag"
-                    },
-                    "enabled": {
-                      "type": "boolean",
-                      "description": "This can be used to turn the whole feature on/off"
                     },
                     "value": {
                       "type": "object",
@@ -166,10 +166,6 @@
             }
           ],
           "description": "Branch configuration for the experiment"
-        },
-        "isRollout": {
-          "type": "boolean",
-          "description": "Whether or not this experiment is considered a rollout."
         },
         "experimentType": {
           "type": "string",

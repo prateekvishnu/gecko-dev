@@ -6,16 +6,9 @@
 
 var EXPORTED_SYMBOLS = ["Network"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { Domain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/Domain.jsm"
 );
-
-const lazy = {};
-
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  Domain: "chrome://remote/content/cdp/domains/Domain.jsm",
-});
 
 const MAX_COOKIE_EXPIRY = Number.MAX_SAFE_INTEGER;
 
@@ -43,7 +36,7 @@ const LOAD_CAUSE_STRINGS = {
   [Ci.nsIContentPolicy.TYPE_WEB_MANIFEST]: "WebManifest",
 };
 
-class Network extends lazy.Domain {
+class Network extends Domain {
   constructor(session) {
     super(session);
     this.enabled = false;
@@ -403,10 +396,13 @@ class Network extends lazy.Domain {
 
   _onRequest(eventName, httpChannel, data) {
     const wrappedChannel = ChannelWrapper.get(httpChannel);
+    const urlFragment = httpChannel.URI.hasRef
+      ? "#" + httpChannel.URI.ref
+      : undefined;
 
     const request = {
-      url: httpChannel.URI.spec,
-      urlFragment: undefined,
+      url: httpChannel.URI.specIgnoringRef,
+      urlFragment,
       method: httpChannel.requestMethod,
       headers: headersAsObject(data.headers),
       postData: undefined,
@@ -419,7 +415,8 @@ class Network extends lazy.Domain {
     this.emit("Network.requestWillBeSent", {
       requestId: data.requestId,
       loaderId: data.loaderId,
-      documentURL: wrappedChannel.documentURL || httpChannel.URI.spec,
+      documentURL:
+        wrappedChannel.documentURL || httpChannel.URI.specIgnoringRef,
       request,
       timestamp: Date.now() / 1000,
       wallTime: undefined,

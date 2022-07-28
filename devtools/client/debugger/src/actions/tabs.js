@@ -16,28 +16,10 @@ import {
   getNewSelectedSourceId,
 } from "../selectors";
 
-export function updateTab(source, framework) {
-  const { url, id: sourceId, isOriginal, thread } = source;
-
-  return {
-    type: "UPDATE_TAB",
-    url,
-    framework,
-    isOriginal,
-    sourceId,
-    thread,
-  };
-}
-
 export function addTab(source) {
-  const { url, id: sourceId, isOriginal, thread } = source;
-
   return {
     type: "ADD_TAB",
-    url,
-    isOriginal,
-    sourceId,
-    thread,
+    source,
   };
 }
 

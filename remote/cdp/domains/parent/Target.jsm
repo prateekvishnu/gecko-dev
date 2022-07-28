@@ -6,9 +6,12 @@
 
 var EXPORTED_SYMBOLS = ["Target"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const { Domain } = ChromeUtils.import(
+  "chrome://remote/content/cdp/domains/Domain.jsm"
 );
 
 const lazy = {};
@@ -17,7 +20,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   ContextualIdentityService:
     "resource://gre/modules/ContextualIdentityService.jsm",
 
-  Domain: "chrome://remote/content/cdp/domains/Domain.jsm",
   MainProcessTarget:
     "chrome://remote/content/cdp/targets/MainProcessTarget.jsm",
   TabManager: "chrome://remote/content/shared/TabManager.jsm",
@@ -27,7 +29,7 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
 
 let browserContextIds = 1;
 
-class Target extends lazy.Domain {
+class Target extends Domain {
   constructor(session) {
     super(session);
 

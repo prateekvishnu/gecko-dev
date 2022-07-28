@@ -10,8 +10,8 @@
 
 var EXPORTED_SYMBOLS = ["BasePopup", "PanelPopup", "ViewPopup"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -321,7 +321,6 @@ class BasePopup {
     browser.setAttribute("tooltip", "aHTMLTooltip");
     browser.setAttribute("contextmenu", "contentAreaContextMenu");
     browser.setAttribute("autocompletepopup", "PopupAutoComplete");
-    browser.setAttribute("selectmenulist", "ContentSelectDropdown");
     browser.setAttribute("selectmenuconstrained", "false");
 
     // Ensure the browser will initially load in the same group as other

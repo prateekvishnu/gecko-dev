@@ -6,10 +6,9 @@
 
 var EXPORTED_SYMBOLS = ["SiteDataTestUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { BrowserTestUtils } = ChromeUtils.import(
   "resource://testing-common/BrowserTestUtils.jsm"
 );
@@ -22,8 +21,6 @@ XPCOMUtils.defineLazyServiceGetter(
   "@mozilla.org/serviceworkers/manager;1",
   "nsIServiceWorkerManager"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["indexedDB"]);
 
 /**
  * This module assists with tasks around testing functionality that shows
@@ -63,11 +60,7 @@ var SiteDataTestUtils = {
       let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
         origin
       );
-      let request = lazy.indexedDB.openForPrincipal(
-        principal,
-        "TestDatabase",
-        1
-      );
+      let request = indexedDB.openForPrincipal(principal, "TestDatabase", 1);
       request.onupgradeneeded = function(e) {
         let db = e.target.result;
         db.createObjectStore("TestStore");
@@ -256,11 +249,7 @@ var SiteDataTestUtils = {
     );
     return new Promise(resolve => {
       let data = true;
-      let request = lazy.indexedDB.openForPrincipal(
-        principal,
-        "TestDatabase",
-        1
-      );
+      let request = indexedDB.openForPrincipal(principal, "TestDatabase", 1);
       request.onupgradeneeded = function(e) {
         data = false;
       };

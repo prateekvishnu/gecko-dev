@@ -176,8 +176,8 @@ panelview[mainview] > .panel-header {
 }
 
 #tabbrowser-tabs[hasadjacentnewtabbutton]:not([overflow="true"]) ~ #new-tab-button,
-#tabbrowser-tabs[overflow="true"] > #tabbrowser-arrowscrollbox > #tabs-newtab-button,
-#tabbrowser-tabs:not([hasadjacentnewtabbutton]) > #tabbrowser-arrowscrollbox > #tabs-newtab-button,
+#tabbrowser-tabs[overflow="true"] > #tabbrowser-arrowscrollbox > #tabbrowser-arrowscrollbox-periphery > #tabs-newtab-button,
+#tabbrowser-tabs:not([hasadjacentnewtabbutton]) > #tabbrowser-arrowscrollbox > #tabbrowser-arrowscrollbox-periphery > #tabs-newtab-button,
 #TabsToolbar[customizing="true"] #tabs-newtab-button {
   display: none;
 }
@@ -1509,6 +1509,11 @@ toolbar[keyNav=true]:not([collapsed=true], [customizing=true]) toolbartabstop {
 
 .dialogBox:not(.noShadow) {
   box-shadow: 0 2px 14px 0 rgba(0, 0, 0, 0.2);
+}
+
+.dialogBox.fullScreen {
+  height: 100vh;
+  width: 100vw;
 }
 
 /*

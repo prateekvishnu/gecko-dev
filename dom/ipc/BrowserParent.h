@@ -604,9 +604,6 @@ class BrowserParent final : public PBrowserParent,
 
   bool DeallocPFilePickerParent(PFilePickerParent* actor);
 
-  mozilla::ipc::IPCResult RecvIndexedDBPermissionRequest(
-      nsIPrincipal* aPrincipal, IndexedDBPermissionRequestResolver&& aResolve);
-
   bool GetGlobalJSObject(JSContext* cx, JSObject** globalp);
 
   void StartPersistence(CanonicalBrowsingContext* aContext,
@@ -671,7 +668,7 @@ class BrowserParent final : public PBrowserParent,
 
   bool DeallocPPaymentRequestParent(PPaymentRequestParent* aActor);
 
-  bool SendLoadRemoteScript(const nsString& aURL,
+  bool SendLoadRemoteScript(const nsAString& aURL,
                             const bool& aRunInGlobalScope);
 
   void LayerTreeUpdate(const LayersObserverEpoch& aEpoch, bool aActive);

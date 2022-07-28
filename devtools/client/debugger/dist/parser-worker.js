@@ -14695,7 +14695,6 @@ function extractSymbols(sourceId) {
     literals: [],
     hasJsx: false,
     hasTypes: false,
-    loading: false,
     framework: undefined
   };
   const state = {
@@ -47826,8 +47825,16 @@ function translateDeclarationIntoAssignment(node) {
 
 function addReturnNode(ast) {
   const statements = ast.program.body;
-  const lastStatement = statements[statements.length - 1];
-  return statements.slice(0, -1).concat(t.returnStatement(lastStatement.expression));
+  const lastStatement = statements.pop(); // if the last expression is an awaitExpression, strip the `await` part and directly
+  // return the argument to avoid calling the argument's `then` function twice when the
+  // mapped expression gets evaluated (See Bug 1771428)
+
+  if (t.isAwaitExpression(lastStatement.expression)) {
+    lastStatement.expression = lastStatement.expression.argument;
+  }
+
+  statements.push(t.returnStatement(lastStatement.expression));
+  return statements;
 }
 
 function getDeclarations(node) {
@@ -47900,7 +47907,7 @@ function translateDeclarationsIntoAssignment(ast) {
   t.traverse(ast, (node, ancestors) => {
     const parent = ancestors[ancestors.length - 1];
 
-    if (t.isWithStatement(node) || !(0, _helpers.isTopLevel)(ancestors) || t.isAssignmentExpression(node) || !t.isVariableDeclaration(node) || t.isForStatement(parent.node) || !Array.isArray(node.declarations) || node.declarations.length === 0) {
+    if (t.isWithStatement(node) || !(0, _helpers.isTopLevel)(ancestors) || t.isAssignmentExpression(node) || !t.isVariableDeclaration(node) || t.isForStatement(parent.node) || t.isForXStatement(parent.node) || !Array.isArray(node.declarations) || node.declarations.length === 0) {
       return;
     }
 

@@ -42,7 +42,9 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionSettingsStore"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { ExtensionParent } = ChromeUtils.import(
+  "resource://gre/modules/ExtensionParent.jsm"
+);
 
 const lazy = {};
 
@@ -55,11 +57,6 @@ ChromeUtils.defineModuleGetter(
   lazy,
   "JSONFile",
   "resource://gre/modules/JSONFile.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "ExtensionParent",
-  "resource://gre/modules/ExtensionParent.jsm"
 );
 
 // Defined for readability of precedence and selection code.  keyInfo.selected will be
@@ -326,7 +323,7 @@ function alterSetting(id, type, key, action) {
   }
 
   _store.saveSoon();
-  lazy.ExtensionParent.apiManager.emit("extension-setting-changed", {
+  ExtensionParent.apiManager.emit("extension-setting-changed", {
     action,
     id,
     type,
@@ -673,23 +670,20 @@ var ExtensionSettingsStore = {
 };
 
 // eslint-disable-next-line mozilla/balanced-listeners
-lazy.ExtensionParent.apiManager.on(
-  "uninstall-complete",
-  async (type, { id }) => {
-    // Catch any settings that were not properly removed during "uninstall".
-    await ExtensionSettingsStore.initialize();
-    for (let type in _store.data) {
-      // prefs settings must be handled by ExtensionPreferencesManager.
-      if (type === "prefs") {
-        continue;
-      }
-      let items = ExtensionSettingsStore.getAllForExtension(id, type);
-      for (let key of items) {
-        ExtensionSettingsStore.removeSetting(id, type, key);
-        Services.console.logStringMessage(
-          `Post-Uninstall removal of addon settings for ${id}, type: ${type} key: ${key}`
-        );
-      }
+ExtensionParent.apiManager.on("uninstall-complete", async (type, { id }) => {
+  // Catch any settings that were not properly removed during "uninstall".
+  await ExtensionSettingsStore.initialize();
+  for (let type in _store.data) {
+    // prefs settings must be handled by ExtensionPreferencesManager.
+    if (type === "prefs") {
+      continue;
+    }
+    let items = ExtensionSettingsStore.getAllForExtension(id, type);
+    for (let key of items) {
+      ExtensionSettingsStore.removeSetting(id, type, key);
+      Services.console.logStringMessage(
+        `Post-Uninstall removal of addon settings for ${id}, type: ${type} key: ${key}`
+      );
     }
   }
-);
+});

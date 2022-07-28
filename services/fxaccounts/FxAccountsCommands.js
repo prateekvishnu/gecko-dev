@@ -16,9 +16,8 @@ ChromeUtils.defineModuleGetter(
   "PushCrypto",
   "resource://gre/modules/PushCrypto.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { Observers } = ChromeUtils.import(
   "resource://services-common/observers.js"
@@ -26,8 +25,6 @@ const { Observers } = ChromeUtils.import(
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   BulkKeyBundle: "resource://services-sync/keys.js",
-  CommonUtils: "resource://services-common/utils.js",
-  CryptoUtils: "resource://services-crypto/utils.js",
   CryptoWrapper: "resource://services-sync/record.js",
 });
 

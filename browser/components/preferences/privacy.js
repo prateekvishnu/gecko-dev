@@ -292,6 +292,31 @@ function setUpContentBlockingWarnings() {
   }
 }
 
+function initTCPStandardSection() {
+  document
+    .getElementById("tcp-learn-more-link")
+    .setAttribute(
+      "href",
+      Services.urlFormatter.formatURLPref("app.support.baseURL") +
+        Services.prefs.getStringPref(
+          "privacy.restrict3rdpartystorage.preferences.learnMoreURLSuffix"
+        )
+    );
+
+  let cookieBehaviorPref = Preferences.get("network.cookie.cookieBehavior");
+  let updateTCPSectionVisibilityState = () => {
+    document.getElementById("etpStandardTCPBox").hidden =
+      // Hide this section if we show the rollout section already.
+      !document.getElementById("etpStandardTCPRolloutBox").hidden ||
+      cookieBehaviorPref.value !=
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN;
+  };
+
+  cookieBehaviorPref.on("change", updateTCPSectionVisibilityState);
+
+  updateTCPSectionVisibilityState();
+}
+
 function initTCPRolloutSection() {
   document
     .getElementById("tcp-rollout-learn-more-link")
@@ -307,13 +332,13 @@ function initTCPRolloutSection() {
   let updateTCPRolloutSectionVisibilityState = () => {
     // For phase 2 we always hide the TCP preferences section. TCP will be
     // enabled by default in "standard" ETP mode.
-    if (NimbusFeatures.tcpByDefault.isEnabled()) {
+    if (NimbusFeatures.tcpByDefault.getVariable("enabled")) {
       document.getElementById("etpStandardTCPRolloutBox").hidden = true;
       return;
     }
 
     let onboardingEnabled =
-      NimbusFeatures.tcpPreferences.isEnabled() ||
+      NimbusFeatures.tcpPreferences.getVariable("enabled") ||
       (dfpiPref.value && dfpiPref.hasUserValue);
     document.getElementById(
       "etpStandardTCPRolloutBox"
@@ -954,6 +979,7 @@ var gPrivacyPane = {
     setUpContentBlockingWarnings();
 
     initTCPRolloutSection();
+    initTCPStandardSection();
   },
 
   populateCategoryContents() {
@@ -1603,10 +1629,11 @@ var gPrivacyPane = {
   initDeleteOnCloseBox() {
     let deleteOnCloseBox = document.getElementById("deleteOnClose");
     deleteOnCloseBox.checked =
-      Preferences.get("privacy.sanitize.sanitizeOnShutdown").value &&
-      Preferences.get("privacy.clearOnShutdown.cookies").value &&
-      Preferences.get("privacy.clearOnShutdown.cache").value &&
-      Preferences.get("privacy.clearOnShutdown.offlineApps").value;
+      (Preferences.get("privacy.sanitize.sanitizeOnShutdown").value &&
+        Preferences.get("privacy.clearOnShutdown.cookies").value &&
+        Preferences.get("privacy.clearOnShutdown.cache").value &&
+        Preferences.get("privacy.clearOnShutdown.offlineApps").value) ||
+      Preferences.get("browser.privatebrowsing.autostart").value;
   },
 
   /*

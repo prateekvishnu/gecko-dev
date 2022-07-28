@@ -544,6 +544,11 @@ partial interface Document {
   Promise<boolean> hasStorageAccess();
   [Pref="dom.storage_access.enabled", NewObject]
   Promise<void> requestStorageAccess();
+  // https://github.com/privacycg/storage-access/pull/100
+  [Pref="dom.storage_access.forward_declared.enabled", NewObject]
+  Promise<void> requestStorageAccessUnderSite(DOMString serializedSite);
+  [Pref="dom.storage_access.forward_declared.enabled", NewObject]
+  Promise<void> completeStorageAccessRequestFromSite(DOMString serializedSite);
 };
 
 // A privileged API to give chrome privileged code and the content script of the
@@ -604,18 +609,6 @@ partial interface Document {
 partial interface Document {
   [ChromeOnly] readonly attribute ContentSecurityPolicy? csp;
   [ChromeOnly] readonly attribute DOMString cspJSON;
-};
-
-// For more information on Flash classification, see
-// toolkit/components/url-classifier/flash-block-lists.rst
-enum FlashClassification {
-  "unknown",        // Site is not on the whitelist or blacklist
-  "allowed",        // Site is on the Flash whitelist
-  "denied"          // Site is on the Flash blacklist
-};
-partial interface Document {
-  [ChromeOnly]
-  readonly attribute FlashClassification documentFlashClassification;
 };
 
 partial interface Document {
@@ -747,4 +740,11 @@ dictionary Wireframe {
 partial interface Document {
   [ChromeOnly]
   Wireframe? getWireframe(optional boolean aIncludeNodes = false);
+};
+
+partial interface Document {
+  // Returns true if the document is the current active document in a browsing
+  // context which isn't in bfcache.
+  [ChromeOnly]
+  boolean isActive();
 };

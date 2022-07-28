@@ -32,6 +32,7 @@ module.exports = {
     InstallTrigger: false,
     // https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/InternalError
     InternalError: true,
+    Services: false,
     // https://developer.mozilla.org/docs/Web/API/Window/dump
     dump: true,
     openDialog: false,
@@ -50,11 +51,15 @@ module.exports = {
       },
       files: ["**/*.sys.mjs", "**/*.jsm", "**/*.jsm.js"],
       rules: {
+        "mozilla/lazy-getter-object-name": "error",
+        "mozilla/reject-eager-module-in-lazy-getter": "error",
+        "mozilla/reject-global-this": "error",
+        "mozilla/reject-globalThis-modification": "error",
+        // For all system modules, we expect no properties to need importing,
+        // hence reject everything.
+        "mozilla/reject-importGlobalProperties": ["error", "everything"],
+        "mozilla/reject-mixing-eager-and-lazy": "error",
         "mozilla/reject-top-level-await": "error",
-        // Bug 1703953: We don't have a good way to check a file runs in a
-        // privilieged context. Apply this for these files as we know those are
-        // privilieged, and then include more directories elsewhere.
-        "mozilla/use-isInstance": "error",
         // TODO: Bug 1575506 turn `builtinGlobals` on here.
         // We can enable builtinGlobals for jsms due to their scopes.
         "no-redeclare": ["error", { builtinGlobals: false }],
@@ -72,6 +77,14 @@ module.exports = {
             vars: "all",
           },
         ],
+      },
+    },
+    {
+      excludedFiles: ["**/*.sys.mjs"],
+      files: ["**/*.mjs"],
+      rules: {
+        "mozilla/reject-import-system-module-from-non-system": "error",
+        "mozilla/reject-lazy-imports-into-globals": "error",
       },
     },
     {
@@ -152,6 +165,7 @@ module.exports = {
     "mozilla/reject-addtask-only": "error",
     "mozilla/reject-chromeutils-import-params": "error",
     "mozilla/reject-importGlobalProperties": ["error", "allownonwebidl"],
+    "mozilla/reject-multiple-getters-calls": "error",
     "mozilla/reject-osfile": "warn",
     "mozilla/reject-scriptableunicodeconverter": "warn",
     "mozilla/rejects-requires-await": "error",
@@ -160,9 +174,12 @@ module.exports = {
     "mozilla/use-chromeutils-import": "error",
     "mozilla/use-default-preference-values": "error",
     "mozilla/use-includes-instead-of-indexOf": "error",
+    "mozilla/use-isInstance": "error",
     "mozilla/use-ownerGlobal": "error",
     "mozilla/use-returnValue": "error",
     "mozilla/use-services": "error",
+    "mozilla/valid-lazy": "error",
+    "mozilla/valid-services": "error",
 
     // Use [] instead of Array()
     "no-array-constructor": "error",

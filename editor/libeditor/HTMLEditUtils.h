@@ -23,6 +23,7 @@
 #include "mozilla/dom/AbstractRange.h"
 #include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/HTMLBRElement.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/dom/Text.h"
 #include "nsContentUtils.h"
@@ -35,6 +36,15 @@ class nsAtom;
 class nsPresContext;
 
 namespace mozilla {
+
+enum class CollectChildrenOption {
+  // Ignore non-editable nodes
+  IgnoreNonEditableChildren,
+  // Collect list children too.
+  CollectListChildren,
+  // Collect table children too.
+  CollectTableChildren,
+};
 
 class HTMLEditUtils final {
   using AbstractRange = dom::AbstractRange;
@@ -301,8 +311,8 @@ class HTMLEditUtils final {
    * https://w3c.github.io/editing/execCommand.html#non-list-single-line-container
    * https://w3c.github.io/editing/execCommand.html#single-line-container
    */
-  static bool IsNonListSingleLineContainer(nsINode& aNode);
-  static bool IsSingleLineContainer(nsINode& aNode);
+  static bool IsNonListSingleLineContainer(const nsINode& aNode);
+  static bool IsSingleLineContainer(const nsINode& aNode);
 
   /**
    * IsVisibleTextNode() returns true if aText has visible text.  If it has
@@ -323,17 +333,27 @@ class HTMLEditUtils final {
    * last line in a block element visible, or an invisible <br> element.
    */
   static bool IsVisibleBRElement(const nsIContent& aContent) {
-    if (!aContent.IsHTMLElement(nsGkAtoms::br)) {
-      return false;
+    if (const dom::HTMLBRElement* brElement =
+            dom::HTMLBRElement::FromNode(&aContent)) {
+      return IsVisibleBRElement(*brElement);
     }
+    return false;
+  }
+  static bool IsVisibleBRElement(const dom::HTMLBRElement& aBRElement) {
     // If followed by a block boundary without visible content, it's invisible
     // <br> element.
     return !HTMLEditUtils::GetElementOfImmediateBlockBoundary(
-        aContent, WalkTreeDirection::Forward);
+        aBRElement, WalkTreeDirection::Forward);
   }
   static bool IsInvisibleBRElement(const nsIContent& aContent) {
-    return aContent.IsHTMLElement(nsGkAtoms::br) &&
-           !HTMLEditUtils::IsVisibleBRElement(aContent);
+    if (const dom::HTMLBRElement* brElement =
+            dom::HTMLBRElement::FromNode(&aContent)) {
+      return IsInvisibleBRElement(*brElement);
+    }
+    return false;
+  }
+  static bool IsInvisibleBRElement(const dom::HTMLBRElement& aBRElement) {
+    return !HTMLEditUtils::IsVisibleBRElement(aBRElement);
   }
 
   /**
@@ -401,8 +421,8 @@ class HTMLEditUtils final {
    * ShouldInsertLinefeedCharacter() returns true if the caller should insert
    * a linefeed character instead of <br> element.
    */
-  static bool ShouldInsertLinefeedCharacter(EditorDOMPoint& aPointToInsert,
-                                            const Element& aEditingHost);
+  static bool ShouldInsertLinefeedCharacter(
+      const EditorDOMPoint& aPointToInsert, const Element& aEditingHost);
 
   /**
    * IsEmptyNode() returns false if aNode has some visible content nodes,
@@ -435,14 +455,14 @@ class HTMLEditUtils final {
   }
 
   /**
-   * IsEmptyInlineContent() returns true if aContent is an inline node and it
-   * does not have meaningful content.
+   * IsEmptyInlineContainer() returns true if aContent is an inline element
+   * which can have children and does not have meaningful content.
    */
-  static bool IsEmptyInlineContent(const nsIContent& aContent) {
+  static bool IsEmptyInlineContainer(const nsIContent& aContent,
+                                     const EmptyCheckOptions& aOptions) {
     return HTMLEditUtils::IsInlineElement(aContent) &&
            HTMLEditUtils::IsContainerNode(aContent) &&
-           HTMLEditUtils::IsEmptyNode(
-               aContent, {EmptyCheckOption::TreatSingleBRElementAsVisible});
+           HTMLEditUtils::IsEmptyNode(aContent, aOptions);
   }
 
   /**
@@ -480,7 +500,8 @@ class HTMLEditUtils final {
         brElementHasFound = true;
         continue;
       }
-      if (!HTMLEditUtils::IsEmptyInlineContent(content)) {
+      if (!HTMLEditUtils::IsEmptyInlineContainer(
+              content, {EmptyCheckOption::TreatSingleBRElementAsVisible})) {
         return false;
       }
     }
@@ -1598,6 +1619,28 @@ class HTMLEditUtils final {
   }
 
   /**
+   * Get the first <br> element in aElement.  This scans only leaf nodes so
+   * if a <br> element has children illegally, it'll be ignored.
+   *
+   * @param aElement    The element which may have a <br> element.
+   * @return            First <br> element node in aElement if there is.
+   */
+  static dom::HTMLBRElement* GetFirstBRElement(const dom::Element& aElement) {
+    for (nsIContent* content = HTMLEditUtils::GetFirstLeafContent(
+             aElement, {LeafNodeType::OnlyLeafNode});
+         content; content = HTMLEditUtils::GetNextContent(
+                      *content,
+                      {WalkTreeOption::IgnoreDataNodeExceptText,
+                       WalkTreeOption::IgnoreWhiteSpaceOnlyText},
+                      &aElement)) {
+      if (auto* brElement = dom::HTMLBRElement::FromNode(*content)) {
+        return brElement;
+      }
+    }
+    return nullptr;
+  }
+
+  /**
    * IsInTableCellSelectionMode() returns true when Gecko's editor thinks that
    * selection is in a table cell selection mode.
    * Note that Gecko's editor traditionally treats selection as in table cell
@@ -1955,6 +1998,40 @@ class HTMLEditUtils final {
     }
     return false;
   }
+
+  /**
+   * CollectChildren() collects child nodes of aNode (starting from
+   * first editable child, but may return non-editable children after it).
+   *
+   * @param aNode               Parent node of retrieving children.
+   * @param aOutArrayOfContents [out] This method will inserts found children
+   *                            into this array.
+   * @param aIndexToInsertChildren      Starting from this index, found
+   *                                    children will be inserted to the array.
+   * @param aOptions            Options to scan the children.
+   * @return                    Number of found children.
+   */
+  static size_t CollectChildren(
+      nsINode& aNode, nsTArray<OwningNonNull<nsIContent>>& aOutArrayOfContents,
+      size_t aIndexToInsertChildren, const CollectChildrenOptions& aOptions);
+
+  /**
+   * CollectEmptyInlineContainerDescendants() appends empty inline elements in
+   * aNode to aOutArrayOfContents.  Although it's array of nsIContent, the
+   * instance will be elements.
+   *
+   * @param aNode               The node whose descendants may have empty inline
+   *                            elements.
+   * @param aOutArrayOfContents [out] This method will append found descendants
+   *                            into this array.
+   * @param aOptions            The option which element should be treated as
+   *                            empty.
+   * @return                    Number of found elements.
+   */
+  static size_t CollectEmptyInlineContainerDescendants(
+      const nsINode& aNode,
+      nsTArray<OwningNonNull<nsIContent>>& aOutArrayOfContents,
+      const EmptyCheckOptions& aOptions);
 
  private:
   static bool CanNodeContain(nsHTMLTag aParentTagId, nsHTMLTag aChildTagId);

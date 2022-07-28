@@ -1423,6 +1423,10 @@ static void EnsureAutoPageName(nsFrameConstructorState& aState,
   // When building the entire document, this should only happen for the
   // root, which will mean the loop will immediately end. Either way, this will
   // only happen once for each time the frame constructor is run.
+  if (aState.mAutoPageNameValue) {
+    return;
+  }
+
   for (const nsContainerFrame* frame = aFrame; frame;
        frame = frame->GetParent()) {
     const StylePageName& pageName = frame->StylePage()->mPage;
@@ -1566,16 +1570,21 @@ nsCSSFrameConstructor::nsCSSFrameConstructor(Document* aDocument,
 }
 
 void nsCSSFrameConstructor::NotifyDestroyingFrame(nsIFrame* aFrame) {
-  if (aFrame->HasAnyStateBits(NS_FRAME_GENERATED_CONTENT)) {
-    if (mQuoteList.DestroyNodesFor(aFrame)) QuotesDirty();
+  if (aFrame->HasAnyStateBits(NS_FRAME_GENERATED_CONTENT) &&
+      mContainStyleScopeManager.DestroyQuoteNodesFor(aFrame)) {
+    QuotesDirty();
   }
 
   if (aFrame->HasAnyStateBits(NS_FRAME_HAS_CSS_COUNTER_STYLE) &&
-      mCounterManager.DestroyNodesFor(aFrame)) {
+      mContainStyleScopeManager.DestroyCounterNodesFor(aFrame)) {
     // Technically we don't need to update anything if we destroyed only
     // USE nodes.  However, this is unlikely to happen in the real world
     // since USE nodes generally go along with INCREMENT nodes.
     CountersDirty();
+  }
+
+  if (aFrame->StyleDisplay()->IsContainStyle()) {
+    mContainStyleScopeManager.DestroyScopesFor(aFrame);
   }
 
   RestyleManager()->NotifyDestroyingFrame(aFrame);
@@ -1608,7 +1617,7 @@ already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGenConTextNode(
 }
 
 already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGeneratedContent(
-    nsFrameConstructorState& aState, const Element& aOriginatingElement,
+    nsFrameConstructorState& aState, Element& aOriginatingElement,
     ComputedStyle& aPseudoStyle, uint32_t aContentIndex) {
   using Type = StyleContentItem::Tag;
   // Get the content value
@@ -1660,7 +1669,8 @@ already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGeneratedContent(
         ptr = CounterStylePtr::FromStyle(counters._2);
       }
 
-      nsCounterList* counterList = mCounterManager.CounterListFor(name);
+      auto* counterList = mContainStyleScopeManager.GetOrCreateCounterList(
+          aOriginatingElement, name);
       auto node = MakeUnique<nsCounterUseNode>(
           std::move(ptr), std::move(separator), aContentIndex,
           /* aAllCounters = */ type == Type::Counters);
@@ -1674,8 +1684,10 @@ already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGeneratedContent(
     case Type::NoOpenQuote:
     case Type::NoCloseQuote: {
       auto node = MakeUnique<nsQuoteNode>(type, aContentIndex);
+      auto* quoteList =
+          mContainStyleScopeManager.QuoteListFor(aOriginatingElement);
       auto initializer = MakeUnique<nsGenConInitializer>(
-          std::move(node), &mQuoteList, &nsCSSFrameConstructor::QuotesDirty);
+          std::move(node), quoteList, &nsCSSFrameConstructor::QuotesDirty);
       return CreateGenConTextNode(aState, u""_ns, std::move(initializer));
     }
 
@@ -1685,7 +1697,7 @@ already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGeneratedContent(
       // localized text we have.
       // XXX what if the 'alt' attribute is added later, how will we
       // detect that and do the right thing here?
-      if (aOriginatingElement.HasAttr(kNameSpaceID_None, nsGkAtoms::alt)) {
+      if (aOriginatingElement.HasAttr(nsGkAtoms::alt)) {
         nsCOMPtr<nsIContent> content;
         NS_NewAttributeContent(mDocument->NodeInfoManager(), kNameSpaceID_None,
                                nsGkAtoms::alt, getter_AddRefs(content));
@@ -1693,7 +1705,7 @@ already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGeneratedContent(
       }
 
       if (aOriginatingElement.IsHTMLElement(nsGkAtoms::input)) {
-        if (aOriginatingElement.HasAttr(kNameSpaceID_None, nsGkAtoms::value)) {
+        if (aOriginatingElement.HasAttr(nsGkAtoms::value)) {
           nsCOMPtr<nsIContent> content;
           NS_NewAttributeContent(mDocument->NodeInfoManager(),
                                  kNameSpaceID_None, nsGkAtoms::value,
@@ -1715,7 +1727,8 @@ already_AddRefed<nsIContent> nsCSSFrameConstructor::CreateGeneratedContent(
 }
 
 void nsCSSFrameConstructor::CreateGeneratedContentFromListStyle(
-    nsFrameConstructorState& aState, const ComputedStyle& aPseudoStyle,
+    nsFrameConstructorState& aState, Element& aOriginatingElement,
+    const ComputedStyle& aPseudoStyle,
     const FunctionRef<void(nsIContent*)> aAddChild) {
   const nsStyleList* styleList = aPseudoStyle.StyleList();
   if (!styleList->mListStyleImage.IsNone()) {
@@ -1726,11 +1739,13 @@ void nsCSSFrameConstructor::CreateGeneratedContentFromListStyle(
     aAddChild(child);
     return;
   }
-  CreateGeneratedContentFromListStyleType(aState, aPseudoStyle, aAddChild);
+  CreateGeneratedContentFromListStyleType(aState, aOriginatingElement,
+                                          aPseudoStyle, aAddChild);
 }
 
 void nsCSSFrameConstructor::CreateGeneratedContentFromListStyleType(
-    nsFrameConstructorState& aState, const ComputedStyle& aPseudoStyle,
+    nsFrameConstructorState& aState, Element& aOriginatingElement,
+    const ComputedStyle& aPseudoStyle,
     const FunctionRef<void(nsIContent*)> aAddChild) {
   const nsStyleList* styleList = aPseudoStyle.StyleList();
   CounterStyle* counterStyle =
@@ -1765,8 +1780,8 @@ void nsCSSFrameConstructor::CreateGeneratedContentFromListStyleType(
     return;
   }
 
-  nsCounterList* counterList =
-      mCounterManager.CounterListFor(nsGkAtoms::list_item);
+  auto* counterList = mContainStyleScopeManager.GetOrCreateCounterList(
+      aOriginatingElement, nsGkAtoms::list_item);
   auto initializer = MakeUnique<nsGenConInitializer>(
       std::move(node), counterList, &nsCSSFrameConstructor::CountersDirty);
   RefPtr<nsIContent> child =
@@ -1906,7 +1921,8 @@ void nsCSSFrameConstructor::CreateGeneratedContentItem(
   }
   // If a ::marker has no 'content' then generate it from its 'list-style-*'.
   if (contentCount == 0 && aPseudoElement == PseudoStyleType::marker) {
-    CreateGeneratedContentFromListStyle(aState, *pseudoStyle, AppendChild);
+    CreateGeneratedContentFromListStyle(aState, aOriginatingElement,
+                                        *pseudoStyle, AppendChild);
   }
   auto flags = ItemFlags{ItemFlag::IsGeneratedContent} + aExtraFlags;
   AddFrameConstructionItemsInternal(aState, container, aParentFrame, true,
@@ -2401,25 +2417,31 @@ nsIFrame* nsCSSFrameConstructor::ConstructDocElementFrame(
                "We need to copy <body>'s principal writing-mode before "
                "constructing mRootElementFrame.");
 
-    const WritingMode docElementWM(computedStyle);
-    Element* body = mDocument->GetBodyElement();
-    if (body) {
+    const WritingMode propagatedWM = [&] {
+      const WritingMode rootWM(computedStyle);
+      if (computedStyle->StyleDisplay()->IsContainAny()) {
+        return rootWM;
+      }
+      Element* body = mDocument->GetBodyElement();
+      if (!body) {
+        return rootWM;
+      }
       RefPtr<ComputedStyle> bodyStyle = ResolveComputedStyle(body);
+      if (bodyStyle->StyleDisplay()->IsContainAny()) {
+        return rootWM;
+      }
       const WritingMode bodyWM(bodyStyle);
-
-      if (bodyWM != docElementWM) {
+      if (bodyWM != rootWM) {
         nsContentUtils::ReportToConsole(
             nsIScriptError::warningFlag, "Layout"_ns, mDocument,
             nsContentUtils::eLAYOUT_PROPERTIES,
             "PrincipalWritingModePropagationWarning");
       }
+      return bodyWM;
+    }();
 
-      mDocElementContainingBlock->PropagateWritingModeToSelfAndAncestors(
-          bodyWM);
-    } else {
-      mDocElementContainingBlock->PropagateWritingModeToSelfAndAncestors(
-          docElementWM);
-    }
+    mDocElementContainingBlock->PropagateWritingModeToSelfAndAncestors(
+        propagatedWM);
   }
 
   nsFrameConstructorSaveState docElementContainingBlockAbsoluteSaveState;
@@ -4674,7 +4696,8 @@ void nsCSSFrameConstructor::InitAndRestoreFrame(
     RestoreFrameStateFor(aNewFrame, aState.mFrameState);
   }
 
-  if (aAllowCounters && mCounterManager.AddCounterChanges(aNewFrame)) {
+  if (aAllowCounters &&
+      mContainStyleScopeManager.AddCounterChanges(aNewFrame)) {
     CountersDirty();
   }
 }
@@ -7265,7 +7288,8 @@ void nsCSSFrameConstructor::ContentRangeInserted(nsIContent* aStartChild,
       }
     };
     CreateGeneratedContentFromListStyleType(
-        state, *insertion.mParentFrame->Style(), InsertChild);
+        state, *insertion.mContainer->AsElement(),
+        *insertion.mParentFrame->Style(), InsertChild);
     if (!firstNewChild) {
       // No fallback content - we're done.
       return;
@@ -7926,12 +7950,12 @@ void nsCSSFrameConstructor::RecalcQuotesAndCounters() {
 
   if (mQuotesDirty) {
     mQuotesDirty = false;
-    mQuoteList.RecalcAll();
+    mContainStyleScopeManager.RecalcAllQuotes();
   }
 
   if (mCountersDirty) {
     mCountersDirty = false;
-    mCounterManager.RecalcAll();
+    mContainStyleScopeManager.RecalcAllCounters();
   }
 
   NS_ASSERTION(!mQuotesDirty, "Quotes updates will be lost");
@@ -7939,20 +7963,19 @@ void nsCSSFrameConstructor::RecalcQuotesAndCounters() {
 }
 
 void nsCSSFrameConstructor::NotifyCounterStylesAreDirty() {
-  mCounterManager.SetAllDirty();
+  mContainStyleScopeManager.SetAllCountersDirty();
   CountersDirty();
 }
 
 void nsCSSFrameConstructor::WillDestroyFrameTree() {
 #if defined(DEBUG_dbaron_off)
-  mCounterManager.Dump();
+  mContainStyleScopeManager.DumpCounters();
 #endif
 
   mIsDestroyingFrameTree = true;
 
   // Prevent frame tree destruction from being O(N^2)
-  mQuoteList.Clear();
-  mCounterManager.Clear();
+  mContainStyleScopeManager.Clear();
   nsFrameManager::Destroy();
 }
 
@@ -7960,25 +7983,27 @@ void nsCSSFrameConstructor::WillDestroyFrameTree() {
 
 // XXXbz I'd really like this method to go away. Once we have inline-block and
 // I can just use that for sized broken images, that can happen, maybe.
-void nsCSSFrameConstructor::GetAlternateTextFor(Element* aElement, nsAtom* aTag,
+//
+// NOTE(emilio): This needs to match MozAltContent handling.
+void nsCSSFrameConstructor::GetAlternateTextFor(const Element& aElement,
                                                 nsAString& aAltText) {
   // The "alt" attribute specifies alternate text that is rendered
   // when the image can not be displayed.
-  if (aElement->GetAttr(kNameSpaceID_None, nsGkAtoms::alt, aAltText)) {
+  if (aElement.GetAttr(nsGkAtoms::alt, aAltText)) {
     return;
   }
 
-  if (nsGkAtoms::input == aTag) {
-    // If there's no "alt" attribute, and aContent is an input element, then use
-    // the value of the "value" attribute
-    if (aElement->GetAttr(kNameSpaceID_None, nsGkAtoms::value, aAltText)) {
+  if (aElement.IsHTMLElement(nsGkAtoms::input)) {
+    // If there's no "alt" attribute, and aElement is an input element, then use
+    // the value of the "value" attribute.
+    if (aElement.GetAttr(nsGkAtoms::value, aAltText)) {
       return;
     }
 
     // If there's no "value" attribute either, then use the localized string for
     // "Submit" as the alternate text.
     nsContentUtils::GetMaybeLocalizedString(nsContentUtils::eFORMS_PROPERTIES,
-                                            "Submit", aElement->OwnerDoc(),
+                                            "Submit", aElement.OwnerDoc(),
                                             aAltText);
   }
 }
@@ -12063,6 +12088,5 @@ void nsCSSFrameConstructor::AddSizeOfIncludingThis(
   // Measurement of the following members may be added later if DMD finds it
   // is worthwhile:
   // - mFCItemPool
-  // - mQuoteList
-  // - mCounterManager
+  // - mContainStyleScopeManager
 }

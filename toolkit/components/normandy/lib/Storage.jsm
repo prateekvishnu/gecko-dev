@@ -4,8 +4,8 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -15,14 +15,13 @@ ChromeUtils.defineModuleGetter(
   "JSONFile",
   "resource://gre/modules/JSONFile.jsm"
 );
-ChromeUtils.defineModuleGetter(lazy, "OS", "resource://gre/modules/osfile.jsm");
 
 var EXPORTED_SYMBOLS = ["Storage"];
 
 // Lazy-load JSON file that backs Storage instances.
 XPCOMUtils.defineLazyGetter(lazy, "lazyStore", async function() {
-  const path = lazy.OS.Path.join(
-    lazy.OS.Constants.Path.profileDir,
+  const path = PathUtils.join(
+    PathUtils.profileDir,
     "shield-recipe-client.json"
   );
   const store = new lazy.JSONFile({ path });

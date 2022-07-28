@@ -5,15 +5,13 @@
 
 var EXPORTED_SYMBOLS = ["AboutPrivateBrowsingChild"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const { RemotePageChild } = ChromeUtils.import(
   "resource://gre/actors/RemotePageChild.jsm"
 );
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const lazy = {};
 
@@ -27,9 +25,6 @@ class AboutPrivateBrowsingChild extends RemotePageChild {
     super.actorCreated();
     let window = this.contentWindow;
 
-    Cu.exportFunction(this.PrivateBrowsingFeatureConfig.bind(this), window, {
-      defineAs: "PrivateBrowsingFeatureConfig",
-    });
     Cu.exportFunction(this.PrivateBrowsingRecordClick.bind(this), window, {
       defineAs: "PrivateBrowsingRecordClick",
     });
@@ -48,10 +43,9 @@ class AboutPrivateBrowsingChild extends RemotePageChild {
   }
 
   PrivateBrowsingRecordClick(source) {
-    const experiment =
-      lazy.ExperimentAPI.getExperimentMetaData({
-        featureId: "privatebrowsing",
-      }) || lazy.ExperimentAPI.getExperimentMetaData({ featureId: "pbNewtab" });
+    const experiment = lazy.ExperimentAPI.getExperimentMetaData({
+      featureId: "pbNewtab",
+    });
     if (experiment) {
       Services.telemetry.recordEvent("aboutprivatebrowsing", "click", source);
     }
@@ -65,20 +59,5 @@ class AboutPrivateBrowsingChild extends RemotePageChild {
 
   PrivateBrowsingExposureTelemetry() {
     lazy.NimbusFeatures.pbNewtab.recordExposureEvent({ once: false });
-  }
-
-  PrivateBrowsingFeatureConfig() {
-    const config = lazy.NimbusFeatures.privatebrowsing.getAllVariables() || {};
-
-    lazy.NimbusFeatures.privatebrowsing.recordExposureEvent();
-
-    // Format urls if any are defined
-    ["infoLinkUrl", "promoLinkUrl"].forEach(key => {
-      if (config[key]) {
-        config[key] = Services.urlFormatter.formatURL(config[key]);
-      }
-    });
-
-    return Cu.cloneInto(config, this.contentWindow);
   }
 }

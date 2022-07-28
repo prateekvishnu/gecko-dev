@@ -6,15 +6,17 @@
 
 const EXPORTED_SYMBOLS = ["ContextDescriptorType", "MessageHandler"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const { EventEmitter } = ChromeUtils.import(
+  "resource://gre/modules/EventEmitter.jsm"
 );
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
-  EventEmitter: "resource://gre/modules/EventEmitter.jsm",
-
   error: "chrome://remote/content/shared/messagehandler/Errors.jsm",
   EventsDispatcher:
     "chrome://remote/content/shared/messagehandler/EventsDispatcher.jsm",
@@ -79,7 +81,7 @@ const ContextDescriptorType = {
  * instances are properly registered and can be retrieved based on a given
  * session id as well as some other context information.
  */
-class MessageHandler extends lazy.EventEmitter {
+class MessageHandler extends EventEmitter {
   /**
    * Create a new MessageHandler instance.
    *
@@ -99,12 +101,20 @@ class MessageHandler extends lazy.EventEmitter {
     this._eventsDispatcher = new lazy.EventsDispatcher(this);
   }
 
+  get context() {
+    return this._context;
+  }
+
   get contextId() {
     return this._contextId;
   }
 
   get eventsDispatcher() {
     return this._eventsDispatcher;
+  }
+
+  get moduleCache() {
+    return this._moduleCache;
   }
 
   get name() {

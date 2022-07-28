@@ -7,6 +7,7 @@
 const { LoginTestUtils } = SpecialPowers.ChromeUtils.import(
   "resource://testing-common/LoginTestUtils.jsm"
 );
+const Services = SpecialPowers.Services;
 
 // Setup LoginTestUtils to report assertions to the mochitest harness.
 LoginTestUtils.setAssertReporter(
@@ -17,9 +18,6 @@ LoginTestUtils.setAssertReporter(
 
 const { LoginHelper } = SpecialPowers.ChromeUtils.import(
   "resource://gre/modules/LoginHelper.jsm"
-);
-const { Services } = SpecialPowers.ChromeUtils.import(
-  "resource://gre/modules/Services.jsm"
 );
 
 const {
@@ -53,9 +51,9 @@ function $_(formNum, name) {
     return null;
   }
 
-  var element = form.children.namedItem(name);
+  var element = form.querySelector(`:is([name="${name}"], [id="${name}"])`);
   if (!element) {
-    ok(false, "$_ couldn't find requested element " + name);
+    ok(false, `$_ couldn't find requested element "${name}"`);
     return null;
   }
 
@@ -730,12 +728,8 @@ function runInParent(aFunctionOrURL) {
  */
 function addLoginsInParent(...aLogins) {
   let script = runInParent(function addLoginsInParentInner() {
+    /* eslint-env mozilla/chrome-script */
     addMessageListener("addLogins", logins => {
-      // eslint-disable-next-line no-shadow
-      const { Services } = ChromeUtils.import(
-        "resource://gre/modules/Services.jsm"
-      );
-
       let nsLoginInfo = Components.Constructor(
         "@mozilla.org/login-manager/loginInfo;1",
         Ci.nsILoginInfo,
@@ -816,10 +810,7 @@ SimpleTest.registerCleanupFunction(() => {
   PWMGR_COMMON_PARENT.sendAsyncMessage("cleanup");
 
   runInParent(function cleanupParent() {
-    // eslint-disable-next-line no-shadow
-    const { Services } = ChromeUtils.import(
-      "resource://gre/modules/Services.jsm"
-    );
+    /* eslint-env mozilla/chrome-script */
     // eslint-disable-next-line no-shadow
     const { LoginManagerParent } = ChromeUtils.import(
       "resource://gre/modules/LoginManagerParent.jsm"

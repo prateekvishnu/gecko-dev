@@ -27,7 +27,7 @@ const {
 const InputMap = createFactory(
   require("devtools/client/netmonitor/src/components/new-request/InputMap")
 );
-const { button, div, label, textarea, select, option } = dom;
+const { button, div, footer, label, textarea, select, option } = dom;
 
 const CUSTOM_HEADERS = L10N.getStr("netmonitor.custom.newRequestHeaders");
 const CUSTOM_NEW_REQUEST_URL_LABEL = L10N.getStr(
@@ -76,7 +76,7 @@ const HTTP_METHODS = [
   "PUT",
   "OPTIONS",
   "TRACE",
-  "PATH",
+  "PATCH",
 ];
 
 /*
@@ -160,7 +160,8 @@ class HTTPCustomRequestPanel extends Component {
     this.getStateFromPref = this.getStateFromPref.bind(this);
   }
 
-  async componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  async UNSAFE_componentWillMount() {
     const { connector, request } = this.props;
     if (request?.requestPostDataAvailable && !this.state.postBody) {
       const requestData = await connector.requestData(
@@ -344,6 +345,7 @@ class HTTPCustomRequestPanel extends Component {
             {
               className: "auto-growing-textarea",
               "data-replicated-value": url,
+              title: url,
             },
             textarea({
               className: "http-custom-url-value",
@@ -454,49 +456,46 @@ class HTTPCustomRequestPanel extends Component {
             value: postBody,
             wrap: "off",
           })
+        )
+      ),
+      footer(
+        { className: "http-custom-request-button-container" },
+        button(
+          {
+            className: "devtools-button",
+            id: "http-custom-request-clear-button",
+            onClick: this.handleClear,
+          },
+          CUSTOM_CLEAR
         ),
-        div(
-          { className: "tabpanel-summary-container http-custom-request" },
-          div(
-            { className: "http-custom-request-button-container" },
-            button(
-              {
-                className: "devtools-button",
-                id: "http-custom-request-clear-button",
-                onClick: this.handleClear,
-              },
-              CUSTOM_CLEAR
-            ),
-            button(
-              {
-                className: "devtools-button",
-                id: "http-custom-request-send-button",
-                disabled: !this.state.url || !this.state.method,
-                onClick: () => {
-                  const customRequestDetails = {
-                    ...this.state,
-                    cause: this.props.request?.cause,
-                    urlQueryParams: urlQueryParams.map(
-                      ({ checked, ...params }) => params
-                    ),
-                    headers: headers
-                      .filter(({ checked }) => checked)
-                      .map(({ checked, ...headersValues }) => headersValues),
-                  };
-                  if (postBody) {
-                    customRequestDetails.requestPostData = {
-                      postData: {
-                        text: postBody,
-                      },
-                    };
-                  }
-                  delete customRequestDetails.postBody;
-                  sendCustomRequest(customRequestDetails);
-                },
-              },
-              CUSTOM_SEND
-            )
-          )
+        button(
+          {
+            className: "devtools-button",
+            id: "http-custom-request-send-button",
+            disabled: !this.state.url || !this.state.method,
+            onClick: () => {
+              const customRequestDetails = {
+                ...this.state,
+                cause: this.props.request?.cause,
+                urlQueryParams: urlQueryParams.map(
+                  ({ checked, ...params }) => params
+                ),
+                headers: headers
+                  .filter(({ checked }) => checked)
+                  .map(({ checked, ...headersValues }) => headersValues),
+              };
+              if (postBody) {
+                customRequestDetails.requestPostData = {
+                  postData: {
+                    text: postBody,
+                  },
+                };
+              }
+              delete customRequestDetails.postBody;
+              sendCustomRequest(customRequestDetails);
+            },
+          },
+          CUSTOM_SEND
         )
       )
     );

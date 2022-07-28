@@ -112,19 +112,15 @@ AllocatableGeneralRegisterSet BaselineICAvailableGeneralRegs(size_t numInputs) {
   AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
   MOZ_ASSERT(!regs.has(FramePointer));
 #if defined(JS_CODEGEN_ARM)
-  MOZ_ASSERT(!regs.has(BaselineStackReg));
   MOZ_ASSERT(!regs.has(ICTailCallReg));
   regs.take(BaselineSecondScratchReg);
 #elif defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
-  MOZ_ASSERT(!regs.has(BaselineStackReg));
   MOZ_ASSERT(!regs.has(ICTailCallReg));
   MOZ_ASSERT(!regs.has(BaselineSecondScratchReg));
 #elif defined(JS_CODEGEN_ARM64)
   MOZ_ASSERT(!regs.has(PseudoStackPointer));
   MOZ_ASSERT(!regs.has(RealStackPointer));
   MOZ_ASSERT(!regs.has(ICTailCallReg));
-#else
-  MOZ_ASSERT(!regs.has(BaselineStackReg));
 #endif
   regs.take(ICStubReg);
 
@@ -289,6 +285,7 @@ class MOZ_STATIC_CLASS OpToFallbackKindTable {
     setKind(JSOp::GetIntrinsic, BaselineICFallbackKind::GetIntrinsic);
 
     setKind(JSOp::Call, BaselineICFallbackKind::Call);
+    setKind(JSOp::CallContent, BaselineICFallbackKind::Call);
     setKind(JSOp::CallIgnoresRv, BaselineICFallbackKind::Call);
     setKind(JSOp::CallIter, BaselineICFallbackKind::Call);
     setKind(JSOp::Eval, BaselineICFallbackKind::Call);
@@ -296,6 +293,7 @@ class MOZ_STATIC_CLASS OpToFallbackKindTable {
 
     setKind(JSOp::SuperCall, BaselineICFallbackKind::CallConstructing);
     setKind(JSOp::New, BaselineICFallbackKind::CallConstructing);
+    setKind(JSOp::NewContent, BaselineICFallbackKind::CallConstructing);
 
     setKind(JSOp::SpreadCall, BaselineICFallbackKind::SpreadCall);
     setKind(JSOp::SpreadEval, BaselineICFallbackKind::SpreadCall);
@@ -560,8 +558,10 @@ void FallbackICCodeCompiler::assumeStubFrame() {
   entersStubFrame_ = true;
 
   // |framePushed| isn't tracked precisely in ICStubs, so simply assume it to
-  // be STUB_FRAME_SIZE so that assertions don't fail in leaveStubFrame.
-  framePushedAtEnterStubFrame_ = STUB_FRAME_SIZE;
+  // be the stub frame layout and the pushed ICStub* so that assertions don't
+  // fail in leaveStubFrame
+  framePushedAtEnterStubFrame_ =
+      BaselineStubFrameLayout::Size() + sizeof(ICStub*);
 #endif
 }
 
@@ -779,7 +779,7 @@ bool DoSetElemFallback(JSContext* cx, BaselineFrame* frame,
     return false;
   }
 
-  RootedShape oldShape(cx, obj->shape());
+  Rooted<Shape*> oldShape(cx, obj->shape());
 
   DeferType deferType = DeferType::None;
   bool attached = false;
@@ -1065,7 +1065,7 @@ bool DoGetNameFallback(JSContext* cx, BaselineFrame* frame,
 
   MOZ_ASSERT(op == JSOp::GetName || op == JSOp::GetGName);
 
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
 
   TryAttachStub<GetNameIRGenerator>("GetName", cx, frame, stub, envChain, name);
 
@@ -1114,7 +1114,7 @@ bool DoBindNameFallback(JSContext* cx, BaselineFrame* frame,
 
   MOZ_ASSERT(op == JSOp::BindName || op == JSOp::BindGName);
 
-  RootedPropertyName name(cx, frame->script()->getName(pc));
+  Rooted<PropertyName*> name(cx, frame->script()->getName(pc));
 
   TryAttachStub<BindNameIRGenerator>("BindName", cx, frame, stub, envChain,
                                      name);
@@ -1195,7 +1195,7 @@ bool DoGetPropFallback(JSContext* cx, BaselineFrame* frame,
 
   MOZ_ASSERT(op == JSOp::GetProp || op == JSOp::GetBoundName);
 
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
   RootedValue idVal(cx, StringValue(name));
 
   TryAttachStub<GetPropIRGenerator>("GetProp", cx, frame, stub,
@@ -1227,7 +1227,7 @@ bool DoGetPropSuperFallback(JSContext* cx, BaselineFrame* frame,
 
   MOZ_ASSERT(JSOp(*pc) == JSOp::GetPropSuper);
 
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
   RootedValue idVal(cx, StringValue(name));
 
   // |val| is [[HomeObject]].[[Prototype]] which must be an Object or null.
@@ -1333,7 +1333,7 @@ bool DoSetPropFallback(JSContext* cx, BaselineFrame* frame,
              op == JSOp::InitProp || op == JSOp::InitLockedProp ||
              op == JSOp::InitHiddenProp || op == JSOp::InitGLexical);
 
-  RootedPropertyName name(cx, script->getName(pc));
+  Rooted<PropertyName*> name(cx, script->getName(pc));
   RootedId id(cx, NameToId(name));
 
   int lhsIndex = -2;
@@ -1342,7 +1342,7 @@ bool DoSetPropFallback(JSContext* cx, BaselineFrame* frame,
   if (!obj) {
     return false;
   }
-  RootedShape oldShape(cx, obj->shape());
+  Rooted<Shape*> oldShape(cx, obj->shape());
 
   DeferType deferType = DeferType::None;
   bool attached = false;
@@ -1511,7 +1511,8 @@ bool DoCallFallback(JSContext* cx, BaselineFrame* frame, ICFallbackStub* stub,
   FallbackICSpew(cx, stub, "Call(%s)", CodeName(op));
 
   MOZ_ASSERT(argc == GET_ARGC(pc));
-  bool constructing = (op == JSOp::New || op == JSOp::SuperCall);
+  bool constructing =
+      (op == JSOp::New || op == JSOp::NewContent || op == JSOp::SuperCall);
   bool ignoresReturnValue = (op == JSOp::CallIgnoresRv);
 
   // Ensure vp array is rooted - we may GC in here.
@@ -1570,9 +1571,9 @@ bool DoCallFallback(JSContext* cx, BaselineFrame* frame, ICFallbackStub* stub,
       return false;
     }
   } else {
-    MOZ_ASSERT(op == JSOp::Call || op == JSOp::CallIgnoresRv ||
-               op == JSOp::CallIter || op == JSOp::Eval ||
-               op == JSOp::StrictEval);
+    MOZ_ASSERT(op == JSOp::Call || op == JSOp::CallContent ||
+               op == JSOp::CallIgnoresRv || op == JSOp::CallIter ||
+               op == JSOp::Eval || op == JSOp::StrictEval);
     if (op == JSOp::CallIter && callee.isPrimitive()) {
       MOZ_ASSERT(argc == 0, "thisv must be on top of the stack");
       ReportValueError(cx, JSMSG_NOT_ITERABLE, -1, callArgs.thisv(), nullptr);
@@ -1617,7 +1618,7 @@ bool DoSpreadCallFallback(JSContext* cx, BaselineFrame* frame,
   if (op != JSOp::SpreadEval && op != JSOp::StrictSpreadEval &&
       stub->state().canAttachStub()) {
     // Try CacheIR first:
-    RootedArrayObject aobj(cx, &arr.toObject().as<ArrayObject>());
+    Rooted<ArrayObject*> aobj(cx, &arr.toObject().as<ArrayObject>());
     MOZ_ASSERT(aobj->length() == aobj->getDenseInitializedLength());
 
     HandleValueArray args = HandleValueArray::fromMarkedLocation(
@@ -1661,11 +1662,11 @@ void FallbackICCodeCompiler::pushCallArguments(
 
   // argPtr initially points to the last argument.
   Register argPtr = regs.takeAny();
-  masm.moveStackPtrTo(argPtr);
+  masm.mov(FramePointer, argPtr);
 
-  // Skip 4 pointers pushed on top of the arguments: the frame descriptor,
-  // return address, old frame pointer and stub reg.
-  size_t valueOffset = STUB_FRAME_SIZE;
+  // Skip 3 pointers pushed on top of the arguments: the frame descriptor,
+  // return address, and old frame pointer.
+  size_t valueOffset = BaselineStubFrameLayout::Size();
 
   // We have to push |this|, callee, new.target (if constructing) and argc
   // arguments. Handle the number of Values we know statically first.
@@ -1708,31 +1709,27 @@ bool FallbackICCodeCompiler::emitCall(bool isSpread, bool isConstructing) {
     // Push a stub frame so that we can perform a non-tail call.
     enterStubFrame(masm, R1.scratchReg());
 
-    // Use FramePointer instead of BaselineStackReg, because
-    // FramePointer and BaselineStackReg hold the same value just after
-    // calling enterStubFrame.
+    // Use FramePointer instead of StackPointer because it's not affected by
+    // the stack pushes below.
 
     // newTarget
-    uint32_t valueOffset = 0;
+    uint32_t valueOffset = BaselineStubFrameLayout::Size();
     if (isConstructing) {
-      masm.pushValue(Address(FramePointer, STUB_FRAME_SIZE));
-      valueOffset++;
+      masm.pushValue(Address(FramePointer, valueOffset));
+      valueOffset += sizeof(Value);
     }
 
     // array
-    masm.pushValue(
-        Address(FramePointer, valueOffset * sizeof(Value) + STUB_FRAME_SIZE));
-    valueOffset++;
+    masm.pushValue(Address(FramePointer, valueOffset));
+    valueOffset += sizeof(Value);
 
     // this
-    masm.pushValue(
-        Address(FramePointer, valueOffset * sizeof(Value) + STUB_FRAME_SIZE));
-    valueOffset++;
+    masm.pushValue(Address(FramePointer, valueOffset));
+    valueOffset += sizeof(Value);
 
     // callee
-    masm.pushValue(
-        Address(FramePointer, valueOffset * sizeof(Value) + STUB_FRAME_SIZE));
-    valueOffset++;
+    masm.pushValue(Address(FramePointer, valueOffset));
+    valueOffset += sizeof(Value);
 
     masm.push(masm.getStackPointer());
     masm.push(ICStubReg);
@@ -1790,8 +1787,10 @@ bool FallbackICCodeCompiler::emitCall(bool isSpread, bool isConstructing) {
 
   // Load passed-in ThisV into R1 just in case it's needed.  Need to do this
   // before we leave the stub frame since that info will be lost.
-  // Current stack:  [...., ThisV, ActualArgc, CalleeToken, Descriptor ]
-  masm.loadValue(Address(masm.getStackPointer(), 3 * sizeof(size_t)), R1);
+  // Current stack:  [...., ThisV, CalleeToken, Descriptor ]
+  size_t thisvOffset =
+      JitFrameLayout::offsetOfThis() - JitFrameLayout::bytesPoppedAfterCall();
+  masm.loadValue(Address(masm.getStackPointer(), thisvOffset), R1);
 
   leaveStubFrame(masm);
 
@@ -2357,7 +2356,7 @@ bool DoNewArrayFallback(JSContext* cx, BaselineFrame* frame,
              "the bytecode emitter must fail to compile code that would "
              "produce a length exceeding int32_t range");
 
-  RootedArrayObject array(cx, NewArrayOperation(cx, length));
+  Rooted<ArrayObject*> array(cx, NewArrayOperation(cx, length));
   if (!array) {
     return false;
   }
@@ -2446,7 +2445,8 @@ bool FallbackICCodeCompiler::emit_CloseIter() {
 }
 
 bool JitRuntime::generateBaselineICFallbackCode(JSContext* cx) {
-  StackMacroAssembler masm;
+  TempAllocator temp(&cx->tempLifoAlloc());
+  StackMacroAssembler masm(cx, temp);
   AutoCreatedBy acb(masm, "JitRuntime::generateBaselineICFallbackCode");
 
   BaselineICFallbackCode& fallbackCode = baselineICFallbackCode_.ref();

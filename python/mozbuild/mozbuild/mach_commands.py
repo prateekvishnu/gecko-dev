@@ -139,7 +139,6 @@ def check(command_context, all_crates=None, crates=None, jobs=0, verbose=False):
     crates_and_roots = {
         "gkrust": "toolkit/library/rust",
         "gkrust-gtest": "toolkit/library/gtest/rust",
-        "baldrdash": "js/src/wasm/cranelift",
         "geckodriver": "testing/geckodriver",
     }
 
@@ -1809,7 +1808,14 @@ def _run_desktop(
     no_profile_option_given = all(
         p not in params for p in ["-profile", "--profile", "-P"]
     )
-    if no_profile_option_given and not noprofile:
+    no_backgroundtask_mode_option_given = all(
+        p not in params for p in ["-backgroundtask", "--backgroundtask"]
+    )
+    if (
+        no_profile_option_given
+        and no_backgroundtask_mode_option_given
+        and not noprofile
+    ):
         prefs = {
             "browser.aboutConfig.showWarning": False,
             "browser.shell.checkDefaultBrowser": False,

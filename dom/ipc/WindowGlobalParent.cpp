@@ -33,7 +33,6 @@
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Variant.h"
-#include "mozJSComponentLoader.h"
 #include "nsContentUtils.h"
 #include "nsDocShell.h"
 #include "nsDocShellLoadState.h"
@@ -1298,7 +1297,7 @@ mozilla::ipc::IPCResult WindowGlobalParent::RecvSetDocumentDomain(
     }
   }
 
-  if (!Document::IsValidDomain(uri, aDomain)) {
+  if (!aDomain || !Document::IsValidDomain(uri, aDomain)) {
     // Error: illegal domain
     return IPC_FAIL(
         this, "Setting domain that's not a suffix of existing domain value.");
@@ -1381,7 +1380,7 @@ mozilla::ipc::IPCResult WindowGlobalParent::RecvReloadWithHttpsOnlyException() {
 
   RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(insecureURI);
   loadState->SetTriggeringPrincipal(nsContentUtils::GetSystemPrincipal());
-  loadState->SetLoadFlags(nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY);
+  loadState->SetLoadType(LOAD_NORMAL_REPLACE);
 
   BrowsingContext()->Top()->LoadURI(loadState, /* setNavigating */ true);
 

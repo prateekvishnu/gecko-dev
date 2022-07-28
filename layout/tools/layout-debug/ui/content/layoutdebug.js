@@ -16,11 +16,19 @@ var gWrittenProfile = false;
 const { E10SUtils } = ChromeUtils.import(
   "resource://gre/modules/E10SUtils.jsm"
 );
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 const { Preferences } = ChromeUtils.import(
   "resource://gre/modules/Preferences.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+var { loader } = ChromeUtils.import(
+  "resource://devtools/shared/loader/Loader.jsm"
+);
+
+loader.lazyImporter(
+  this,
+  "BrowserToolboxLauncher",
+  "resource://devtools/client/framework/browser-toolbox/Launcher.jsm"
+);
 
 const FEATURES = {
   paintDumping: "nglayout.debug.paint_dumping",
@@ -47,8 +55,6 @@ const COMMANDS = [
 class Debugger {
   constructor() {
     this._flags = new Map();
-    this._visualDebugging = false;
-    this._visualEventDebugging = false;
     this._pagedMode = false;
     this._attached = false;
 
@@ -91,26 +97,6 @@ class Debugger {
     }
   }
 
-  get visualDebugging() {
-    return this._visualDebugging;
-  }
-
-  set visualDebugging(v) {
-    v = !!v;
-    this._visualDebugging = v;
-    this._sendMessage("setVisualDebugging", v);
-  }
-
-  get visualEventDebugging() {
-    return this._visualEventDebugging;
-  }
-
-  set visualEventDebugging(v) {
-    v = !!v;
-    this._visualEventDebugging = v;
-    this._sendMessage("setVisualEventDebugging", v);
-  }
-
   get pagedMode() {
     return this._pagedMode;
   }
@@ -123,6 +109,10 @@ class Debugger {
 
   setPagedMode(v) {
     this._sendMessage("setPagedMode", v);
+  }
+
+  openDevTools() {
+    BrowserToolboxLauncher.init();
   }
 
   async _sendMessage(name, arg) {
@@ -415,7 +405,7 @@ function dumpProfile() {
   gWritingProfile = true;
 
   let cwd = Services.dirsvc.get("CurWorkD", Ci.nsIFile).path;
-  let filename = OS.Path.join(cwd, gArgs.profileFilename);
+  let filename = PathUtils.join(cwd, gArgs.profileFilename);
 
   dump(`Writing profile to ${filename}...\n`);
 

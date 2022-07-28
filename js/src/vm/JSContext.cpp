@@ -56,6 +56,7 @@
 #include "util/Text.h"
 #include "util/WindowsWrapper.h"
 #include "vm/BytecodeUtil.h"  // JSDVG_IGNORE_STACK
+#include "vm/ErrorContext.h"
 #include "vm/ErrorObject.h"
 #include "vm/ErrorReporting.h"
 #include "vm/HelperThreadState.h"
@@ -560,7 +561,7 @@ void js::ReportIsNotDefined(JSContext* cx, HandleId id) {
   }
 }
 
-void js::ReportIsNotDefined(JSContext* cx, HandlePropertyName name) {
+void js::ReportIsNotDefined(JSContext* cx, Handle<PropertyName*> name) {
   RootedId id(cx, NameToId(name));
   ReportIsNotDefined(cx, id);
 }
@@ -656,7 +657,7 @@ bool js::ReportValueError(JSContext* cx, const unsigned errorNumber,
 }
 
 JSObject* js::CreateErrorNotesArray(JSContext* cx, JSErrorReport* report) {
-  RootedArrayObject notesArray(cx, NewDenseEmptyArray(cx));
+  Rooted<ArrayObject*> notesArray(cx, NewDenseEmptyArray(cx));
   if (!notesArray) {
     return nullptr;
   }
@@ -666,7 +667,7 @@ JSObject* js::CreateErrorNotesArray(JSContext* cx, JSErrorReport* report) {
   }
 
   for (auto&& note : *report->notes) {
-    RootedPlainObject noteObj(cx, NewPlainObject(cx));
+    Rooted<PlainObject*> noteObj(cx, NewPlainObject(cx));
     if (!noteObj) {
       return nullptr;
     }
@@ -746,7 +747,7 @@ JS_PUBLIC_API bool js::UseInternalJobQueues(JSContext* cx) {
 
 #ifdef DEBUG
 JSObject* InternalJobQueue::copyJobs(JSContext* cx) {
-  RootedArrayObject jobs(cx, NewDenseEmptyArray(cx));
+  Rooted<ArrayObject*> jobs(cx, NewDenseEmptyArray(cx));
   if (!jobs) {
     return nullptr;
   }
@@ -967,9 +968,6 @@ JSContext::JSContext(JSRuntime* runtime, const JS::ContextOptions& options)
 #ifdef JS_SIMULATOR
       simulator_(this, nullptr),
 #endif
-#ifdef JS_TRACE_LOGGING
-      traceLogger(nullptr),
-#endif
       dtoaState(this, nullptr),
       suppressGC(this, 0),
 #ifdef DEBUG
@@ -1040,12 +1038,6 @@ JSContext::~JSContext() {
 
 #ifdef JS_SIMULATOR
   js::jit::Simulator::Destroy(simulator_);
-#endif
-
-#ifdef JS_TRACE_LOGGING
-  if (traceLogger) {
-    DestroyTraceLogger(traceLogger);
-  }
 #endif
 
   if (isolate) {

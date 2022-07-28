@@ -6,9 +6,12 @@
 
 const EXPORTED_SYMBOLS = ["browsingContext"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const { Module } = ChromeUtils.import(
+  "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
 const lazy = {};
@@ -22,7 +25,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
     "chrome://remote/content/shared/messagehandler/MessageHandler.jsm",
   error: "chrome://remote/content/shared/webdriver/Errors.jsm",
   Log: "chrome://remote/content/shared/Log.jsm",
-  Module: "chrome://remote/content/shared/messagehandler/Module.jsm",
   ProgressListener: "chrome://remote/content/shared/Navigate.jsm",
   TabManager: "chrome://remote/content/shared/TabManager.jsm",
   waitForInitialNavigationCompleted:
@@ -66,7 +68,7 @@ const WaitCondition = {
   Complete: "complete",
 };
 
-class BrowsingContextModule extends lazy.Module {
+class BrowsingContextModule extends Module {
   #contextListener;
 
   /**
@@ -511,11 +513,6 @@ class BrowsingContextModule extends lazy.Module {
       return;
     }
 
-    // Wait until navigation starts, so that an active document is attached.
-    await lazy.waitForInitialNavigationCompleted(browsingContext.webProgress, {
-      resolveWhenStarted: true,
-    });
-
     const contextInfo = this.#getBrowsingContextInfo(browsingContext, {
       maxDepth: 0,
     });
@@ -527,45 +524,19 @@ class BrowsingContextModule extends lazy.Module {
    */
 
   _subscribeEvent(params) {
-    // TODO: Bug 1741861. Move this logic to a shared module or the an abstract
-    // class.
     switch (params.event) {
       case "browsingContext.contextCreated":
         this.#contextListener.startListening();
-
-        return this.messageHandler.addSessionData({
-          moduleName: "browsingContext",
-          category: "event",
-          contextDescriptor: {
-            type: lazy.ContextDescriptorType.All,
-          },
-          values: [params.event],
-        });
-      default:
-        throw new Error(
-          `Unsupported event for browsingContext module ${params.event}`
-        );
     }
+    return this.addEventSessionData("browsingContext", params.event);
   }
 
   _unsubscribeEvent(params) {
     switch (params.event) {
       case "browsingContext.contextCreated":
         this.#contextListener.stopListening();
-
-        return this.messageHandler.removeSessionData({
-          moduleName: "browsingContext",
-          category: "event",
-          contextDescriptor: {
-            type: lazy.ContextDescriptorType.All,
-          },
-          values: [params.event],
-        });
-      default:
-        throw new Error(
-          `Unsupported event for browsingContext module ${params.event}`
-        );
     }
+    return this.removeEventSessionData("browsingContext", params.event);
   }
 
   static get supportedEvents() {

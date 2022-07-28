@@ -37,16 +37,17 @@ inline void EmitCallIC(MacroAssembler& masm, CodeOffset* callOffset) {
 inline void EmitReturnFromIC(MacroAssembler& masm) { masm.ret(); }
 
 inline void EmitBaselineLeaveStubFrame(MacroAssembler& masm) {
+  Address stubAddr(FramePointer, BaselineStubFrameLayout::ICStubOffsetFromFP);
+  masm.loadPtr(stubAddr, ICStubReg);
+
   masm.mov(FramePointer, StackPointer);
   masm.Pop(FramePointer);
-
-  masm.Pop(ICStubReg);
 
   // The return address is on top of the stack, followed by the frame
   // descriptor. Use a pop instruction to overwrite the frame descriptor
   // with the return address. Note that pop increments the stack pointer
   // before computing the address.
-  masm.Pop(Operand(BaselineStackReg, 0));
+  masm.Pop(Operand(StackPointer, 0));
 }
 
 template <typename AddrType>

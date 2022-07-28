@@ -651,7 +651,7 @@ void BaseCompiler::insertBreakablePoint(CallSiteDesc::Kind kind) {
               CodeOffset(masm.currentOffset()));
 
   // Branch destination
-  MOZ_ASSERT(masm.currentOffset() == uint32_t(L.offset()));
+  MOZ_ASSERT_IF(!masm.oom(), masm.currentOffset() == uint32_t(L.offset()));
 #elif defined(JS_CODEGEN_X86)
   // 83 MODRM OFFS IB
   static_assert(Instance::offsetOfDebugTrapHandler() < 128);
@@ -669,7 +669,7 @@ void BaseCompiler::insertBreakablePoint(CallSiteDesc::Kind kind) {
               CodeOffset(masm.currentOffset()));
 
   // Branch destination
-  MOZ_ASSERT(masm.currentOffset() == uint32_t(L.offset()));
+  MOZ_ASSERT_IF(!masm.oom(), masm.currentOffset() == uint32_t(L.offset()));
 #elif defined(JS_CODEGEN_ARM64)
   ScratchPtr scratch(*this);
   ARMRegister tmp(scratch, 64);
@@ -1606,6 +1606,18 @@ bool BaseCompiler::callIndirect(uint32_t funcTypeIndex, uint32_t tableIndex,
                         mozilla::Nothing(), fastCallOffset, slowCallOffset);
   return true;
 }
+
+#ifdef ENABLE_WASM_FUNCTION_REFERENCES
+void BaseCompiler::callRef(const Stk& calleeRef, const FunctionCall& call,
+                           CodeOffset* fastCallOffset,
+                           CodeOffset* slowCallOffset) {
+  CallSiteDesc desc(call.lineOrBytecode, CallSiteDesc::FuncRef);
+  CalleeDesc callee = CalleeDesc::wasmFuncRef();
+
+  loadRef(calleeRef, RegRef(WasmCallRefReg));
+  masm.wasmCallRef(desc, callee, fastCallOffset, slowCallOffset);
+}
+#endif
 
 // Precondition: sync()
 
@@ -4739,6 +4751,66 @@ bool BaseCompiler::emitCallIndirect() {
   captureCallResultRegisters(resultType);
   return pushCallResults(baselineCall, resultType, results);
 }
+
+#ifdef ENABLE_WASM_FUNCTION_REFERENCES
+bool BaseCompiler::emitCallRef() {
+  uint32_t lineOrBytecode = readCallSiteLineOrBytecode();
+
+  const FuncType* funcType;
+  Nothing unused_callee;
+  BaseNothingVector unused_args{};
+  if (!iter_.readCallRef(&funcType, &unused_callee, &unused_args)) {
+    return false;
+  }
+
+  if (deadCode_) {
+    return true;
+  }
+
+  sync();
+
+  // Stack: ... arg1 .. argn callee
+
+  uint32_t numArgs = funcType->args().length() + 1;
+  size_t stackArgBytes = stackConsumed(numArgs);
+
+  ResultType resultType(ResultType::Vector(funcType->results()));
+  StackResultsLoc results;
+  if (!pushStackResultsForCall(resultType, RegPtr(ABINonArgReg0), &results)) {
+    return false;
+  }
+
+  FunctionCall baselineCall(lineOrBytecode);
+  // State and realm are restored as needed by by callRef (really by
+  // MacroAssembler::wasmCallRef).
+  beginCall(baselineCall, UseABI::Wasm, RestoreRegisterStateAndRealm::False);
+
+  if (!emitCallArgs(funcType->args(), results, &baselineCall,
+                    CalleeOnStack::True)) {
+    return false;
+  }
+
+  const Stk& callee = peek(results.count());
+  CodeOffset fastCallOffset;
+  CodeOffset slowCallOffset;
+  callRef(callee, baselineCall, &fastCallOffset, &slowCallOffset);
+  if (!createStackMap("emitCallRef", fastCallOffset)) {
+    return false;
+  }
+  if (!createStackMap("emitCallRef", slowCallOffset)) {
+    return false;
+  }
+
+  popStackResultsAfterCall(results, stackArgBytes);
+
+  endCall(baselineCall, stackArgBytes);
+
+  popValueStackBy(numArgs);
+
+  captureCallResultRegisters(resultType);
+  return pushCallResults(baselineCall, resultType, results);
+}
+#endif
 
 void BaseCompiler::emitRound(RoundingMode roundingMode, ValType operandType) {
   if (operandType == ValType::F32) {
@@ -8206,32 +8278,7 @@ bool BaseCompiler::emitVectorShuffle() {
   RegV128 rd, rs;
   pop2xV128(&rd, &rs);
 
-  bool emitShuffle = true;
-
-#  ifdef ENABLE_WASM_SIMD_WORMHOLE
-  if (moduleEnv_.simdWormholeEnabled() && IsWormholeTrigger(shuffleMask)) {
-    emitShuffle = false;
-    switch (shuffleMask.bytes[15]) {
-      case 0:
-        masm.loadConstantSimd128(WormholeSignature(), rd);
-        break;
-#    if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
-      case 1:
-        masm.vpmaddubsw(rs, rd, rd);
-        break;
-      case 2:
-        masm.vpmaddwd(Operand(rs), rd, rd);
-        break;
-#    endif
-      default:
-        return iter_.fail("Unrecognized wormhole opcode");
-    }
-  }
-#  endif
-
-  if (emitShuffle) {
-    masm.shuffleInt8x16(shuffleMask.bytes, rs, rd);
-  }
+  masm.shuffleInt8x16(shuffleMask.bytes, rs, rd);
 
   freeV128(rs);
   pushV128(rd);
@@ -8578,6 +8625,13 @@ bool BaseCompiler::emitBody() {
         CHECK_NEXT(emitCall());
       case uint16_t(Op::CallIndirect):
         CHECK_NEXT(emitCallIndirect());
+#ifdef ENABLE_WASM_FUNCTION_REFERENCES
+      case uint16_t(Op::CallRef):
+        if (!moduleEnv_.functionReferencesEnabled()) {
+          return iter_.unrecognizedOpcode(&op);
+        }
+        CHECK_NEXT(emitCallRef());
+#endif
 
       // Locals and globals
       case uint16_t(Op::LocalGet):
@@ -9193,7 +9247,7 @@ bool BaseCompiler::emitBody() {
       // SIMD operations
       case uint16_t(Op::SimdPrefix): {
         uint32_t laneIndex;
-        if (!moduleEnv_.v128Enabled()) {
+        if (!moduleEnv_.simdAvailable()) {
           return iter_.unrecognizedOpcode(&op);
         }
         switch (op.b1) {
@@ -10398,7 +10452,7 @@ bool js::wasm::BaselineCompileFunctions(const ModuleEnvironment& moduleEnv,
   // The MacroAssembler will sometimes access the jitContext.
 
   TempAllocator alloc(&lifo);
-  JitContext jitContext(&alloc);
+  JitContext jitContext;
   MOZ_ASSERT(IsCompilingWasm());
   WasmMacroAssembler masm(alloc, moduleEnv);
 

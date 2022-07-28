@@ -17,6 +17,7 @@
 #include "ReferrerInfo.h"
 #include "mozIRemoteLazyInputStream.h"
 #include "mozIThirdPartyUtil.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/AntiTrackingUtils.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/BinarySearch.h"
@@ -40,6 +41,7 @@
 #include "mozilla/dom/Performance.h"
 #include "mozilla/dom/PerformanceStorage.h"
 #include "mozilla/dom/ProcessIsolation.h"
+#include "mozilla/dom/RequestBinding.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/net/OpaqueResponseUtils.h"
 #include "mozilla/net/UrlClassifierCommon.h"
@@ -99,6 +101,8 @@
 #include "mozilla/net/SFVService.h"
 #include "mozilla/dom/ContentChild.h"
 #include "nsQueryObject.h"
+
+using mozilla::dom::RequestMode;
 
 namespace mozilla {
 namespace net {
@@ -196,7 +200,6 @@ HttpBaseChannel::HttpBaseChannel()
       mCanceled(false),
       mFirstPartyClassificationFlags(0),
       mThirdPartyClassificationFlags(0),
-      mFlashPluginState(nsIHttpChannel::FlashPluginUnknown),
       mLoadFlags(LOAD_NORMAL),
       mCaps(0),
       mClassOfService(0, false),
@@ -205,7 +208,7 @@ HttpBaseChannel::HttpBaseChannel()
       mInitialRwin(0),
       mProxyResolveFlags(0),
       mContentDispositionHint(UINT32_MAX),
-      mCorsMode(nsIHttpChannelInternal::CORS_MODE_NO_CORS),
+      mRequestMode(RequestMode::No_cors),
       mRedirectMode(nsIHttpChannelInternal::REDIRECT_MODE_FOLLOW),
       mLastRedirectFlags(0),
       mPriority(PRIORITY_NORMAL),
@@ -283,6 +286,7 @@ void HttpBaseChannel::ReleaseMainThreadOnlyReferences() {
 
   nsTArray<nsCOMPtr<nsISupports>> arrayToRelease;
   arrayToRelease.AppendElement(mLoadGroup.forget());
+  arrayToRelease.AppendElement(mLoadInfo.forget());
   arrayToRelease.AppendElement(mCallbacks.forget());
   arrayToRelease.AppendElement(mProgressSink.forget());
   arrayToRelease.AppendElement(mPrincipal.forget());
@@ -316,12 +320,6 @@ void HttpBaseChannel::AddClassificationFlags(uint32_t aClassificationFlags,
   }
 }
 
-void HttpBaseChannel::SetFlashPluginState(
-    nsIHttpChannel::FlashPluginState aState) {
-  LOG(("HttpBaseChannel::SetFlashPluginState %p", this));
-  mFlashPluginState = aState;
-}
-
 static bool isSecureOrTrustworthyURL(nsIURI* aURI) {
   return aURI->SchemeIs("https") ||
          (StaticPrefs::network_http_encoding_trustworthy_is_https() &&
@@ -332,7 +330,8 @@ nsresult HttpBaseChannel::Init(nsIURI* aURI, uint32_t aCaps,
                                nsProxyInfo* aProxyInfo,
                                uint32_t aProxyResolveFlags, nsIURI* aProxyURI,
                                uint64_t aChannelId,
-                               ExtContentPolicyType aContentPolicyType) {
+                               ExtContentPolicyType aContentPolicyType,
+                               nsILoadInfo* aLoadInfo) {
   LOG1(("HttpBaseChannel::Init [this=%p]\n", this));
 
   MOZ_ASSERT(aURI, "null uri");
@@ -344,6 +343,7 @@ nsresult HttpBaseChannel::Init(nsIURI* aURI, uint32_t aCaps,
   mProxyResolveFlags = aProxyResolveFlags;
   mProxyURI = aProxyURI;
   mChannelId = aChannelId;
+  mLoadInfo = aLoadInfo;
 
   // Construct connection info object
   nsAutoCString host;
@@ -376,8 +376,9 @@ nsresult HttpBaseChannel::Init(nsIURI* aURI, uint32_t aCaps,
   rv = mRequestHead.SetHeader(nsHttp::Host, hostLine);
   if (NS_FAILED(rv)) return rv;
 
-  rv = gHttpHandler->AddStandardRequestHeaders(&mRequestHead, isHTTPS,
-                                               aContentPolicyType);
+  rv = gHttpHandler->AddStandardRequestHeaders(
+      &mRequestHead, isHTTPS, aContentPolicyType,
+      nsContentUtils::ShouldResistFingerprinting(this));
   if (NS_FAILED(rv)) return rv;
 
   nsAutoCString type;
@@ -1736,13 +1737,6 @@ HttpBaseChannel::GetThirdPartyClassificationFlags(uint32_t* aFlags) {
 }
 
 NS_IMETHODIMP
-HttpBaseChannel::GetFlashPluginState(nsIHttpChannel::FlashPluginState* aState) {
-  uint32_t flashPluginState = mFlashPluginState;
-  *aState = (nsIHttpChannel::FlashPluginState)flashPluginState;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 HttpBaseChannel::GetTransferSize(uint64_t* aTransferSize) {
   *aTransferSize = mTransferSize;
   return NS_OK;
@@ -2410,17 +2404,22 @@ nsresult HttpBaseChannel::ProcessCrossOriginEmbedderPolicyHeader() {
 
   nsILoadInfo::CrossOriginEmbedderPolicy resultPolicy =
       nsILoadInfo::EMBEDDER_POLICY_NULL;
-  rv = GetResponseEmbedderPolicy(&resultPolicy);
+  bool isCoepCredentiallessEnabled;
+  rv = mLoadInfo->GetIsOriginTrialCoepCredentiallessEnabledForTopLevel(
+      &isCoepCredentiallessEnabled);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = GetResponseEmbedderPolicy(isCoepCredentiallessEnabled, &resultPolicy);
   if (NS_FAILED(rv)) {
     return NS_OK;
   }
 
-  // https://mikewest.github.io/corpp/#abstract-opdef-process-navigation-response
+  // https://html.spec.whatwg.org/multipage/origin.html#coep
   if (mLoadInfo->GetExternalContentPolicyType() ==
           ExtContentPolicy::TYPE_SUBDOCUMENT &&
       mLoadInfo->GetLoadingEmbedderPolicy() !=
           nsILoadInfo::EMBEDDER_POLICY_NULL &&
-      resultPolicy != nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP) {
+      resultPolicy != nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP &&
+      resultPolicy != nsILoadInfo::EMBEDDER_POLICY_CREDENTIALLESS) {
     return NS_ERROR_DOM_COEP_FAILED;
   }
 
@@ -2430,9 +2429,10 @@ nsresult HttpBaseChannel::ProcessCrossOriginEmbedderPolicyHeader() {
 // https://mikewest.github.io/corpp/#corp-check
 nsresult HttpBaseChannel::ProcessCrossOriginResourcePolicyHeader() {
   // Fetch 4.5.9
-  uint32_t corsMode;
-  MOZ_ALWAYS_SUCCEEDS(GetCorsMode(&corsMode));
-  if (corsMode != nsIHttpChannelInternal::CORS_MODE_NO_CORS) {
+  dom::RequestMode requestMode;
+  MOZ_ALWAYS_SUCCEEDS(GetRequestMode(&requestMode));
+  // XXX this seems wrong per spec? What about navigate
+  if (requestMode != RequestMode::No_cors) {
     return NS_OK;
   }
 
@@ -2472,13 +2472,28 @@ nsresult HttpBaseChannel::ProcessCrossOriginResourcePolicyHeader() {
                                      content);
 
   if (StaticPrefs::browser_tabs_remote_useCrossOriginEmbedderPolicy()) {
-    // COEP 3.2.1.6 If policy is null, and embedder policy is "require-corp",
-    // set policy to "same-origin".
-    // Note that we treat invalid value as "cross-origin", which spec
-    // indicates. We might want to make that stricter.
-    if (content.IsEmpty() && mLoadInfo->GetLoadingEmbedderPolicy() ==
-                                 nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP) {
-      content = "same-origin"_ns;
+    if (content.IsEmpty()) {
+      if (mLoadInfo->GetLoadingEmbedderPolicy() ==
+          nsILoadInfo::EMBEDDER_POLICY_CREDENTIALLESS) {
+        bool requestIncludesCredentials = false;
+        nsresult rv = GetCorsIncludeCredentials(&requestIncludesCredentials);
+        if (NS_FAILED(rv)) {
+          return NS_OK;
+        }
+        // COEP: Set policy to `same-origin` if: response’s
+        // request-includes-credentials is true, or forNavigation is true.
+        if (requestIncludesCredentials ||
+            extContentPolicyType == ExtContentPolicyType::TYPE_SUBDOCUMENT) {
+          content = "same-origin"_ns;
+        }
+      } else if (mLoadInfo->GetLoadingEmbedderPolicy() ==
+                 nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP) {
+        // COEP 3.2.1.6 If policy is null, and embedder policy is
+        // "require-corp", set policy to "same-origin". Note that we treat
+        // invalid value as "cross-origin", which spec indicates. We might want
+        // to make that stricter.
+        content = "same-origin"_ns;
+      }
     }
   }
 
@@ -3609,14 +3624,15 @@ HttpBaseChannel::SetCorsIncludeCredentials(bool aInclude) {
 }
 
 NS_IMETHODIMP
-HttpBaseChannel::GetCorsMode(uint32_t* aMode) {
-  *aMode = mCorsMode;
+HttpBaseChannel::GetRequestMode(RequestMode* aMode) {
+  *aMode = mRequestMode;
   return NS_OK;
 }
 
 NS_IMETHODIMP
-HttpBaseChannel::SetCorsMode(uint32_t aMode) {
-  mCorsMode = aMode;
+HttpBaseChannel::SetRequestMode(RequestMode aMode) {
+  MOZ_ASSERT(aMode != RequestMode::EndGuard_);
+  mRequestMode = aMode;
   return NS_OK;
 }
 
@@ -4662,7 +4678,7 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
 
   // convey the User-Agent header value
   // since we might be setting custom user agent from DevTools.
-  if (httpInternal && mCorsMode == CORS_MODE_NO_CORS &&
+  if (httpInternal && mRequestMode == RequestMode::No_cors &&
       redirectType == ReplacementReason::Redirect) {
     nsAutoCString oldUserAgent;
     nsresult hasHeader =
@@ -4719,6 +4735,9 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
     CallQueryInterface(newChannel, realChannel.StartAssignment());
     if (realChannel) {
       realChannel->SetTopWindowURI(mTopWindowURI);
+
+      realChannel->StoreTaintedOriginFlag(
+          ShouldTaintReplacementChannelOrigin(newURI));
     }
 
     // update the DocumentURI indicator since we are being redirected.
@@ -4744,8 +4763,8 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
       MOZ_ASSERT(NS_SUCCEEDED(rv));
     }
 
-    // Preserve CORS mode flag.
-    rv = httpInternal->SetCorsMode(mCorsMode);
+    // Preserve Request mode.
+    rv = httpInternal->SetRequestMode(mRequestMode);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
 
     // Preserve Redirect mode flag.
@@ -4792,9 +4811,39 @@ nsresult HttpBaseChannel::SetupReplacementChannel(nsIURI* newURI,
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 
-  // This channel has been redirected. Don't report timing info.
-  StoreTimingEnabled(false);
   return NS_OK;
+}
+
+bool HttpBaseChannel::ShouldTaintReplacementChannelOrigin(nsIURI* aNewURI) {
+  if (LoadTaintedOriginFlag()) {
+    return true;
+  }
+
+  nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
+  if (!ssm) {
+    return true;
+  }
+  nsresult rv = ssm->CheckSameOriginURI(aNewURI, mURI, false, false);
+  if (NS_SUCCEEDED(rv)) {
+    return false;
+  }
+  // If aNewURI <-> mURI are not same-origin we need to taint unless
+  // mURI <-> mOriginalURI/LoadingPrincipal are same origin.
+
+  if (mLoadInfo->GetLoadingPrincipal()) {
+    bool sameOrigin = false;
+    rv = mLoadInfo->GetLoadingPrincipal()->IsSameOrigin(mURI, &sameOrigin);
+    if (NS_FAILED(rv)) {
+      return true;
+    }
+    return !sameOrigin;
+  }
+  if (!mOriginalURI) {
+    return true;
+  }
+
+  rv = ssm->CheckSameOriginURI(mOriginalURI, mURI, false, false);
+  return NS_FAILED(rv);
 }
 
 // Redirect Tracking
@@ -4984,7 +5033,7 @@ HttpBaseChannel::SetAllRedirectsPassTimingAllowCheck(bool aPassesCheck) {
   return NS_OK;
 }
 
-// http://www.w3.org/TR/resource-timing/#timing-allow-check
+// https://fetch.spec.whatwg.org/#tao-check
 NS_IMETHODIMP
 HttpBaseChannel::TimingAllowCheck(nsIPrincipal* aOrigin, bool* _retval) {
   nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
@@ -4998,7 +5047,13 @@ HttpBaseChannel::TimingAllowCheck(nsIPrincipal* aOrigin, bool* _retval) {
 
   bool sameOrigin = false;
   rv = resourcePrincipal->Equals(aOrigin, &sameOrigin);
-  if (NS_SUCCEEDED(rv) && sameOrigin) {
+
+  nsAutoCString serializedOrigin;
+  nsContentSecurityManager::GetSerializedOrigin(aOrigin, resourcePrincipal,
+                                                serializedOrigin, mLoadInfo);
+
+  // All redirects are same origin
+  if (sameOrigin && !serializedOrigin.IsEmpty()) {
     *_retval = true;
     return NS_OK;
   }
@@ -5009,9 +5064,6 @@ HttpBaseChannel::TimingAllowCheck(nsIPrincipal* aOrigin, bool* _retval) {
     *_retval = false;
     return NS_OK;
   }
-
-  nsAutoCString origin;
-  aOrigin->GetAsciiOrigin(origin);
 
   Tokenizer p(headerValue);
   Tokenizer::Token t;
@@ -5025,7 +5077,7 @@ HttpBaseChannel::TimingAllowCheck(nsIPrincipal* aOrigin, bool* _retval) {
       nsHttp::TrimHTTPWhitespace(headerItem, headerItem);
       // If the list item contains a case-sensitive match for the value of the
       // origin, or a wildcard, return pass
-      if (headerItem == origin || headerItem == "*") {
+      if (headerItem == serializedOrigin || headerItem == "*") {
         *_retval = true;
         return NS_OK;
       }
@@ -5622,6 +5674,7 @@ void HttpBaseChannel::SetIPv4Disabled() { mCaps |= NS_HTTP_DISABLE_IPV4; }
 void HttpBaseChannel::SetIPv6Disabled() { mCaps |= NS_HTTP_DISABLE_IPV6; }
 
 NS_IMETHODIMP HttpBaseChannel::GetResponseEmbedderPolicy(
+    bool aIsOriginTrialCoepCredentiallessEnabled,
     nsILoadInfo::CrossOriginEmbedderPolicy* aOutPolicy) {
   *aOutPolicy = nsILoadInfo::EMBEDDER_POLICY_NULL;
   if (!mResponseHead) {
@@ -5636,8 +5689,8 @@ NS_IMETHODIMP HttpBaseChannel::GetResponseEmbedderPolicy(
   nsAutoCString content;
   Unused << mResponseHead->GetHeader(nsHttp::Cross_Origin_Embedder_Policy,
                                      content);
-
-  *aOutPolicy = NS_GetCrossOriginEmbedderPolicyFromHeader(content);
+  *aOutPolicy = NS_GetCrossOriginEmbedderPolicyFromHeader(
+      content, aIsOriginTrialCoepCredentiallessEnabled);
   return NS_OK;
 }
 
@@ -5699,12 +5752,17 @@ NS_IMETHODIMP HttpBaseChannel::ComputeCrossOriginOpenerPolicy(
   } else if (openerPolicy.EqualsLiteral("same-origin-allow-popups")) {
     policy = nsILoadInfo::OPENER_POLICY_SAME_ORIGIN_ALLOW_POPUPS;
   }
-
   if (policy == nsILoadInfo::OPENER_POLICY_SAME_ORIGIN) {
     nsILoadInfo::CrossOriginEmbedderPolicy coep =
         nsILoadInfo::EMBEDDER_POLICY_NULL;
-    if (NS_SUCCEEDED(GetResponseEmbedderPolicy(&coep)) &&
-        coep == nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP) {
+    bool isCoepCredentiallessEnabled;
+    rv = mLoadInfo->GetIsOriginTrialCoepCredentiallessEnabledForTopLevel(
+        &isCoepCredentiallessEnabled);
+    NS_ENSURE_SUCCESS(rv, rv);
+    if (NS_SUCCEEDED(
+            GetResponseEmbedderPolicy(isCoepCredentiallessEnabled, &coep)) &&
+        (coep == nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP ||
+         coep == nsILoadInfo::EMBEDDER_POLICY_CREDENTIALLESS)) {
       policy =
           nsILoadInfo::OPENER_POLICY_SAME_ORIGIN_EMBEDDER_POLICY_REQUIRE_CORP;
     }

@@ -19,6 +19,7 @@
 
 #include "gc/GCEnum.h"
 #include "js/AllocPolicy.h"
+#include "js/friend/UsageStatistics.h"
 #include "js/GCAPI.h"
 #include "js/SliceBudget.h"
 #include "js/UniquePtr.h"
@@ -90,8 +91,6 @@ struct ZoneGCStats {
 
   /* Total number of compartments swept by this GC. */
   int sweptCompartmentCount = 0;
-
-  bool isFullCollection() const { return collectedZoneCount == zoneCount; }
 
   ZoneGCStats() = default;
 };
@@ -465,7 +464,8 @@ struct Statistics {
   void sccDurations(TimeDuration* total, TimeDuration* maxPause) const;
   void printStats();
 
-  void reportLongestPhaseInMajorGC(PhaseKind longest, int telemetryId);
+  template <typename Fn>
+  void reportLongestPhaseInMajorGC(PhaseKind longest, Fn reportFn);
 
   UniqueChars formatCompactSlicePhaseTimes(const PhaseTimes& phaseTimes) const;
 

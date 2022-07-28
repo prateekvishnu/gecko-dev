@@ -10,19 +10,16 @@ const EXPORTED_SYMBOLS = [
   "_ExperimentFeature",
 ];
 
-function isBooleanValueDefined(value) {
-  return typeof value === "boolean";
-}
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(lazy, {
   ExperimentStore: "resource://nimbus/lib/ExperimentStore.jsm",
   ExperimentManager: "resource://nimbus/lib/ExperimentManager.jsm",
   RemoteSettings: "resource://services-settings/remote-settings.js",
@@ -35,7 +32,7 @@ const IS_MAIN_PROCESS =
 const COLLECTION_ID_PREF = "messaging-system.rsexperimentloader.collection_id";
 const COLLECTION_ID_FALLBACK = "nimbus-desktop-experiments";
 XPCOMUtils.defineLazyPreferenceGetter(
-  this,
+  lazy,
   "COLLECTION_ID",
   COLLECTION_ID_PREF,
   COLLECTION_ID_FALLBACK
@@ -188,7 +185,7 @@ const ExperimentAPI = {
    * @param {{slug: string, featureId: string }}
    * @returns {Branch | null}
    */
-  activateBranch({ slug, featureId }) {
+  getActiveBranch({ slug, featureId }) {
     let experiment = null;
     try {
       if (slug) {
@@ -277,6 +274,8 @@ const ExperimentAPI = {
         filters: { slug },
       });
     } catch (e) {
+      // If an error occurs in .get(), an empty list is returned and the destructuring
+      // assignment will throw.
       Cu.reportError(e);
       recipe = undefined;
     }
@@ -322,6 +321,11 @@ const ExperimentAPI = {
     } catch (e) {
       Cu.reportError(e);
     }
+    Glean.nimbusEvents.exposure.record({
+      experiment: experimentSlug,
+      branch: branchSlug,
+      feature_id: featureId,
+    });
   },
 };
 
@@ -330,7 +334,7 @@ const ExperimentAPI = {
  * defined by the FeatureManifest
  */
 const NimbusFeatures = {};
-for (let feature in FeatureManifest) {
+for (let feature in lazy.FeatureManifest) {
   XPCOMUtils.defineLazyGetter(NimbusFeatures, feature, () => {
     return new _ExperimentFeature(feature);
   });
@@ -340,7 +344,7 @@ class _ExperimentFeature {
   constructor(featureId, manifest) {
     this.featureId = featureId;
     this.prefGetters = {};
-    this.manifest = manifest || FeatureManifest[featureId];
+    this.manifest = manifest || lazy.FeatureManifest[featureId];
     if (!this.manifest) {
       Cu.reportError(
         `No manifest entry for ${featureId}. Please add one to toolkit/components/nimbus/FeatureManifest.js`
@@ -398,41 +402,6 @@ class _ExperimentFeature {
   }
 
   /**
-   * Lookup feature in active experiments and return enabled.
-   * By default, this will send an exposure event.
-   * @param {{defaultValue?: any}} options
-   * @returns {obj} The feature value
-   */
-  isEnabled({ defaultValue = null } = {}) {
-    const branch = ExperimentAPI.activateBranch({ featureId: this.featureId });
-
-    let feature = featuresCompat(branch).find(
-      ({ featureId }) => featureId === this.featureId
-    );
-
-    // First, try to return an experiment value if it exists.
-    if (isBooleanValueDefined(feature?.enabled)) {
-      return feature.enabled;
-    }
-
-    let enabled;
-    try {
-      enabled = this.getVariable("enabled");
-    } catch (e) {
-      /* This is expected not all features have an enabled flag defined */
-    }
-    if (isBooleanValueDefined(enabled)) {
-      return enabled;
-    }
-
-    if (isBooleanValueDefined(this.getRollout()?.enabled)) {
-      return this.getRollout().enabled;
-    }
-
-    return defaultValue;
-  }
-
-  /**
    * Lookup feature variables in experiments, prefs, and remote defaults.
    * @param {{defaultValues?: {[variableName: string]: any}}} options
    * @returns {{[variableName: string]: any}} The feature value
@@ -440,7 +409,7 @@ class _ExperimentFeature {
   getAllVariables({ defaultValues = null } = {}) {
     // Any user pref will override any other configuration
     let userPrefs = this._getUserPrefsValues();
-    const branch = ExperimentAPI.activateBranch({ featureId: this.featureId });
+    const branch = ExperimentAPI.getActiveBranch({ featureId: this.featureId });
     const featureValue = featuresCompat(branch).find(
       ({ featureId }) => featureId === this.featureId
     )?.value;
@@ -472,7 +441,7 @@ class _ExperimentFeature {
     }
 
     // Next, check if an experiment is defined
-    const branch = ExperimentAPI.activateBranch({
+    const branch = ExperimentAPI.getActiveBranch({
       featureId: this.featureId,
     });
     const experimentValue = featuresCompat(branch).find(
@@ -549,7 +518,6 @@ class _ExperimentFeature {
 
   debug() {
     return {
-      enabled: this.isEnabled(),
       variables: this.getAllVariables(),
       experiment: ExperimentAPI.getExperimentMetaData({
         featureId: this.featureId,
@@ -567,9 +535,11 @@ class _ExperimentFeature {
 }
 
 XPCOMUtils.defineLazyGetter(ExperimentAPI, "_store", function() {
-  return IS_MAIN_PROCESS ? ExperimentManager.store : new ExperimentStore();
+  return IS_MAIN_PROCESS
+    ? lazy.ExperimentManager.store
+    : new lazy.ExperimentStore();
 });
 
 XPCOMUtils.defineLazyGetter(ExperimentAPI, "_remoteSettingsClient", function() {
-  return RemoteSettings(COLLECTION_ID);
+  return lazy.RemoteSettings(lazy.COLLECTION_ID);
 });

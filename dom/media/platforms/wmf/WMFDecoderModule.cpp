@@ -302,33 +302,6 @@ bool WMFDecoderModule::CanCreateMFTDecoder(const WMFStreamType& aType) {
   return sSupportedTypes.contains(aType);
 }
 
-/* static */
-WMFStreamType WMFDecoderModule::GetStreamTypeFromMimeType(
-    const nsCString& aMimeType) {
-  if (MP4Decoder::IsH264(aMimeType)) {
-    return WMFStreamType::H264;
-  }
-  if (VPXDecoder::IsVP8(aMimeType)) {
-    return WMFStreamType::VP8;
-  }
-  if (VPXDecoder::IsVP9(aMimeType)) {
-    return WMFStreamType::VP9;
-  }
-#ifdef MOZ_AV1
-  if (AOMDecoder::IsAV1(aMimeType)) {
-    return WMFStreamType::AV1;
-  }
-#endif
-  if (aMimeType.EqualsLiteral("audio/mp4a-latm") ||
-      aMimeType.EqualsLiteral("audio/mp4")) {
-    return WMFStreamType::AAC;
-  }
-  if (aMimeType.EqualsLiteral("audio/mpeg")) {
-    return WMFStreamType::MP3;
-  }
-  return WMFStreamType::Unknown;
-}
-
 bool WMFDecoderModule::SupportsColorDepth(
     gfx::ColorDepth aColorDepth, DecoderDoctorDiagnostics* aDiagnostics) const {
   // Color depth support can be determined by creating DX decoders.
@@ -362,9 +335,13 @@ media::DecodeSupportSet WMFDecoderModule::Supports(
   }
 
   if (CanCreateMFTDecoder(type)) {
-    // TODO: Note that we do not yet distinguish between SW/HW decode support.
-    //       Will be done in bug 1754239.
-    return media::DecodeSupport::SoftwareDecode;
+    if (StreamTypeIsVideo(type)) {
+      return sDXVAEnabled ? media::DecodeSupport::HardwareDecode
+                          : media::DecodeSupport::SoftwareDecode;
+    } else {
+      // Audio only supports software decode
+      return media::DecodeSupport::SoftwareDecode;
+    }
   }
 
   return media::DecodeSupport::Unsupported;
@@ -457,17 +434,13 @@ media::DecodeSupportSet WMFDecoderModule::SupportsMimeType(
   if (!trackInfo) {
     return media::DecodeSupport::Unsupported;
   }
-  bool supports = Supports(SupportDecoderParams(*trackInfo), aDiagnostics) !=
-                  media::DecodeSupport::Unsupported;
-  MOZ_LOG(sPDMLog, LogLevel::Debug,
-          ("WMF decoder %s requested type '%s'",
-           supports ? "supports" : "rejects", aMimeType.BeginReading()));
-  if (!supports) {
-    return media::DecodeSupport::Unsupported;
-  }
-  // TODO: Note that we do not yet distinguish between SW/HW decode support.
-  //       Will be done in bug 1754239.
-  return media::DecodeSupport::SoftwareDecode;
+  auto supports = Supports(SupportDecoderParams(*trackInfo), aDiagnostics);
+  MOZ_LOG(
+      sPDMLog, LogLevel::Debug,
+      ("WMF decoder %s requested type '%s'",
+       supports != media::DecodeSupport::Unsupported ? "supports" : "rejects",
+       aMimeType.BeginReading()));
+  return supports;
 }
 
 }  // namespace mozilla

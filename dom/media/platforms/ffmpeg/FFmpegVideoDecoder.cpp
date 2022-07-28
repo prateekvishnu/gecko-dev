@@ -368,10 +368,9 @@ void FFmpegVideoDecoder<LIBAV_VER>::InitHWDecodingPrefs() {
     FFMPEG_LOG("Hardware WebRender is off, VAAPI is disabled");
     return;
   }
-
-  if (!widget::GetDMABufDevice()->IsDMABufVAAPIEnabled()) {
+  if (!XRE_IsRDDProcess()) {
     mEnableHardwareDecoding = false;
-    FFMPEG_LOG("VA-API is disabled by preference.");
+    FFMPEG_LOG("VA-API works in RDD process only");
   }
 }
 #endif
@@ -774,7 +773,7 @@ void FFmpegVideoDecoder<LIBAV_VER>::InitVAAPICodecContext() {
 #endif
 
 static int64_t GetFramePts(AVFrame* aFrame) {
-#if LIBAVCODEC_VERSION_MAJOR > 58
+#if LIBAVCODEC_VERSION_MAJOR > 57
   return aFrame->pts;
 #else
   return aFrame->pkt_pts;

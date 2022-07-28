@@ -11,11 +11,17 @@
 
 var EXPORTED_SYMBOLS = ["DownloadIntegration"];
 
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
+const { Downloads } = ChromeUtils.import(
+  "resource://gre/modules/Downloads.jsm"
+);
 const { Integration } = ChromeUtils.import(
   "resource://gre/modules/Integration.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -25,18 +31,10 @@ ChromeUtils.defineModuleGetter(
   "AsyncShutdown",
   "resource://gre/modules/AsyncShutdown.jsm"
 );
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
-);
 ChromeUtils.defineModuleGetter(
   lazy,
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "Downloads",
-  "resource://gre/modules/Downloads.jsm"
 );
 ChromeUtils.defineModuleGetter(
   lazy,
@@ -53,12 +51,6 @@ ChromeUtils.defineModuleGetter(
   "FileUtils",
   "resource://gre/modules/FileUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "NetUtil",
-  "resource://gre/modules/NetUtil.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 ChromeUtils.defineModuleGetter(
   lazy,
   "NetUtil",
@@ -89,11 +81,6 @@ XPCOMUtils.defineLazyServiceGetter(
   "@mozilla.org/uriloader/external-protocol-service;1",
   "nsIExternalProtocolService"
 );
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "RuntimePermissions",
-  "resource://gre/modules/RuntimePermissions.jsm"
-);
 
 XPCOMUtils.defineLazyGetter(lazy, "gParentalControlsService", function() {
   if ("@mozilla.org/parental-controls-service;1" in Cc) {
@@ -117,14 +104,14 @@ XPCOMUtils.defineLazyServiceGetter(
   Ci.nsIApplicationReputationService
 );
 
-// We have to use the gCombinedDownloadIntegration identifier because, in this
-// module only, the DownloadIntegration identifier refers to the base version.
 Integration.downloads.defineModuleGetter(
   lazy,
-  "gCombinedDownloadIntegration",
-  "resource://gre/modules/DownloadIntegration.jsm",
-  "DownloadIntegration"
+  "DownloadIntegration",
+  "resource://gre/modules/DownloadIntegration.jsm"
 );
+XPCOMUtils.defineLazyGetter(lazy, "gCombinedDownloadIntegration", () => {
+  return lazy.DownloadIntegration;
+});
 
 const Timer = Components.Constructor(
   "@mozilla.org/timer;1",
@@ -165,13 +152,13 @@ const kObserverTopics = [
  */
 const kVerdictMap = {
   [Ci.nsIApplicationReputationService.VERDICT_DANGEROUS]:
-    lazy.Downloads.Error.BLOCK_VERDICT_MALWARE,
+    Downloads.Error.BLOCK_VERDICT_MALWARE,
   [Ci.nsIApplicationReputationService.VERDICT_UNCOMMON]:
-    lazy.Downloads.Error.BLOCK_VERDICT_UNCOMMON,
+    Downloads.Error.BLOCK_VERDICT_UNCOMMON,
   [Ci.nsIApplicationReputationService.VERDICT_POTENTIALLY_UNWANTED]:
-    lazy.Downloads.Error.BLOCK_VERDICT_POTENTIALLY_UNWANTED,
+    Downloads.Error.BLOCK_VERDICT_POTENTIALLY_UNWANTED,
   [Ci.nsIApplicationReputationService.VERDICT_DANGEROUS_HOST]:
-    lazy.Downloads.Error.BLOCK_VERDICT_MALWARE,
+    Downloads.Error.BLOCK_VERDICT_MALWARE,
 };
 
 /**
@@ -422,21 +409,6 @@ var DownloadIntegration = {
     }
 
     return Promise.resolve(shouldBlock);
-  },
-
-  /**
-   * Checks to determine whether to block downloads for not granted runtime permissions.
-   *
-   * @return {Promise}
-   * @resolves The boolean indicates to block downloads or not.
-   */
-  async shouldBlockForRuntimePermissions() {
-    return (
-      AppConstants.platform == "android" &&
-      !(await lazy.RuntimePermissions.waitForPermissions(
-        lazy.RuntimePermissions.WRITE_EXTERNAL_STORAGE
-      ))
-    );
   },
 
   /**
@@ -1165,7 +1137,7 @@ var DownloadObserver = {
         break;
       case "last-pb-context-exited":
         let promise = (async function() {
-          let list = await lazy.Downloads.getList(lazy.Downloads.PRIVATE);
+          let list = await Downloads.getList(Downloads.PRIVATE);
           let downloads = await list.getAll();
 
           // We can remove the downloads and finalize them in parallel.

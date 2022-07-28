@@ -35,7 +35,6 @@
 #include "vm/FunctionFlags.h"  // js::FunctionFlags
 #include "vm/Interpreter.h"
 #include "vm/JSFunction.h"
-#include "vm/TraceLogging.h"
 #ifdef MOZ_VTUNE
 #  include "vtune/VTuneWrapper.h"
 #endif
@@ -86,24 +85,25 @@ BaselineInterpreterHandler::BaselineInterpreterHandler(JSContext* cx,
 
 template <typename Handler>
 template <typename... HandlerArgs>
-BaselineCodeGen<Handler>::BaselineCodeGen(JSContext* cx, HandlerArgs&&... args)
+BaselineCodeGen<Handler>::BaselineCodeGen(JSContext* cx, TempAllocator& alloc,
+                                          HandlerArgs&&... args)
     : handler(cx, masm, std::forward<HandlerArgs>(args)...),
       cx(cx),
-      frame(handler.frame()),
-      traceLoggerToggleOffsets_(cx) {}
+      masm(cx, alloc),
+      frame(handler.frame()) {}
 
 BaselineCompiler::BaselineCompiler(JSContext* cx, TempAllocator& alloc,
                                    JSScript* script)
-    : BaselineCodeGen(cx, /* HandlerArgs = */ alloc, script),
-      profilerPushToggleOffset_(),
-      traceLoggerScriptTextIdOffset_() {
+    : BaselineCodeGen(cx, alloc, /* HandlerArgs = */ alloc, script),
+      profilerPushToggleOffset_() {
 #ifdef JS_CODEGEN_NONE
   MOZ_CRASH();
 #endif
 }
 
-BaselineInterpreterGenerator::BaselineInterpreterGenerator(JSContext* cx)
-    : BaselineCodeGen(cx /* no handlerArgs */) {}
+BaselineInterpreterGenerator::BaselineInterpreterGenerator(JSContext* cx,
+                                                           TempAllocator& alloc)
+    : BaselineCodeGen(cx, alloc /* no handlerArgs */) {}
 
 bool BaselineCompilerHandler::init(JSContext* cx) {
   if (!analysis_.init(alloc_)) {
@@ -204,10 +204,6 @@ MethodStatus BaselineCompiler::compile() {
           script->filename(), script->lineno(), script->column());
 
   AutoIncrementalTimer timer(cx->realm()->timers.baselineCompileTime);
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
-  TraceLoggerEvent scriptEvent(TraceLogger_AnnotateScripts, script);
-  AutoTraceLog logScript(logger, scriptEvent);
-  AutoTraceLog logCompile(logger, TraceLogger_BaselineCompilation);
 
   AutoKeepJitScripts keepJitScript(cx);
   if (!script->ensureHasJitScript(cx, keepJitScript)) {
@@ -262,8 +258,7 @@ MethodStatus BaselineCompiler::compile() {
           profilerEnterFrameToggleOffset_.offset(),
           profilerExitFrameToggleOffset_.offset(),
           handler.retAddrEntries().length(), handler.osrEntries().length(),
-          debugTrapEntries_.length(), script->resumeOffsets().size(),
-          traceLoggerToggleOffsets_.length()),
+          debugTrapEntries_.length(), script->resumeOffsets().size()),
       JS::DeletePolicy<BaselineScript>(cx->runtime()));
   if (!baselineScript) {
     return Method_Error;
@@ -285,13 +280,6 @@ MethodStatus BaselineCompiler::compile() {
           cx->runtime())) {
     baselineScript->toggleProfilerInstrumentation(true);
   }
-
-#ifdef JS_TRACE_LOGGING
-  // Initialize the tracelogger instrumentation.
-  if (JS::TraceLoggerSupported()) {
-    baselineScript->initTraceLogger(script, traceLoggerToggleOffsets_);
-  }
-#endif
 
   // Compute native resume addresses for the script's resume offsets.
   baselineScript->computeResumeNativeOffsets(script, resumeOffsetEntries_);
@@ -674,10 +662,9 @@ void BaselineCompilerCodeGen::computeFrameSize(Register dest) {
 
 template <>
 void BaselineInterpreterCodeGen::computeFrameSize(Register dest) {
-  // dest = FramePointer + BaselineFrame::FramePointerOffset - StackPointer.
+  // dest := FramePointer - StackPointer.
   MOZ_ASSERT(!inCall_, "must not be called in the middle of a VM call");
-  masm.computeEffectiveAddress(
-      Address(FramePointer, BaselineFrame::FramePointerOffset), dest);
+  masm.mov(FramePointer, dest);
   masm.subStackPtrFrom(dest);
 }
 
@@ -694,36 +681,27 @@ void BaselineCodeGen<Handler>::prepareVMCall() {
 
 template <>
 void BaselineCompilerCodeGen::storeFrameSizeAndPushDescriptor(
-    uint32_t argSize, Register scratch1, Register scratch2) {
-  uint32_t frameFullSize = frame.frameSize();
-
+    uint32_t argSize, Register scratch) {
 #ifdef DEBUG
-  masm.store32(Imm32(frameFullSize), frame.addressOfDebugFrameSize());
+  masm.store32(Imm32(frame.frameSize()), frame.addressOfDebugFrameSize());
 #endif
 
-  uint32_t descriptor = MakeFrameDescriptor(
-      frameFullSize + argSize, FrameType::BaselineJS, ExitFrameLayout::Size());
-  masm.push(Imm32(descriptor));
+  masm.pushFrameDescriptor(FrameType::BaselineJS);
 }
 
 template <>
 void BaselineInterpreterCodeGen::storeFrameSizeAndPushDescriptor(
-    uint32_t argSize, Register scratch1, Register scratch2) {
-  // scratch1 = FramePointer + BaselineFrame::FramePointerOffset - StackPointer.
-  masm.computeEffectiveAddress(
-      Address(FramePointer, BaselineFrame::FramePointerOffset), scratch1);
-  masm.subStackPtrFrom(scratch1);
-
+    uint32_t argSize, Register scratch) {
 #ifdef DEBUG
   // Store the frame size without VMFunction arguments in debug builds.
-  masm.computeEffectiveAddress(Address(scratch1, -int32_t(argSize)), scratch2);
-  masm.store32(scratch2, frame.addressOfDebugFrameSize());
+  // scratch := FramePointer - StackPointer - argSize.
+  masm.mov(FramePointer, scratch);
+  masm.subStackPtrFrom(scratch);
+  masm.sub32(Imm32(argSize), scratch);
+  masm.store32(scratch, frame.addressOfDebugFrameSize());
 #endif
 
-  // Push frame descriptor based on the full frame size.
-  masm.makeFrameDescriptor(scratch1, FrameType::BaselineJS,
-                           ExitFrameLayout::Size());
-  masm.push(scratch1);
+  masm.pushFrameDescriptor(FrameType::BaselineJS);
 }
 
 static uint32_t GetVMFunctionArgSize(const VMFunctionData& fun) {
@@ -751,17 +729,14 @@ bool BaselineCodeGen<Handler>::callVMInternal(VMFunctionId id,
   saveInterpreterPCReg();
 
   if (phase == CallVMPhase::AfterPushingLocals) {
-    storeFrameSizeAndPushDescriptor(argSize, R0.scratchReg(), R1.scratchReg());
+    storeFrameSizeAndPushDescriptor(argSize, R0.scratchReg());
   } else {
     MOZ_ASSERT(phase == CallVMPhase::BeforePushingLocals);
-    uint32_t frameBaseSize = BaselineFrame::frameSizeForNumValueSlots(0);
 #ifdef DEBUG
+    uint32_t frameBaseSize = BaselineFrame::frameSizeForNumValueSlots(0);
     masm.store32(Imm32(frameBaseSize), frame.addressOfDebugFrameSize());
 #endif
-    uint32_t descriptor =
-        MakeFrameDescriptor(frameBaseSize + argSize, FrameType::BaselineJS,
-                            ExitFrameLayout::Size());
-    masm.push(Imm32(descriptor));
+    masm.pushFrameDescriptor(FrameType::BaselineJS);
   }
   MOZ_ASSERT(fun.expectTailCall == NonTailCall);
   // Perform the call.
@@ -1444,11 +1419,6 @@ bool BaselineCompilerCodeGen::emitWarmUpCounterIncrement() {
     //  +---[Saved-FramePtr]
     //      [...Baseline-Frame...]
 
-    // Restore the stack pointer so that the return address is on top of
-    // the stack.
-    masm.moveToStackPtr(FramePointer);
-    masm.pop(FramePointer);
-
 #ifdef DEBUG
     // Get a scratch register that's not osrDataReg or OsrFrameReg.
     AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
@@ -1477,11 +1447,15 @@ bool BaselineCompilerCodeGen::emitWarmUpCounterIncrement() {
       // lastProfilingFrame to be null.
       masm.branchPtr(Assembler::Equal, scratchReg, ImmWord(0), &checkOk);
 
-      masm.branchStackPtr(Assembler::Equal, scratchReg, &checkOk);
+      masm.branchPtr(Assembler::Equal, FramePointer, scratchReg, &checkOk);
       masm.assumeUnreachable("Baseline OSR lastProfilingFrame mismatch.");
       masm.bind(&checkOk);
     }
 #endif
+
+    // Restore the stack pointer so that the saved frame pointer is on top of
+    // the stack.
+    masm.moveToStackPtr(FramePointer);
 
     // Jump into Ion.
     masm.loadPtr(Address(osrDataReg, IonOsrTempData::offsetOfBaselineFrame()),
@@ -1581,109 +1555,13 @@ bool BaselineCompiler::emitDebugTrap() {
                                    masm.currentOffset());
 }
 
-#ifdef JS_TRACE_LOGGING
-template <>
-bool BaselineCompilerCodeGen::emitTraceLoggerEnter() {
-  AllocatableRegisterSet regs(RegisterSet::Volatile());
-  Register loggerReg = regs.takeAnyGeneral();
-  Register scriptReg = regs.takeAnyGeneral();
-
-  Label noTraceLogger;
-  if (!traceLoggerToggleOffsets_.append(masm.toggledJump(&noTraceLogger))) {
-    return false;
-  }
-
-  masm.Push(loggerReg);
-  masm.Push(scriptReg);
-
-  masm.loadTraceLogger(loggerReg);
-
-  // Script start.
-  masm.movePtr(ImmPtr(handler.script()->jitScript()), scriptReg);
-  masm.loadPtr(Address(scriptReg, JitScript::offsetOfBaselineScript()),
-               scriptReg);
-  Address scriptEvent(scriptReg,
-                      BaselineScript::offsetOfTraceLoggerScriptEvent());
-  masm.computeEffectiveAddress(scriptEvent, scriptReg);
-  masm.tracelogStartEvent(loggerReg, scriptReg);
-
-  // Engine start.
-  masm.tracelogStartId(loggerReg, TraceLogger_Baseline, /* force = */ true);
-
-  masm.Pop(scriptReg);
-  masm.Pop(loggerReg);
-
-  masm.bind(&noTraceLogger);
-
-  return true;
-}
-
-template <>
-bool BaselineInterpreterCodeGen::emitTraceLoggerEnter() {
-  if (JS::TraceLoggerSupported()) {
-    MOZ_CRASH("NYI: interpreter emitTraceLoggerEnter");
-  }
-  return true;
-}
-
-template <typename Handler>
-bool BaselineCodeGen<Handler>::emitTraceLoggerExit() {
-  AllocatableRegisterSet regs(RegisterSet::Volatile());
-  Register loggerReg = regs.takeAnyGeneral();
-
-  Label noTraceLogger;
-  if (!traceLoggerToggleOffsets_.append(masm.toggledJump(&noTraceLogger))) {
-    return false;
-  }
-
-  masm.Push(loggerReg);
-  masm.loadTraceLogger(loggerReg);
-
-  masm.tracelogStopId(loggerReg, TraceLogger_Baseline, /* force = */ true);
-  masm.tracelogStopId(loggerReg, TraceLogger_Scripts, /* force = */ true);
-
-  masm.Pop(loggerReg);
-
-  masm.bind(&noTraceLogger);
-
-  return true;
-}
-
-template <typename Handler>
-bool BaselineCodeGen<Handler>::emitTraceLoggerResume(
-    Register baselineScript, AllocatableGeneralRegisterSet& regs) {
-  Register scriptId = regs.takeAny();
-  Register loggerReg = regs.takeAny();
-
-  Label noTraceLogger;
-  if (!traceLoggerToggleOffsets_.append(masm.toggledJump(&noTraceLogger))) {
-    return false;
-  }
-
-  masm.loadTraceLogger(loggerReg);
-
-  Address scriptEvent(baselineScript,
-                      BaselineScript::offsetOfTraceLoggerScriptEvent());
-  masm.computeEffectiveAddress(scriptEvent, scriptId);
-  masm.tracelogStartEvent(loggerReg, scriptId);
-  masm.tracelogStartId(loggerReg, TraceLogger_Baseline, /* force = */ true);
-
-  regs.add(loggerReg);
-  regs.add(scriptId);
-
-  masm.bind(&noTraceLogger);
-
-  return true;
-}
-#endif
-
 template <typename Handler>
 void BaselineCodeGen<Handler>::emitProfilerEnterFrame() {
   // Store stack position to lastProfilingFrame variable, guarded by a toggled
   // jump. Starts off initially disabled.
   Label noInstrument;
   CodeOffset toggleOffset = masm.toggledJump(&noInstrument);
-  masm.profilerEnterFrame(masm.getStackPointer(), R0.scratchReg());
+  masm.profilerEnterFrame(FramePointer, R0.scratchReg());
   masm.bind(&noInstrument);
 
   // Store the start offset in the appropriate location.
@@ -3031,7 +2909,7 @@ bool BaselineCodeGen<Handler>::emit_MutateProto() {
   pushArg(R1);
   pushArg(R0.scratchReg());
 
-  using Fn = bool (*)(JSContext*, HandlePlainObject, HandleValue);
+  using Fn = bool (*)(JSContext*, Handle<PlainObject*>, HandleValue);
   if (!callVM<Fn, MutatePrototype>()) {
     return false;
   }
@@ -3252,7 +3130,7 @@ bool BaselineCodeGen<Handler>::emit_NewPrivateName() {
 
   pushScriptNameArg(R0.scratchReg(), R1.scratchReg());
 
-  using Fn = JS::Symbol* (*)(JSContext*, HandleAtom);
+  using Fn = JS::Symbol* (*)(JSContext*, Handle<JSAtom*>);
   if (!callVM<Fn, NewPrivateName>()) {
     return false;
   }
@@ -3314,8 +3192,8 @@ bool BaselineCompilerCodeGen::tryOptimizeBindGlobalName() {
   JSScript* script = handler.script();
   MOZ_ASSERT(!script->hasNonSyntacticScope());
 
-  RootedGlobalObject global(cx, &script->global());
-  RootedPropertyName name(cx, script->getName(handler.pc()));
+  Rooted<GlobalObject*> global(cx, &script->global());
+  Rooted<PropertyName*> name(cx, script->getName(handler.pc()));
   if (JSObject* binding = MaybeOptimizeBindGlobalName(cx, global, name)) {
     frame.push(ObjectValue(*binding));
     return true;
@@ -3427,8 +3305,8 @@ bool BaselineCodeGen<Handler>::emitSetPropSuper(bool strict) {
   masm.loadValue(frame.addressOfStackValue(-1), R0);
   pushArg(R0);  // obj
 
-  using Fn = bool (*)(JSContext*, HandleValue, HandleValue, HandlePropertyName,
-                      HandleValue, bool);
+  using Fn = bool (*)(JSContext*, HandleValue, HandleValue,
+                      Handle<PropertyName*>, HandleValue, bool);
   if (!callVM<Fn, js::SetPropertySuper>()) {
     return false;
   }
@@ -3493,7 +3371,7 @@ bool BaselineCodeGen<Handler>::emitDelProp(bool strict) {
   pushScriptNameArg(R1.scratchReg(), R2.scratchReg());
   pushArg(R0);
 
-  using Fn = bool (*)(JSContext*, HandleValue, HandlePropertyName, bool*);
+  using Fn = bool (*)(JSContext*, HandleValue, Handle<PropertyName*>, bool*);
   if (strict) {
     if (!callVM<Fn, DelPropOperation<true>>()) {
       return false;
@@ -3796,7 +3674,7 @@ bool BaselineCodeGen<Handler>::emit_DelName() {
   pushArg(R0.scratchReg());
   pushScriptNameArg(R1.scratchReg(), R2.scratchReg());
 
-  using Fn = bool (*)(JSContext*, HandlePropertyName, HandleObject,
+  using Fn = bool (*)(JSContext*, Handle<PropertyName*>, HandleObject,
                       MutableHandleValue);
   if (!callVM<Fn, js::DeleteNameOperation>()) {
     return false;
@@ -3924,8 +3802,8 @@ bool BaselineCodeGen<Handler>::emitInitPropGetterSetter() {
   pushArg(R1.scratchReg());
   pushBytecodePCArg();
 
-  using Fn = bool (*)(JSContext*, jsbytecode*, HandleObject, HandlePropertyName,
-                      HandleObject);
+  using Fn = bool (*)(JSContext*, jsbytecode*, HandleObject,
+                      Handle<PropertyName*>, HandleObject);
   if (!callVM<Fn, InitPropGetterSetterOperation>()) {
     return false;
   }
@@ -4183,7 +4061,8 @@ bool BaselineInterpreterCodeGen::emitFormalArgAccess(JSOp op) {
   }
   masm.bind(&isUnaliased);
   {
-    BaseValueIndex addr(FramePointer, argReg, BaselineFrame::offsetOfArg(0));
+    BaseValueIndex addr(FramePointer, argReg,
+                        JitFrameLayout::offsetOfActualArgs());
     if (op == JSOp::GetArg) {
       masm.loadValue(addr, R0);
       frame.push(R0);
@@ -4251,15 +4130,14 @@ bool BaselineCodeGen<Handler>::emit_NewTarget() {
   {
     Register argvLen = R0.scratchReg();
     Register nformals = R1.scratchReg();
-    Address actualArgs(FramePointer, BaselineFrame::offsetOfNumActualArgs());
-    masm.loadPtr(actualArgs, argvLen);
+    masm.loadNumActualArgs(FramePointer, argvLen);
 
     // If argvLen < nformals, set argvlen := nformals.
     loadNumFormalArguments(nformals);
     masm.cmp32Move32(Assembler::Below, argvLen, nformals, nformals, argvLen);
 
     BaseValueIndex newTarget(FramePointer, argvLen,
-                             BaselineFrame::offsetOfArg(0));
+                             JitFrameLayout::offsetOfActualArgs());
     masm.loadValue(newTarget, R0);
     masm.jump(&done);
   }
@@ -4404,6 +4282,11 @@ bool BaselineCodeGen<Handler>::emit_Call() {
 }
 
 template <typename Handler>
+bool BaselineCodeGen<Handler>::emit_CallContent() {
+  return emitCall(JSOp::CallContent);
+}
+
+template <typename Handler>
 bool BaselineCodeGen<Handler>::emit_CallIgnoresRv() {
   return emitCall(JSOp::CallIgnoresRv);
 }
@@ -4416,6 +4299,11 @@ bool BaselineCodeGen<Handler>::emit_CallIter() {
 template <typename Handler>
 bool BaselineCodeGen<Handler>::emit_New() {
   return emitCall(JSOp::New);
+}
+
+template <typename Handler>
+bool BaselineCodeGen<Handler>::emit_NewContent() {
+  return emitCall(JSOp::NewContent);
 }
 
 template <typename Handler>
@@ -4480,7 +4368,7 @@ bool BaselineCodeGen<Handler>::emit_ImplicitThis() {
   pushScriptNameArg(R1.scratchReg(), R2.scratchReg());
   pushArg(R0.scratchReg());
 
-  using Fn = bool (*)(JSContext*, HandleObject, HandlePropertyName,
+  using Fn = bool (*)(JSContext*, HandleObject, Handle<PropertyName*>,
                       MutableHandleValue);
   if (!callVM<Fn, ImplicitThisOperation>()) {
     return false;
@@ -4790,7 +4678,7 @@ bool BaselineCodeGen<Handler>::emit_PushVarEnv() {
                        R2.scratchReg());
   pushArg(R0.scratchReg());
 
-  using Fn = bool (*)(JSContext*, BaselineFrame*, HandleScope);
+  using Fn = bool (*)(JSContext*, BaselineFrame*, Handle<Scope*>);
   return callVM<Fn, jit::PushVarEnv>();
 }
 
@@ -5809,19 +5697,6 @@ bool BaselineCodeGen<Handler>::emit_Resume() {
                    scratch1);
   masm.branchIfScriptHasNoJitScript(scratch1, &interpret);
 
-#ifdef JS_TRACE_LOGGING
-  if (JS::TraceLoggerSupported()) {
-    // TODO (bug 1565788): add Baseline Interpreter support.
-    MOZ_CRASH("Unimplemented Baseline Interpreter TraceLogger support");
-    masm.loadJitScript(scratch1, scratch1);
-    Address baselineAddr(scratch1, JitScript::offsetOfBaselineScript());
-    masm.loadPtr(baselineAddr, scratch1);
-    if (!emitTraceLoggerResume(scratch1, regs)) {
-      return false;
-    }
-  }
-#endif
-
   // Push |undefined| for all formals.
   Register scratch2 = regs.takeAny();
   Label loop, loopDone;
@@ -5868,19 +5743,15 @@ bool BaselineCodeGen<Handler>::emit_Resume() {
   // Push |undefined| for |this|.
   masm.pushValue(UndefinedValue());
 
-  // Update BaselineFrame frameSize field and create the frame descriptor.
-  masm.computeEffectiveAddress(
-      Address(FramePointer, BaselineFrame::FramePointerOffset), scratch2);
-  masm.subStackPtrFrom(scratch2);
 #ifdef DEBUG
+  // Update BaselineFrame debugFrameSize field.
+  masm.mov(FramePointer, scratch2);
+  masm.subStackPtrFrom(scratch2);
   masm.store32(scratch2, frame.addressOfDebugFrameSize());
 #endif
-  masm.makeFrameDescriptor(scratch2, FrameType::BaselineJS,
-                           JitFrameLayout::Size());
 
-  masm.push(Imm32(0));  // actual argc
   masm.PushCalleeToken(callee, /* constructing = */ false);
-  masm.push(scratch2);  // frame descriptor
+  masm.pushFrameDescriptorForJitCall(FrameType::BaselineJS, /* argc = */ 0);
 
   // PushCalleeToken bumped framePushed. Reset it.
   MOZ_ASSERT(masm.framePushed() == sizeof(uintptr_t));
@@ -5909,6 +5780,10 @@ bool BaselineCodeGen<Handler>::emit_Resume() {
   masm.pushReturnAddress();
 #endif
 
+  // Construct BaselineFrame.
+  masm.push(FramePointer);
+  masm.moveStackPtrTo(FramePointer);
+
   // If profiler instrumentation is on, update lastProfilingFrame on
   // current JitActivation
   {
@@ -5920,14 +5795,12 @@ bool BaselineCodeGen<Handler>::emit_Resume() {
     masm.loadJSContext(scratchReg);
     masm.loadPtr(Address(scratchReg, JSContext::offsetOfProfilingActivation()),
                  scratchReg);
-    masm.storeStackPtr(
+    masm.storePtr(
+        FramePointer,
         Address(scratchReg, JitActivation::offsetOfLastProfilingFrame()));
     masm.bind(&skip);
   }
 
-  // Construct BaselineFrame.
-  masm.push(FramePointer);
-  masm.moveStackPtrTo(FramePointer);
   masm.subFromStackPtr(Imm32(BaselineFrame::Size()));
   masm.assertStackAlignment(sizeof(Value), 0);
 
@@ -6338,12 +6211,15 @@ bool BaselineCodeGen<Handler>::emitPrologue() {
 #ifdef JS_USE_LINK_REGISTER
   // Push link register from generateEnterJIT()'s BLR.
   masm.pushReturnAddress();
-  masm.checkStackAlignment();
 #endif
-  emitProfilerEnterFrame();
 
   masm.push(FramePointer);
   masm.moveStackPtrTo(FramePointer);
+
+  masm.checkStackAlignment();
+
+  emitProfilerEnterFrame();
+
   masm.subFromStackPtr(Imm32(BaselineFrame::Size()));
 
   // Initialize BaselineFrame. Also handles env chain pre-initialization (in
@@ -6369,12 +6245,6 @@ bool BaselineCodeGen<Handler>::emitPrologue() {
   }
 
   emitInitializeLocals();
-
-#ifdef JS_TRACE_LOGGING
-  if (JS::TraceLoggerSupported() && !emitTraceLoggerEnter()) {
-    return false;
-  }
-#endif
 
   // Ion prologue bailouts will enter here in the Baseline Interpreter.
   masm.bind(&bailoutPrologue_);
@@ -6414,16 +6284,10 @@ bool BaselineCodeGen<Handler>::emitEpilogue() {
     }
   }
 
-#ifdef JS_TRACE_LOGGING
-  if (JS::TraceLoggerSupported() && !emitTraceLoggerExit()) {
-    return false;
-  }
-#endif
+  emitProfilerExitFrame();
 
   masm.moveToStackPtr(FramePointer);
   masm.pop(FramePointer);
-
-  emitProfilerExitFrame();
 
   masm.ret();
   return true;
@@ -6814,7 +6678,8 @@ bool BaselineInterpreterGenerator::generate(BaselineInterpreter& interpreter) {
 
 JitCode* JitRuntime::generateDebugTrapHandler(JSContext* cx,
                                               DebugTrapHandlerKind kind) {
-  StackMacroAssembler masm;
+  TempAllocator temp(&cx->tempLifoAlloc());
+  StackMacroAssembler masm(cx, temp);
   AutoCreatedBy acb(masm, "JitRuntime::generateDebugTrapHandler");
 
   AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());

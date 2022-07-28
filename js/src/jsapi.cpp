@@ -71,6 +71,7 @@
 #include "util/StringBuffer.h"
 #include "util/Text.h"
 #include "vm/EnvironmentObject.h"
+#include "vm/ErrorContext.h"
 #include "vm/ErrorObject.h"
 #include "vm/ErrorReporting.h"
 #include "vm/Interpreter.h"
@@ -414,20 +415,6 @@ JS_PUBLIC_API JSRuntime* JS_GetRuntime(JSContext* cx) { return cx->runtime(); }
 
 JS_PUBLIC_API JS::ContextOptions& JS::ContextOptionsRef(JSContext* cx) {
   return cx->options();
-}
-
-JS::ContextOptions& JS::ContextOptions::setWasmCranelift(bool flag) {
-#ifdef ENABLE_WASM_CRANELIFT
-  wasmCranelift_ = flag;
-#endif
-  return *this;
-}
-
-JS::ContextOptions& JS::ContextOptions::setWasmSimdWormhole(bool flag) {
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-  wasmSimdWormhole_ = flag;
-#endif
-  return *this;
 }
 
 JS::ContextOptions& JS::ContextOptions::setFuzzing(bool flag) {
@@ -1966,7 +1953,7 @@ JS_PUBLIC_API bool JS_DeepFreezeObject(JSContext* cx, HandleObject obj) {
 
   // Walk slots in obj and if any value is a non-null object, seal it.
   if (obj->is<NativeObject>()) {
-    RootedNativeObject nobj(cx, &obj->as<NativeObject>());
+    Rooted<NativeObject*> nobj(cx, &obj->as<NativeObject>());
     for (uint32_t i = 0, n = nobj->slotSpan(); i < n; ++i) {
       if (!DeepFreezeSlot(cx, nobj->getSlot(i))) {
         return false;
@@ -1988,7 +1975,8 @@ JS_PUBLIC_API bool JSPropertySpec::getValue(JSContext* cx,
 
   switch (u.value.type) {
     case ValueWrapper::Type::String: {
-      RootedAtom atom(cx, Atomize(cx, u.value.string, strlen(u.value.string)));
+      Rooted<JSAtom*> atom(cx,
+                           Atomize(cx, u.value.string, strlen(u.value.string)));
       if (!atom) {
         return false;
       }
@@ -2145,7 +2133,7 @@ JS_PUBLIC_API JSFunction* JS_NewFunction(JSContext* cx, JSNative native,
   AssertHeapIsIdle();
   CHECK_THREAD(cx);
 
-  RootedAtom atom(cx);
+  Rooted<JSAtom*> atom(cx);
   if (name) {
     atom = Atomize(cx, name, strlen(name));
     if (!atom) {
@@ -2167,7 +2155,7 @@ JS_PUBLIC_API JSFunction* JS::GetSelfHostedFunction(JSContext* cx,
   CHECK_THREAD(cx);
   cx->check(id);
 
-  RootedAtom name(cx, IdToFunctionName(cx, id));
+  Rooted<JSAtom*> name(cx, IdToFunctionName(cx, id));
   if (!name) {
     return nullptr;
   }
@@ -2176,7 +2164,7 @@ JS_PUBLIC_API JSFunction* JS::GetSelfHostedFunction(JSContext* cx,
   if (!shAtom) {
     return nullptr;
   }
-  RootedPropertyName shName(cx, shAtom->asPropertyName());
+  Rooted<PropertyName*> shName(cx, shAtom->asPropertyName());
   RootedValue funVal(cx);
   if (!GlobalObject::getSelfHostedFunction(cx, cx->global(), shName, name,
                                            nargs, &funVal)) {
@@ -2213,8 +2201,8 @@ JS_PUBLIC_API JSFunction* JS::NewFunctionFromSpec(JSContext* cx,
     if (!shAtom) {
       return nullptr;
     }
-    RootedPropertyName shName(cx, shAtom->asPropertyName());
-    RootedAtom name(cx, IdToFunctionName(cx, id));
+    Rooted<PropertyName*> shName(cx, shAtom->asPropertyName());
+    Rooted<JSAtom*> name(cx, IdToFunctionName(cx, id));
     if (!name) {
       return nullptr;
     }
@@ -2226,7 +2214,7 @@ JS_PUBLIC_API JSFunction* JS::NewFunctionFromSpec(JSContext* cx,
     return &funVal.toObject().as<JSFunction>();
   }
 
-  RootedAtom atom(cx, IdToFunctionName(cx, id));
+  Rooted<JSAtom*> atom(cx, IdToFunctionName(cx, id));
   if (!atom) {
     return nullptr;
   }
@@ -3650,7 +3638,8 @@ JS_PUBLIC_API bool JS_ExpandErrorArgumentsASCII(JSContext* cx,
 
   AssertHeapIsIdle();
   va_start(ap, reportp);
-  ok = ExpandErrorArgumentsVA(cx, errorCallback, nullptr, errorNumber,
+  MainThreadErrorContext ec(cx);
+  ok = ExpandErrorArgumentsVA(&ec, errorCallback, nullptr, errorNumber,
                               ArgumentsAreASCII, reportp, ap);
   va_end(ap);
   return ok;
@@ -3835,7 +3824,8 @@ static UniquePtr<JSErrorNotes::Note> CreateErrorNoteVA(
   note->lineno = lineno;
   note->column = column;
 
-  if (!ExpandErrorArgumentsVA(cx, errorCallback, userRef, errorNumber, nullptr,
+  MainThreadErrorContext ec(cx);
+  if (!ExpandErrorArgumentsVA(&ec, errorCallback, userRef, errorNumber, nullptr,
                               argumentsType, note.get(), ap)) {
     return nullptr;
   }
@@ -4066,6 +4056,16 @@ JS_PUBLIC_API void JS_SetGlobalJitCompilerOption(JSContext* cx,
       }
       jit::JitOptions.frequentBailoutThreshold = value;
       break;
+    case JSJITCOMPILER_BASE_REG_FOR_LOCALS:
+      if (value == 0) {
+        jit::JitOptions.baseRegForLocals = jit::BaseRegForAddress::SP;
+      } else if (value == 1) {
+        jit::JitOptions.baseRegForLocals = jit::BaseRegForAddress::FP;
+      } else {
+        jit::DefaultJitOptions defaultValues;
+        jit::JitOptions.baseRegForLocals = defaultValues.baseRegForLocals;
+      }
+      break;
     case JSJITCOMPILER_BASELINE_INTERPRETER_ENABLE:
       if (value == 1) {
         jit::JitOptions.baselineInterpreter = true;
@@ -4139,13 +4139,7 @@ JS_PUBLIC_API void JS_SetGlobalJitCompilerOption(JSContext* cx,
       JS::ContextOptionsRef(cx).setWasmBaseline(!!value);
       break;
     case JSJITCOMPILER_WASM_JIT_OPTIMIZING:
-#ifdef ENABLE_WASM_CRANELIFT
-      JS::ContextOptionsRef(cx).setWasmCranelift(!!value);
-      JS::ContextOptionsRef(cx).setWasmIon(!value);
-#else
       JS::ContextOptionsRef(cx).setWasmIon(!!value);
-      JS::ContextOptionsRef(cx).setWasmCranelift(!value);
-#endif
       break;
 #ifdef DEBUG
     case JSJITCOMPILER_FULL_DEBUG_CHECKS:
@@ -4188,6 +4182,9 @@ JS_PUBLIC_API bool JS_GetGlobalJitCompilerOption(JSContext* cx,
     case JSJITCOMPILER_ION_FREQUENT_BAILOUT_THRESHOLD:
       *valueOut = jit::JitOptions.frequentBailoutThreshold;
       break;
+    case JSJITCOMPILER_BASE_REG_FOR_LOCALS:
+      *valueOut = uint32_t(jit::JitOptions.baseRegForLocals);
+      break;
     case JSJITCOMPILER_INLINING_BYTECODE_MAX_LENGTH:
       *valueOut = jit::JitOptions.smallFunctionMaxBytecodeLength;
       break;
@@ -4213,11 +4210,7 @@ JS_PUBLIC_API bool JS_GetGlobalJitCompilerOption(JSContext* cx,
       *valueOut = JS::ContextOptionsRef(cx).wasmBaseline() ? 1 : 0;
       break;
     case JSJITCOMPILER_WASM_JIT_OPTIMIZING:
-#  ifdef ENABLE_WASM_CRANELIFT
-      *valueOut = JS::ContextOptionsRef(cx).wasmCranelift() ? 1 : 0;
-#  else
       *valueOut = JS::ContextOptionsRef(cx).wasmIon() ? 1 : 0;
-#  endif
       break;
 #  ifdef DEBUG
     case JSJITCOMPILER_FULL_DEBUG_CHECKS:
@@ -4256,7 +4249,8 @@ JS_PUBLIC_API bool JS_IndexToId(JSContext* cx, uint32_t index,
 
 JS_PUBLIC_API bool JS_CharsToId(JSContext* cx, JS::TwoByteChars chars,
                                 MutableHandleId idp) {
-  RootedAtom atom(cx, AtomizeChars(cx, chars.begin().get(), chars.length()));
+  Rooted<JSAtom*> atom(cx,
+                       AtomizeChars(cx, chars.begin().get(), chars.length()));
   if (!atom) {
     return false;
   }
@@ -4555,6 +4549,16 @@ JS_PUBLIC_API void JS::SetOutOfMemoryCallback(JSContext* cx,
   cx->runtime()->oomCallbackData = data;
 }
 
+JS_PUBLIC_API void JS::SetShadowRealmInitializeGlobalCallback(
+    JSContext* cx, JS::GlobalInitializeCallback callback) {
+  cx->runtime()->shadowRealmInitializeGlobalCallback = callback;
+}
+
+JS_PUBLIC_API void JS::SetShadowRealmGlobalCreationCallback(
+    JSContext* cx, JS::GlobalCreationCallback callback) {
+  cx->runtime()->shadowRealmGlobalCreationCallback = callback;
+}
+
 JS::FirstSubsumedFrame::FirstSubsumedFrame(
     JSContext* cx, bool ignoreSelfHostedFrames /* = true */)
     : JS::FirstSubsumedFrame(cx, cx->realm()->principals(),
@@ -4581,8 +4585,12 @@ JS_PUBLIC_API bool JS::IsAsyncStackCaptureEnabledForRealm(JSContext* cx) {
     return false;
   }
 
-  return !cx->options().asyncStackCaptureDebuggeeOnly() ||
-         cx->realm()->isDebuggee();
+  if (!cx->options().asyncStackCaptureDebuggeeOnly() ||
+      cx->realm()->isDebuggee()) {
+    return true;
+  }
+
+  return cx->realm()->isAsyncStackCapturingEnabled;
 }
 
 JS_PUBLIC_API bool JS::CopyAsyncStack(JSContext* cx,

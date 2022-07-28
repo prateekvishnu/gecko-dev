@@ -10,18 +10,19 @@ var EXPORTED_SYMBOLS = ["AboutLoginsParent", "_AboutLogins"];
 const { setTimeout, clearTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
+);
+const { E10SUtils } = ChromeUtils.import(
+  "resource://gre/modules/E10SUtils.jsm"
 );
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
-  E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   LoginBreaches: "resource:///modules/LoginBreaches.jsm",
   LoginHelper: "resource://gre/modules/LoginHelper.jsm",
   LoginExport: "resource://gre/modules/LoginExport.jsm",
@@ -29,7 +30,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   MigrationUtils: "resource:///modules/MigrationUtils.jsm",
   OSKeyStore: "resource://gre/modules/OSKeyStore.jsm",
   UIState: "resource://services-sync/UIState.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
 });
 
 XPCOMUtils.defineLazyGetter(lazy, "log", () => {
@@ -69,8 +69,7 @@ const PRIMARY_PASSWORD_NOTIFICATION_ID = "primary-password-login-required";
 
 // about:logins will always use the privileged content process,
 // even if it is disabled for other consumers such as about:newtab.
-const EXPECTED_ABOUTLOGINS_REMOTE_TYPE =
-  lazy.E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE;
+const EXPECTED_ABOUTLOGINS_REMOTE_TYPE = E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE;
 let _gPasswordRemaskTimeout = null;
 const convertSubjectToLogin = subject => {
   subject.QueryInterface(Ci.nsILoginMetaInfo).QueryInterface(Ci.nsILoginInfo);
@@ -665,40 +664,6 @@ class AboutLoginsInternal {
     this.#messageSubscribers("AboutLogins:RemoveAllLogins", []);
   }
 
-  async #getFavicon(login) {
-    try {
-      const faviconData = await lazy.PlacesUtils.promiseFaviconData(
-        login.origin
-      );
-      return {
-        faviconData,
-        guid: login.guid,
-      };
-    } catch (ex) {
-      return null;
-    }
-  }
-
-  async getAllFavicons(logins) {
-    let favicons = await Promise.all(
-      logins.map(login => this.#getFavicon(login))
-    );
-    let vanillaFavicons = {};
-    for (let favicon of favicons) {
-      if (!favicon) {
-        continue;
-      }
-      try {
-        vanillaFavicons[favicon.guid] = {
-          data: favicon.faviconData.data,
-          dataLen: favicon.faviconData.dataLen,
-          mimeType: favicon.faviconData.mimeType,
-        };
-      } catch (ex) {}
-    }
-    return vanillaFavicons;
-  }
-
   async #reloadAllLogins() {
     let logins = await this.getAllLogins();
     this.#messageSubscribers("AboutLogins:AllLogins", logins);
@@ -861,11 +826,6 @@ class AboutLoginsInternal {
         );
       }
     }
-
-    sendMessageFn(
-      "AboutLogins:SendFavicons",
-      await AboutLogins.getAllFavicons(logins)
-    );
   }
 
   getSyncState() {

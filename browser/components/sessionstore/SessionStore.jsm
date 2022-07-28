@@ -220,15 +220,17 @@ const kLastIndex = Number.MAX_SAFE_INTEGER - 1;
 const { PrivateBrowsingUtils } = ChromeUtils.import(
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryTimestamps } = ChromeUtils.import(
   "resource://gre/modules/TelemetryTimestamps.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
+);
+const { GlobalState } = ChromeUtils.import(
+  "resource:///modules/sessionstore/GlobalState.jsm"
 );
 
 const lazy = {};
@@ -248,7 +250,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
   DevToolsShim: "chrome://devtools-startup/content/DevToolsShim.jsm",
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
-  GlobalState: "resource:///modules/sessionstore/GlobalState.jsm",
   HomePage: "resource:///modules/HomePage.jsm",
   PrivacyFilter: "resource://gre/modules/sessionstore/PrivacyFilter.jsm",
   PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
@@ -389,8 +390,8 @@ var SessionStore = {
     return SessionStoreInternal.getClosedWindowData();
   },
 
-  maybeDontSaveTabs(aWindow) {
-    SessionStoreInternal.maybeDontSaveTabs(aWindow);
+  maybeDontRestoreTabs(aWindow) {
+    SessionStoreInternal.maybeDontRestoreTabs(aWindow);
   },
 
   undoCloseWindow: function ss_undoCloseWindow(aIndex) {
@@ -606,7 +607,7 @@ var SessionStoreInternal = {
     "nsISupportsWeakReference",
   ]),
 
-  _globalState: new lazy.GlobalState(),
+  _globalState: new GlobalState(),
 
   // A counter to be used to generate a unique ID for each closed tab or window.
   _nextClosedId: 0,
@@ -907,6 +908,8 @@ var SessionStoreInternal = {
               "autorestore",
               1
             );
+
+            this._removeExplicitlyClosedTabs(state);
           }
 
           // Update the session start time using the restored session state.
@@ -927,6 +930,11 @@ var SessionStoreInternal = {
             delete aWindow.__lastSessionWindowID;
           });
         }
+
+        // clear _maybeDontRestoreTabs because we have restored (or not)
+        // windows and so they don't matter
+        state?.windows?.forEach(win => delete win._maybeDontRestoreTabs);
+        state?._closedWindows?.forEach(win => delete win._maybeDontRestoreTabs);
       } catch (ex) {
         this._log.error("The session file is invalid: " + ex);
       }
@@ -943,6 +951,64 @@ var SessionStoreInternal = {
 
     TelemetryStopwatch.finish("FX_SESSION_RESTORE_STARTUP_INIT_SESSION_MS");
     return state;
+  },
+
+  /**
+   * When initializing session, if we are restoring the last session at startup,
+   * close open tabs or close windows marked _maybeDontRestoreTabs (if they were closed
+   * by closing remaining tabs).
+   * See bug 490136
+   */
+  _removeExplicitlyClosedTabs(state) {
+    // Don't restore tabs that has been explicitly closed
+    for (let i = 0; i < state.windows.length; ) {
+      const winData = state.windows[i];
+      if (winData._maybeDontRestoreTabs) {
+        if (state.windows.length == 1) {
+          // it's the last window, we just want to close tabs
+          let j = 0;
+          // reset close group (we don't want to append tabs to existing group close).
+          winData._lastClosedTabGroupCount = -1;
+          while (winData.tabs.length) {
+            const tabState = winData.tabs.pop();
+
+            // Ensure the index is in bounds.
+            let activeIndex = (tabState.index || tabState.entries.length) - 1;
+            activeIndex = Math.min(activeIndex, tabState.entries.length - 1);
+            activeIndex = Math.max(activeIndex, 0);
+
+            let title = "";
+            if (activeIndex in tabState.entries) {
+              title =
+                tabState.entries[activeIndex].title ||
+                tabState.entries[activeIndex].url;
+            }
+
+            const tabData = {
+              state: tabState,
+              title,
+              image: tabState.image,
+              pos: j++,
+              closedAt: Date.now(),
+              closedInGroup: true,
+            };
+            if (this._shouldSaveTabState(tabState)) {
+              this.saveClosedTabData(winData, winData._closedTabs, tabData);
+            }
+          }
+        } else {
+          // We can remove the window since it doesn't have any
+          // tabs that we should restore and it's not the only window
+          if (winData.tabs.some(this._shouldSaveTabState)) {
+            winData.closedAt = Date.now();
+            state._closedWindows.unshift(winData);
+          }
+          state.windows.splice(i, 1);
+          continue; // we don't want to increment the index
+        }
+      }
+      i++;
+    }
   },
 
   _initPrefs() {
@@ -1871,16 +1937,6 @@ var SessionStoreInternal = {
       for (let [tab, tabData] of tabMap) {
         let permanentKey = tab.linkedBrowser.permanentKey;
         this._closedWindowTabs.set(permanentKey, tabData);
-        if (aWindow._dontSaveTabs && !tabData.isPrivate) {
-          // Close remaining tabs.
-          tab._closedInGroup = true;
-          this.maybeSaveClosedTab(aWindow, tab, tabData);
-        }
-      }
-
-      if (aWindow._dontSaveTabs) {
-        winData.tabs.splice(0, winData.tabs.length);
-        winData.selected = -1;
       }
 
       if (isFullyLoaded) {
@@ -2545,7 +2601,7 @@ var SessionStoreInternal = {
     if (!isPrivateWindow && tabState.isPrivate) {
       return;
     }
-    if (aTab == aWindow.gFirefoxViewTab) {
+    if (aTab == aWindow.FirefoxViewHandler.tab) {
       return;
     }
 
@@ -3349,10 +3405,9 @@ var SessionStoreInternal = {
     return Cu.cloneInto(this._closedWindows, {});
   },
 
-  maybeDontSaveTabs(aWindow) {
-    if (this.willAutoRestore && this.isLastRestorableWindow()) {
-      aWindow._dontSaveTabs = true;
-    }
+  maybeDontRestoreTabs(aWindow) {
+    // Don't restore the tabs if we restore the session at startup
+    this._windows[aWindow.__SSi]._maybeDontRestoreTabs = true;
   },
 
   isLastRestorableWindow() {
@@ -4128,7 +4183,7 @@ var SessionStoreInternal = {
 
     // update the internal state data for this window
     for (let tab of tabs) {
-      if (tab == aWindow.gFirefoxViewTab) {
+      if (tab == aWindow.FirefoxViewHandler.tab) {
         continue;
       }
       let tabData = lazy.TabState.collect(tab, TAB_CUSTOM_VALUES.get(tab));

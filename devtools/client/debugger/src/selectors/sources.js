@@ -4,19 +4,13 @@
 
 import { createSelector } from "reselect";
 import { shallowEqual } from "../utils/shallow-equal";
-import { getPathParts, getFileExtension } from "../utils/sources-tree/utils";
-import { getDisplayURL } from "../utils/sources-tree/getURL";
 
 import {
   getPrettySourceURL,
-  isDescendantOfRoot,
   isGenerated,
-  getPlainUrl,
   isPretty,
   isJavaScript,
-  removeThreadActorId,
 } from "../utils/source";
-import { stripQuery } from "../utils/url";
 
 import { findPosition } from "../utils/breakpoint/breakpointPositions";
 import { isFulfilled } from "../utils/async-value";
@@ -31,10 +25,6 @@ import {
   getBreakableLinesForSourceActors,
 } from "./source-actors";
 import { getSourceTextContent } from "./sources-content";
-import { getAllThreads, getMainThreadHost } from "./threads";
-
-const IGNORED_URLS = ["debugger eval code", "XStringBundle"];
-const IGNORED_EXTENSIONS = ["css", "svg", "png"];
 
 export function hasSource(state, id) {
   return state.sources.sources.has(id);
@@ -127,24 +117,6 @@ export function hasPrettySource(state, id) {
   return !!getPrettySource(state, id);
 }
 
-// This is only used by jest tests
-export function getSourcesUrlsInSources(state, url) {
-  if (!url) {
-    return [];
-  }
-
-  const plainUrl = getPlainUrl(url);
-  return getPlainUrls(state)[plainUrl] || [];
-}
-
-export function getHasSiblingOfSameName(state, source) {
-  if (!source) {
-    return false;
-  }
-
-  return getSourcesUrlsInSources(state, source.url).length > 1;
-}
-
 // This is only used externaly by tabs and breakpointSources selectors
 export function getSourcesMap(state) {
   return state.sources.sources;
@@ -154,10 +126,6 @@ function getUrls(state) {
   return state.sources.urls;
 }
 
-function getPlainUrls(state) {
-  return state.sources.plainUrls;
-}
-
 export const getSourceList = createSelector(
   getSourcesMap,
   sourcesMap => {
@@ -165,19 +133,6 @@ export const getSourceList = createSelector(
   },
   { equalityCheck: shallowEqual, resultEqualityCheck: shallowEqual }
 );
-
-export function getDisplayedSourcesList(state) {
-  return Object.values(getDisplayedSources(state)).flatMap(Object.values);
-}
-
-export function getExtensionNameBySourceUrl(state, url) {
-  const match = getSourceList(state).find(
-    source => source.url && source.url.startsWith(url)
-  );
-  if (match && match.extensionName) {
-    return match.extensionName;
-  }
-}
 
 // This is only used by tests
 export function getSourceCount(state) {
@@ -204,119 +159,6 @@ export const getSelectedSource = createSelector(
 export function getSelectedSourceId(state) {
   const source = getSelectedSource(state);
   return source?.id;
-}
-
-export function getProjectDirectoryRoot(state) {
-  return state.sources.projectDirectoryRoot;
-}
-
-export function getProjectDirectoryRootName(state) {
-  return state.sources.projectDirectoryRootName;
-}
-
-const getDisplayedSourceIDs = createSelector(
-  getSourcesMap,
-  state => state.sources.sourcesWithUrls,
-  state => state.sources.projectDirectoryRoot,
-  state => state.sources.chromeAndExtensionsEnabled,
-  state => state.threads.isWebExtension,
-  getAllThreads,
-  (
-    sourcesMap,
-    sourcesWithUrls,
-    projectDirectoryRoot,
-    chromeAndExtensionsEnabled,
-    debuggeeIsWebExtension,
-    threads
-  ) => {
-    const rootWithoutThreadActor = removeThreadActorId(
-      projectDirectoryRoot,
-      threads
-    );
-    const sourceIDsByThread = {};
-
-    for (const id of sourcesWithUrls) {
-      const source = sourcesMap.get(id);
-
-      const displayed =
-        isDescendantOfRoot(source, rootWithoutThreadActor) &&
-        (!source.isExtension ||
-          chromeAndExtensionsEnabled ||
-          debuggeeIsWebExtension) &&
-        !isSourceHiddenInSourceTree(source);
-      if (!displayed) {
-        continue;
-      }
-
-      const thread = source.thread;
-      if (!sourceIDsByThread[thread]) {
-        sourceIDsByThread[thread] = new Set();
-      }
-      sourceIDsByThread[thread].add(id);
-    }
-    return sourceIDsByThread;
-  }
-);
-
-export const getDisplayedSources = createSelector(
-  getSourcesMap,
-  getDisplayedSourceIDs,
-  getMainThreadHost,
-  (sourcesMap, idsByThread, mainThreadHost) => {
-    const result = {};
-
-    for (const thread of Object.keys(idsByThread)) {
-      const entriesByNoQueryURL = Object.create(null);
-
-      for (const id of idsByThread[thread]) {
-        const source = sourcesMap.get(id);
-        const displayURL = getDisplayURL(source.url, mainThreadHost);
-
-        // Ignore source which have not been able to be sorted in a group by getDisplayURL
-        // It should be only javascript: URLs and weird URLs without protocols.
-        if (!displayURL.group) {
-          continue;
-        }
-
-        const entry = {
-          ...source,
-          displayURL,
-          parts: getPathParts(displayURL, thread, mainThreadHost),
-        };
-
-        if (!result[thread]) {
-          result[thread] = {};
-        }
-        result[thread][id] = entry;
-
-        const noQueryURL = stripQuery(entry.url);
-        if (!entriesByNoQueryURL[noQueryURL]) {
-          entriesByNoQueryURL[noQueryURL] = [];
-        }
-        entriesByNoQueryURL[noQueryURL].push(entry);
-      }
-
-      // If the URL does not compete with another without the query string,
-      // we exclude the query string when rendering the source URL to keep the
-      // UI more easily readable.
-      for (const noQueryURL in entriesByNoQueryURL) {
-        const entries = entriesByNoQueryURL[noQueryURL];
-        if (entries.length === 1) {
-          entries[0].displayURL = getDisplayURL(noQueryURL, mainThreadHost);
-        }
-      }
-    }
-
-    return result;
-  }
-);
-
-function isSourceHiddenInSourceTree(source) {
-  return (
-    IGNORED_EXTENSIONS.includes(getFileExtension(source)) ||
-    IGNORED_URLS.includes(source.url) ||
-    isPretty(source)
-  );
 }
 
 export function getSourceActorsForSource(state, id) {
@@ -411,7 +253,3 @@ export const getSelectedBreakableLines = createSelector(
   },
   breakableLines => new Set(breakableLines || [])
 );
-
-export function getBlackBoxRanges(state) {
-  return state.sources.blackboxedRanges;
-}

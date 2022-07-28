@@ -12905,6 +12905,53 @@ if (IsCSSPropertyPrefEnabled("layout.css.content-visibility.enabled")) {
   };
 }
 
+if (IsCSSPropertyPrefEnabled("layout.css.contain-intrinsic-size.enabled")) {
+  gCSSProperties["contain-intrinsic-width"] = {
+    domProp: "containIntrinsicWidth",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-height"] = {
+    domProp: "containIntrinsicHeight",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-block-size"] = {
+    domProp: "containIntrinsicBlockSize",
+    inherited: false,
+    logical: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-inline-size"] = {
+    domProp: "containIntrinsicInlineSize",
+    inherited: false,
+    logical: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px"],
+    invalid_values: ["auto auto", "auto none", "auto", "-1px"],
+  };
+
+  gCSSProperties["contain-intrinsic-size"] = {
+    domProp: "containIntrinsicSize",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["contain-intrinsic-width", "contain-intrinsic-height"],
+    initial_values: ["none"],
+    other_values: ["1em 1em", "1px 1px", "auto 1px auto 1px", "1px auto 1px"],
+    invalid_values: ["auto auto", "-1px -1px", "1px, auto none"],
+  };
+}
+
 if (IsCSSPropertyPrefEnabled("layout.css.container-queries.enabled")) {
   gCSSProperties["container-type"] = {
     domProp: "containerType",
@@ -13536,6 +13583,24 @@ if (IsCSSPropertyPrefEnabled("layout.css.color-scheme.enabled")) {
   };
 }
 
+if (IsCSSPropertyPrefEnabled("layout.css.animation-composition.enabled")) {
+  gCSSProperties["animation-composition"] = {
+    domProp: "animationComposition",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
+    initial_values: ["replace"],
+    other_values: [
+      "add",
+      "accumulate",
+      "replace, add",
+      "add, accumulate",
+      "replace, add, accumulate",
+    ],
+    invalid_values: ["all", "none"],
+  };
+}
+
 if (IsCSSPropertyPrefEnabled("layout.css.scroll-linked-animations.enabled")) {
   // Basically, web-platform-tests should cover most cases, so here we only
   // put some basic test cases.
@@ -13596,6 +13661,61 @@ if (IsCSSPropertyPrefEnabled("layout.css.scroll-linked-animations.enabled")) {
       "bounce, unset",
       "unset, bounce",
     ],
+  };
+
+  gCSSProperties["scroll-timeline-name"] = {
+    domProp: "scrollTimelineName",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "all",
+      "ball",
+      "mall",
+      "color",
+      "foobar",
+      "\\32bounce",
+      "-bounce",
+      "-\\32bounce",
+      "\\32 0bounce",
+      "-\\32 0bounce",
+      "\\2bounce",
+      "-\\2bounce",
+    ],
+    invalid_values: [
+      "auto",
+      "bounce, abc",
+      "abc bounce",
+      "10px",
+      "rgb(1, 2, 3)",
+    ],
+  };
+
+  gCSSProperties["scroll-timeline-axis"] = {
+    domProp: "scrollTimelineAxis",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["block"],
+    other_values: ["inline", "vertical", "horizontal"],
+    invalid_values: ["auto", "none", "abc"],
+  };
+
+  gCSSProperties["scroll-timeline"] = {
+    domProp: "scrollTimeline",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["scroll-timeline-name", "scroll-timeline-axis"],
+    initial_values: ["none block", "block none", "block", "none"],
+    other_values: [
+      "bounce inline",
+      "bounce vertical",
+      "horizontal bounce",
+      "inline \\32bounce",
+      "block -bounce",
+      "vertical \\32 0bounce",
+      "horizontal -\\32 0bounce",
+    ],
+    invalid_values: ["", "bounce bounce"],
   };
 }
 

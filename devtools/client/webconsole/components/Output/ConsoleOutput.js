@@ -18,8 +18,10 @@ const LazyMessageList = require("devtools/client/webconsole/components/Output/La
 const {
   getMutableMessagesById,
   getAllMessagesUiById,
+  getAllDisabledMessagesById,
   getAllCssMessagesMatchingElements,
   getAllNetworkMessagesUpdateById,
+  getLastMessageId,
   getVisibleMessages,
   getAllRepeatById,
   getAllWarningGroupsById,
@@ -48,6 +50,7 @@ class ConsoleOutput extends Component {
       mutableMessages: PropTypes.object.isRequired,
       messageCount: PropTypes.number.isRequired,
       messagesUi: PropTypes.array.isRequired,
+      disabledMessages: PropTypes.array.isRequired,
       serviceContainer: PropTypes.shape({
         attachRefToWebConsoleUI: PropTypes.func.isRequired,
         openContextMenu: PropTypes.func.isRequired,
@@ -65,6 +68,7 @@ class ConsoleOutput extends Component {
       editorMode: PropTypes.bool.isRequired,
       cacheGeneration: PropTypes.number.isRequired,
       disableVirtualization: PropTypes.bool,
+      lastMessageId: PropTypes.string.isRequired,
     };
   }
 
@@ -132,7 +136,8 @@ class ConsoleOutput extends Component {
     });
   }
 
-  componentWillUpdate(nextProps, nextState) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillUpdate(nextProps, nextState) {
     this.isUpdating = true;
     if (nextProps.cacheGeneration !== this.props.cacheGeneration) {
       this.messageIdsToKeepAlive = new Set();
@@ -165,11 +170,12 @@ class ConsoleOutput extends Component {
     const visibleMessagesDelta =
       nextProps.visibleMessages.length - this.props.visibleMessages.length;
     const messagesDelta = nextProps.messageCount - this.props.messageCount;
-    // We can retrieve the last message id in visibleMessages as evaluation result are
-    // always visible.
+    // Evaluation results are never filtered out, so if it's in the store, it will be
+    // visible in the output.
     const isNewMessageEvaluationResult =
       messagesDelta > 0 &&
-      nextProps.mutableMessages.get(nextProps.visibleMessages.at(-1))?.type ===
+      nextProps.lastMessageId &&
+      nextProps.mutableMessages.get(nextProps.lastMessageId)?.type ===
         MESSAGE_TYPE.RESULT;
 
     const messagesUiDelta =
@@ -261,6 +267,7 @@ class ConsoleOutput extends Component {
       cacheGeneration,
       dispatch,
       visibleMessages,
+      disabledMessages,
       mutableMessages,
       messagesUi,
       cssMatchingElements,
@@ -281,6 +288,7 @@ class ConsoleOutput extends Component {
         open: messagesUi.includes(messageId),
         cssMatchingElements: cssMatchingElements.get(messageId),
         timestampsVisible,
+        disabled: disabledMessages.includes(messageId),
         repeat: messagesRepeat[messageId],
         badge: warningGroups.has(messageId)
           ? warningGroups.get(messageId).length
@@ -350,7 +358,9 @@ function mapStateToProps(state, props) {
     // on state change (since we can't do it with mutableMessagesById).
     messageCount: mutableMessages.size,
     mutableMessages,
+    lastMessageId: getLastMessageId(state),
     visibleMessages: getVisibleMessages(state),
+    disabledMessages: getAllDisabledMessagesById(state),
     messagesUi: getAllMessagesUiById(state),
     cssMatchingElements: getAllCssMessagesMatchingElements(state),
     messagesRepeat: getAllRepeatById(state),

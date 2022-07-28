@@ -7,25 +7,16 @@
 
 var EXPORTED_SYMBOLS = ["TaskScheduler"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
 
-XPCOMUtils.defineLazyModuleGetter(
-  lazy,
-  "WinImpl",
-  "resource://gre/modules/TaskSchedulerWinImpl.jsm",
-  "_TaskSchedulerWinImpl"
-);
-
-XPCOMUtils.defineLazyModuleGetter(
-  lazy,
-  "MacOSImpl",
-  "resource://gre/modules/TaskSchedulerMacOSImpl.jsm",
-  "_TaskSchedulerMacOSImpl"
-);
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  WinImpl: "resource://gre/modules/TaskSchedulerWinImpl.jsm",
+  MacOSImpl: "resource://gre/modules/TaskSchedulerMacOSImpl.jsm",
+});
 
 XPCOMUtils.defineLazyGetter(lazy, "gImpl", () => {
   if (AppConstants.platform == "win") {

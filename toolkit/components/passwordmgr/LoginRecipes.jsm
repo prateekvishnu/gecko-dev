@@ -20,15 +20,11 @@ const OPTIONAL_KEYS = [
 ];
 const SUPPORTED_KEYS = REQUIRED_KEYS.concat(OPTIONAL_KEYS);
 
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 ChromeUtils.defineModuleGetter(
   lazy,
@@ -102,9 +98,9 @@ LoginRecipesParent.prototype = {
           ? new RegExp(rawRecipe.pathRegex)
           : undefined;
         this.add(rawRecipe);
-      } catch (ex) {
+      } catch (e) {
         recipeErrors++;
-        lazy.log.error("Error loading recipe", rawRecipe, ex);
+        lazy.log.error("Error loading recipe.", rawRecipe, e);
       }
     }
     if (recipeErrors) {
@@ -137,8 +133,7 @@ LoginRecipesParent.prototype = {
         }
         initPromise = this._rsClient.get();
       } else if (this._defaults.startsWith("resource://")) {
-        initPromise = lazy
-          .fetch(this._defaults)
+        initPromise = fetch(this._defaults)
           .then(resp => resp.json())
           .then(({ data }) => data);
       } else {
@@ -163,7 +158,6 @@ LoginRecipesParent.prototype = {
    * @param {Object} recipe
    */
   add(recipe) {
-    lazy.log.debug("Adding recipe:", recipe);
     let recipeKeys = Object.keys(recipe);
     let unknownKeys = recipeKeys.filter(key => !SUPPORTED_KEYS.includes(key));
     if (unknownKeys.length) {
@@ -255,7 +249,7 @@ const LoginRecipesContent = {
   _recipeCache: new WeakMap(),
 
   _clearRecipeCache() {
-    lazy.log.debug("_clearRecipeCache");
+    lazy.log.debug("Clearing recipe cache.");
     this._recipeCache = new WeakMap();
   },
 
@@ -267,7 +261,6 @@ const LoginRecipesContent = {
    * @param {Set} recipes - recipes that apply to the host
    */
   cacheRecipes(aHost, win, recipes) {
-    lazy.log.debug("cacheRecipes: for:", aHost);
     let recipeMap = this._recipeCache.get(win);
 
     if (!recipeMap) {
@@ -301,10 +294,7 @@ const LoginRecipesContent = {
     if (!Cu.isInAutomation) {
       // this is a blocking call we expect in tests and rarely expect in
       // production, for example when Remote Settings are updated.
-      lazy.log.warn(
-        "getRecipes: falling back to a synchronous message for:",
-        aHost
-      );
+      lazy.log.warn(`Falling back to a synchronous message for: ${aHost}.`);
     }
     recipes = Services.cpmm.sendSyncMessage("PasswordManager:findRecipes", {
       formOrigin: aHost,
@@ -324,7 +314,6 @@ const LoginRecipesContent = {
     let formDocURL = aForm.ownerDocument.location;
     let hostRecipes = aRecipes;
     let recipes = new Set();
-    lazy.log.debug("_filterRecipesForForm", aRecipes);
     if (!hostRecipes) {
       return recipes;
     }
@@ -352,11 +341,7 @@ const LoginRecipesContent = {
    */
   getFieldOverrides(aRecipes, aForm) {
     let recipes = this._filterRecipesForForm(aRecipes, aForm);
-    lazy.log.debug(
-      "getFieldOverrides: filtered recipes:",
-      recipes.size,
-      recipes
-    );
+    lazy.log.debug(`Filtered recipes size: ${recipes.size}.`);
     if (!recipes.size) {
       return null;
     }
@@ -391,7 +376,7 @@ const LoginRecipesContent = {
     }
     let field = aParent.ownerDocument.querySelector(aSelector);
     if (!field) {
-      lazy.log.debug("Login field selector wasn't matched:", aSelector);
+      lazy.log.debug(`Login field selector wasn't matched: ${aSelector}.`);
       return null;
     }
     // ownerGlobal doesn't exist in content privileged windows.
@@ -399,7 +384,9 @@ const LoginRecipesContent = {
       // eslint-disable-next-line mozilla/use-ownerGlobal
       !aParent.ownerDocument.defaultView.HTMLInputElement.isInstance(field)
     ) {
-      lazy.log.warn("Login field isn't an <input> so ignoring it:", aSelector);
+      lazy.log.warn(
+        `Login field with selector ${aSelector} isn't an <input> so ignoring it.`
+      );
       return null;
     }
     return field;

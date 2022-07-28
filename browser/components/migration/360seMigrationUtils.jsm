@@ -6,14 +6,21 @@
 
 var EXPORTED_SYMBOLS = ["Qihoo360seMigrationUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
+const { MigrationUtils } = ChromeUtils.import(
+  "resource:///modules/MigrationUtils.jsm"
+);
+
 const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
+
 XPCOMUtils.defineLazyModuleGetters(lazy, {
-  MigrationUtils: "resource:///modules/MigrationUtils.jsm",
-  PlacesUIUtils: "resource:///modules/PlacesUIUtils.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
   Sqlite: "resource://gre/modules/Sqlite.jsm",
 });
 
@@ -32,7 +39,7 @@ function Bookmarks(aProfileFolder) {
   this._file = file;
 }
 Bookmarks.prototype = {
-  type: lazy.MigrationUtils.resourceTypes.BOOKMARKS,
+  type: MigrationUtils.resourceTypes.BOOKMARKS,
 
   get exists() {
     return this._file.exists() && this._file.isReadable();
@@ -105,10 +112,7 @@ Bookmarks.prototype = {
 
       if (toolbarBMs.length) {
         let parentGuid = lazy.PlacesUtils.bookmarks.toolbarGuid;
-        await lazy.MigrationUtils.insertManyBookmarksWrapper(
-          toolbarBMs,
-          parentGuid
-        );
+        await MigrationUtils.insertManyBookmarksWrapper(toolbarBMs, parentGuid);
         lazy.PlacesUIUtils.maybeToggleBookmarkToolbarVisibilityAfterMigration();
       }
     })().then(

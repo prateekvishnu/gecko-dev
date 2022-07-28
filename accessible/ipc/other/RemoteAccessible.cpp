@@ -309,6 +309,12 @@ LayoutDeviceIntRect RemoteAccessible::CharBounds(int32_t aOffset,
 
 int32_t RemoteAccessible::OffsetAtPoint(int32_t aX, int32_t aY,
                                         uint32_t aCoordType) {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    MOZ_ASSERT(IsHyperText(), "is not hypertext?");
+    return RemoteAccessibleBase<RemoteAccessible>::OffsetAtPoint(aX, aY,
+                                                                 aCoordType);
+  }
+
   int32_t retVal = -1;
   Unused << mDoc->SendOffsetAtPoint(mID, aX, aY, aCoordType, &retVal);
   return retVal;
@@ -827,17 +833,13 @@ void RemoteAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
   aName.Assign(name);
 }
 
-KeyBinding RemoteAccessible::AccessKey() {
+KeyBinding RemoteAccessible::AccessKey() const {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return RemoteAccessibleBase<RemoteAccessible>::AccessKey();
+  }
   uint32_t key = 0;
   uint32_t modifierMask = 0;
   Unused << mDoc->SendAccessKey(mID, &key, &modifierMask);
-  return KeyBinding(key, modifierMask);
-}
-
-KeyBinding RemoteAccessible::KeyboardShortcut() {
-  uint32_t key = 0;
-  uint32_t modifierMask = 0;
-  Unused << mDoc->SendKeyboardShortcut(mID, &key, &modifierMask);
   return KeyBinding(key, modifierMask);
 }
 
@@ -932,6 +934,11 @@ RemoteAccessible* RemoteAccessible::FocusedChild() {
 
 Accessible* RemoteAccessible::ChildAtPoint(
     int32_t aX, int32_t aY, LocalAccessible::EWhichChildAtPoint aWhichChild) {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return RemoteAccessibleBase<RemoteAccessible>::ChildAtPoint(aX, aY,
+                                                                aWhichChild);
+  }
+
   RemoteAccessible* target = this;
   do {
     if (target->IsOuterDoc()) {
@@ -984,7 +991,11 @@ LayoutDeviceIntRect RemoteAccessible::Bounds() const {
   return rect;
 }
 
-nsIntRect RemoteAccessible::BoundsInCSSPixels() {
+nsIntRect RemoteAccessible::BoundsInCSSPixels() const {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return RemoteAccessibleBase<RemoteAccessible>::BoundsInCSSPixels();
+  }
+
   nsIntRect rect;
   Unused << mDoc->SendExtentsInCSSPixels(mID, &rect.x, &rect.y, &rect.width,
                                          &rect.height);

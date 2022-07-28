@@ -33,6 +33,7 @@
 #include "mozilla/TimeStamp.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "mozilla/dom/MouseEventBinding.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/UniquePtr.h"
 #include "nsMargin.h"
 #include "nsRegionFwd.h"
@@ -695,7 +696,6 @@ class nsWindow final : public nsBaseWidget {
 
   static bool sTouchInjectInitialized;
   static InjectTouchInputPtr sInjectTouchFuncPtr;
-  static bool sDropShadowEnabled;
   static uint32_t sInstanceCount;
   static TriStateBool sCanQuit;
   static nsWindow* sCurrentWindow;

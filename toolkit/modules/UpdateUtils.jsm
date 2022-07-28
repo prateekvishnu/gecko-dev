@@ -5,10 +5,9 @@
 
 var EXPORTED_SYMBOLS = ["UpdateUtils"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -21,8 +20,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   WindowsVersionInfo:
     "resource://gre/modules/components-utils/WindowsVersionInfo.jsm",
 });
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 const PER_INSTALLATION_PREFS_PLATFORMS = ["win"];
 
@@ -131,7 +128,7 @@ var UpdateUtils = {
       const url = "resource://" + res + "/" + FILE_UPDATE_LOCALE;
       let data;
       try {
-        data = await lazy.fetch(url);
+        data = await fetch(url);
       } catch (e) {
         continue;
       }

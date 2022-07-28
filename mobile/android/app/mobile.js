@@ -141,9 +141,6 @@ pref("signon.debug", false);
 /* form helper (scroll to and optionally zoom into editable fields)  */
 pref("formhelper.autozoom", true);
 
-/* find helper */
-pref("findhelper.autozoom", true);
-
 /* autocomplete */
 pref("browser.formfill.enable", true);
 
@@ -343,8 +340,6 @@ pref("app.channelURL", "https://www.mozilla.org/%LOCALE%/firefox/channel/");
 // Name of alternate about: page for certificate errors (when undefined, defaults to about:neterror)
 pref("security.alternate_certificate_error_page", "certerror");
 
-pref("security.warn_viewing_mixed", false); // Warning is disabled.  See Bug 616712.
-
 // Enable pinning
 pref("security.cert_pinning.enforcement_level", 1);
 
@@ -450,9 +445,6 @@ pref("device.camera.enabled", true);
 pref("media.realtime_decoder.enabled", true);
 
 pref("full-screen-api.enabled", true);
-
-pref("direct-texture.force.enabled", false);
-pref("direct-texture.force.disabled", false);
 
 // This fraction in 1000ths of velocity remains after every animation frame when the velocity is low.
 pref("ui.scrolling.friction_slow", -1);

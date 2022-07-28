@@ -7,13 +7,12 @@ var EXPORTED_SYMBOLS = ["TabEngine", "TabSetRecord"];
 const TABS_TTL = 31622400; // 366 days (1 leap year).
 const TAB_ENTRIES_LIMIT = 5; // How many URLs to include in tab history.
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { TabStateFlusher } = ChromeUtils.import(
   "resource:///modules/sessionstore/TabStateFlusher.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { Store, SyncEngine, Tracker } = ChromeUtils.import(
   "resource://services-sync/engines.js"
@@ -52,15 +51,9 @@ ChromeUtils.defineModuleGetter(
   "resource:///modules/sessionstore/SessionStore.jsm"
 );
 
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
-
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "ExperimentAPI",
-  "resource://nimbus/ExperimentAPI.jsm"
-);
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
@@ -471,7 +464,9 @@ TabTracker.prototype = {
     this.modified = false;
   },
 
-  _topics: ["TabOpen", "TabClose", "TabSelect"],
+  // We do not track TabSelect because that almost always triggers
+  // the web progress listeners (onLocationChange), which we already track
+  _topics: ["TabOpen", "TabClose"],
 
   _registerListenersForWindow(window) {
     this._log.trace("Registering tab listeners in window");
@@ -540,9 +535,29 @@ TabTracker.prototype = {
         return;
       }
     }
-
     this._log.trace("onTab event: " + event.type);
-    this.callScheduleSync(SCORE_INCREMENT_SMALL);
+
+    switch (event.type) {
+      case "TabOpen":
+        /* We do not have a reliable way of checking the URI on the TabOpen
+         * so we will rely on the other methods (onLocationChange, getAllTabs)
+         * to filter these when going through sync
+         */
+        this.callScheduleSync(SCORE_INCREMENT_SMALL);
+        break;
+      case "TabClose":
+        // If event target has `linkedBrowser`, the event target can be assumed <tab> element.
+        // Else, event target is assumed <browser> element, use the target as it is.
+        const tab = event.target.linkedBrowser || event.target;
+
+        // TabClose means the tab has already loaded and we can check the URI
+        // and ignore if it's a scheme we don't care about
+        if (lazy.TABS_FILTERED_SCHEMES.has(tab.currentURI.scheme)) {
+          return;
+        }
+        this.callScheduleSync(SCORE_INCREMENT_SMALL);
+        break;
+    }
   },
 
   // web progress listeners.
@@ -551,6 +566,7 @@ TabTracker.prototype = {
     // document.
     if (
       flags & Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT ||
+      flags & Ci.nsIWebProgressListener.LOCATION_CHANGE_RELOAD ||
       !webProgress.isTopLevel ||
       !locationURI
     ) {

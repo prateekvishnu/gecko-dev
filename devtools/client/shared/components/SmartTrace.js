@@ -24,6 +24,9 @@ const Frames = createFactory(
 const {
   annotateFrames,
 } = require("devtools/client/debugger/src/utils/pause/frames/annotateFrames");
+const {
+  getDisplayURL,
+} = require("devtools/client/debugger/src/utils/sources-tree/getURL");
 
 class SmartTrace extends Component {
   static get propTypes() {
@@ -71,7 +74,8 @@ class SmartTrace extends Component {
     return { l10n: dbgL10n };
   }
 
-  componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     if (this.props.sourceMapURLService) {
       this.sourceMapURLServiceUnsubscriptions = [];
       const sourceMapInit = Promise.all(
@@ -266,6 +270,7 @@ class SmartTrace extends Component {
             location,
             source: {
               url: location.sourceUrl,
+              displayURL: getDisplayURL(location.sourceUrl),
             },
           };
         }

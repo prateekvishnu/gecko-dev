@@ -22,10 +22,9 @@ const { AppConstants } = ChromeUtils.import(
 const { ComponentUtils } = ChromeUtils.import(
   "resource://gre/modules/ComponentUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TestUtils } = ChromeUtils.import(
   "resource://testing-common/TestUtils.jsm"
 );
@@ -69,7 +68,9 @@ NewProcessSelector.prototype = {
 };
 
 let registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
-let selectorFactory = ComponentUtils._getFactory(NewProcessSelector);
+let selectorFactory = ComponentUtils.generateSingletonFactory(
+  NewProcessSelector
+);
 registrar.registerFactory(OUR_PROCESSSELECTOR_CID, "", null, selectorFactory);
 
 const kAboutPageRegistrationContentScript =
@@ -1367,6 +1368,36 @@ var BrowserTestUtils = {
       return Promise.resolve();
     }
     return this.waitForEvent(popup, "popup" + eventSuffix);
+  },
+
+  /**
+   * Waits for the select popup to be shown. This is needed because the select
+   * dropdown is created lazily.
+   *
+   * @param {Window}
+   *        A window to expect the popup in.
+   *
+   * @return {Promise}
+   *        Resolves when the popup has been fully opened. The resolution value
+   *        is the select popup.
+   */
+  async waitForSelectPopupShown(win) {
+    let getMenulist = () =>
+      win.document.getElementById("ContentSelectDropdown");
+    let menulist = getMenulist();
+    if (!menulist) {
+      await this.waitForMutationCondition(
+        win.document,
+        { childList: true, subtree: true },
+        getMenulist
+      );
+      menulist = getMenulist();
+      if (menulist.menupopup.state == "open") {
+        return menulist.menupopup;
+      }
+    }
+    await this.waitForEvent(menulist.menupopup, "popupshown");
+    return menulist.menupopup;
   },
 
   /**

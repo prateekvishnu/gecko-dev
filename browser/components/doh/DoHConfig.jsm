@@ -12,17 +12,18 @@
  */
 var EXPORTED_SYMBOLS = ["DoHConfigController"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { RemoteSettings } = ChromeUtils.import(
+  "resource://services-settings/remote-settings.js"
+);
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   Preferences: "resource://gre/modules/Preferences.jsm",
   Region: "resource://gre/modules/Region.jsm",
-  RemoteSettings: "resource://services-settings/remote-settings.js",
 });
 
 const kGlobalPrefBranch = "doh-rollout";
@@ -40,8 +41,8 @@ const kConfigPrefs = {
 
 const kPrefChangedTopic = "nsPref:changed";
 
-const gProvidersCollection = lazy.RemoteSettings("doh-providers");
-const gConfigCollection = lazy.RemoteSettings("doh-config");
+const gProvidersCollection = RemoteSettings("doh-providers");
+const gConfigCollection = RemoteSettings("doh-config");
 
 function getPrefValueRegionFirst(prefName) {
   let regionalPrefName = `${kRegionPrefBranch}.${prefName}`;

@@ -31,10 +31,9 @@ UNSUPPORTED_FEATURES = set(
         "json-modules",
         "resizable-arraybuffer",
         "Temporal",
-        "ShadowRealm",
-        "array-find-from-last",
         "array-grouping",
         "regexp-v-flag",
+        "decorators",
     ]
 )
 FEATURE_CHECK_NEEDED = {
@@ -50,6 +49,7 @@ RELEASE_OR_BETA = set(
 )
 SHELL_OPTIONS = {
     "import-assertions": "--enable-import-assertions",
+    "ShadowRealm": "--enable-shadow-realms",
 }
 
 
@@ -477,6 +477,7 @@ def process_test262(test262Dir, test262OutDir, strictTests, externManifests):
         "byteConversionValues.js"
     ]
     explicitIncludes[os.path.join("built-ins", "Promise")] = ["promiseHelper.js"]
+    explicitIncludes[os.path.join("built-ins", "Temporal")] = ["temporalHelpers.js"]
     explicitIncludes[os.path.join("built-ins", "TypedArray")] = [
         "byteConversionValues.js",
         "detachArrayBuffer.js",

@@ -1023,10 +1023,8 @@ nsDocumentViewer::LoadComplete(nsresult aStatus) {
       }
 
       // Notify any devtools about the load.
-      RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
-
-      if (timelines && timelines->HasConsumer(docShell)) {
-        timelines->AddMarkerForDocShell(
+      if (TimelineConsumers::HasConsumer(docShell)) {
+        TimelineConsumers::AddMarkerForDocShell(
             docShell, MakeUnique<DocLoadingTimelineMarker>("document::Load"));
       }
 
@@ -2923,19 +2921,19 @@ nsDocumentViewer::Print(nsIPrintSettings* aPrintSettings,
   }
 
   OnDonePrinting();
-  RefPtr<nsPrintJob> printJob = new nsPrintJob();
-  nsresult rv =
-      printJob->Initialize(this, mContainer, mDocument,
-                           float(AppUnitsPerCSSInch()) /
-                               float(mDeviceContext->AppUnitsPerDevPixel()));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    printJob->Destroy();
-    return rv;
-  }
 
+  // Note: mContainer and mDocument are known to be non-null via null-checks
+  // earlier in this function.
+  // TODO(dholbert) Do we need to bother with this stack-owned local RefPtr?
+  // (Is there an edge case where it's needed to keep the nsPrintJob alive?)
+  RefPtr<nsPrintJob> printJob =
+      new nsPrintJob(*this, *mContainer, *mDocument,
+                     float(AppUnitsPerCSSInch()) /
+                         float(mDeviceContext->AppUnitsPerDevPixel()));
   mPrintJob = printJob;
-  rv = printJob->Print(mDocument, aPrintSettings, aRemotePrintJob,
-                       aWebProgressListener);
+
+  nsresult rv = printJob->Print(*mDocument, aPrintSettings, aRemotePrintJob,
+                                aWebProgressListener);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     OnDonePrinting();
   }
@@ -2967,20 +2965,18 @@ nsDocumentViewer::PrintPreview(nsIPrintSettings* aPrintSettings,
 
   OnDonePrinting();
 
-  RefPtr<nsPrintJob> printJob = new nsPrintJob();
-
-  nsresult rv =
-      printJob->Initialize(this, mContainer, doc,
-                           float(AppUnitsPerCSSInch()) /
-                               float(mDeviceContext->AppUnitsPerDevPixel()));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    printJob->Destroy();
-    return rv;
-  }
+  // Note: mContainer and doc are known to be non-null via null-checks earlier
+  // in this function.
+  // TODO(dholbert) Do we need to bother with this stack-owned local RefPtr?
+  // (Is there an edge case where it's needed to keep the nsPrintJob alive?)
+  RefPtr<nsPrintJob> printJob =
+      new nsPrintJob(*this, *mContainer, *doc,
+                     float(AppUnitsPerCSSInch()) /
+                         float(mDeviceContext->AppUnitsPerDevPixel()));
   mPrintJob = printJob;
 
-  rv = printJob->PrintPreview(doc, aPrintSettings, aWebProgressListener,
-                              std::move(aCallback));
+  nsresult rv = printJob->PrintPreview(
+      *doc, aPrintSettings, aWebProgressListener, std::move(aCallback));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     OnDonePrinting();
   }

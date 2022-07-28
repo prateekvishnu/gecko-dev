@@ -230,7 +230,7 @@ void CSP_LogMessage(const nsAString& aMessage, const nsAString& aSourceName,
                                  aInnerWindowID);
   } else {
     rv = error->Init(cspMsg, aSourceName, aSourceLine, aLineNumber,
-                     aColumnNumber, aFlags, category.get(), aFromPrivateWindow,
+                     aColumnNumber, aFlags, category, aFromPrivateWindow,
                      true /* from chrome context */);
   }
   if (NS_FAILED(rv)) {
@@ -985,12 +985,9 @@ bool nsCSPHashSrc::allows(enum CSPKeyword aKeyword,
   // Convert aHashOrNonce to UTF-8
   NS_ConvertUTF16toUTF8 utf8_hash(aHashOrNonce);
 
-  nsresult rv;
   nsCOMPtr<nsICryptoHash> hasher;
-  hasher = do_CreateInstance("@mozilla.org/security/hash;1", &rv);
-  NS_ENSURE_SUCCESS(rv, false);
-
-  rv = hasher->InitWithString(NS_ConvertUTF16toUTF8(mAlgorithm));
+  nsresult rv = NS_NewCryptoHash(NS_ConvertUTF16toUTF8(mAlgorithm),
+                                 getter_AddRefs(hasher));
   NS_ENSURE_SUCCESS(rv, false);
 
   rv = hasher->Update((uint8_t*)utf8_hash.get(), utf8_hash.Length());

@@ -2371,9 +2371,6 @@ bool BytecodeEmitter::emitDeclarationInstantiation(ParseNode* body) {
 }
 
 bool BytecodeEmitter::emitScript(ParseNode* body) {
-  AutoFrontendTraceLog traceLog(cx, TraceLogger_BytecodeEmission,
-                                parser->errorReporter(), body);
-
   setScriptStartOffsetIfUnset(body->pn_pos.begin);
 
   MOZ_ASSERT(inPrologue());
@@ -2467,7 +2464,7 @@ bool BytecodeEmitter::emitScript(ParseNode* body) {
   }
 
   if (topLevelAwait) {
-    if (!topLevelAwait->emitEnd()) {
+    if (!topLevelAwait->emitEndModule()) {
       return false;
     }
   }
@@ -2527,8 +2524,6 @@ bool BytecodeEmitter::emitFunctionScript(FunctionNode* funNode) {
   ListNode* paramsBody = &funNode->body()->as<ListNode>();
   MOZ_ASSERT(paramsBody->isKind(ParseNodeKind::ParamsBody));
   FunctionBox* funbox = sc->asFunctionBox();
-  AutoFrontendTraceLog traceLog(cx, TraceLogger_BytecodeEmission,
-                                parser->errorReporter(), funbox);
 
   setScriptStartOffsetIfUnset(paramsBody->pn_pos.begin);
 
@@ -6014,14 +6009,6 @@ bool BytecodeEmitter::emitReturn(UnaryNode* returnNode) {
     return false;
   }
 
-  bool needsIteratorResult =
-      sc->isFunctionBox() && sc->asFunctionBox()->needsIteratorResult();
-  if (needsIteratorResult) {
-    if (!emitPrepareIteratorResult()) {
-      return false;
-    }
-  }
-
   if (!updateSourceCoordNotes(returnNode->pn_pos.begin)) {
     return false;
   }
@@ -6044,12 +6031,6 @@ bool BytecodeEmitter::emitReturn(UnaryNode* returnNode) {
   } else {
     /* No explicit return value provided */
     if (!emit1(JSOp::Undefined)) {
-      return false;
-    }
-  }
-
-  if (needsIteratorResult) {
-    if (!emitFinishIteratorResult(true)) {
       return false;
     }
   }
@@ -6081,67 +6062,52 @@ bool BytecodeEmitter::emitReturn(UnaryNode* returnNode) {
 }
 
 bool BytecodeEmitter::finishReturn(BytecodeOffset setRvalOffset) {
-  bool needsFinalYield =
-      sc->isFunctionBox() && sc->asFunctionBox()->needsFinalYield();
+  // The return value is currently in rval. Depending on the current function,
+  // we may have to do additional work before returning:
+  // - Derived class constructors must check if the return value is an object.
+  // - Generators and async functions must do a final yield.
+  // - Non-async generators must return the value as an iterator result:
+  //   { value: <rval>, done: true }
+  // - Non-generator async functions must resolve the function's result promise
+  //   with the value.
+  //
+  // If we have not generated any code since the SetRval that stored the return
+  // value, we can also optimize the bytecode by rewriting that SetRval as a
+  // JSOp::Return. See |emitReturn| above.
+
   bool isDerivedClassConstructor =
       sc->isFunctionBox() && sc->asFunctionBox()->isDerivedClassConstructor();
+  bool needsFinalYield =
+      sc->isFunctionBox() && sc->asFunctionBox()->needsFinalYield();
   bool isSimpleReturn =
       setRvalOffset.valid() &&
       setRvalOffset + BytecodeOffsetDiff(JSOpLength_SetRval) ==
           bytecodeSection().offset();
 
-  if (needsFinalYield) {
-    // We know that .generator is on the function scope, as we just exited
-    // all nested scopes.
-    NameLocation loc = *locationOfNameBoundInScopeType<FunctionScope>(
-        TaggedParserAtomIndex::WellKnown::dotGenerator(), varEmitterScope);
-
-    // Resolve the return value before emitting the final yield.
-    if (sc->asFunctionBox()->needsPromiseResult()) {
-      if (!emit1(JSOp::GetRval)) {
-        //          [stack] RVAL
-        return false;
-      }
-      if (!emitGetNameAtLocation(
-              TaggedParserAtomIndex::WellKnown::dotGenerator(), loc)) {
-        //          [stack] RVAL GEN
-        return false;
-      }
-      if (!emit2(JSOp::AsyncResolve,
-                 uint8_t(AsyncFunctionResolveKind::Fulfill))) {
-        //          [stack] PROMISE
-        return false;
-      }
-      if (!emit1(JSOp::SetRval)) {
-        //          [stack]
-        return false;
-      }
-    }
-
-    if (!emitGetNameAtLocation(TaggedParserAtomIndex::WellKnown::dotGenerator(),
-                               loc)) {
-      return false;
-    }
-    if (!emitYieldOp(JSOp::FinalYieldRval)) {
-      return false;
-    }
-  } else if (isDerivedClassConstructor) {
+  if (isDerivedClassConstructor) {
+    MOZ_ASSERT(!needsFinalYield);
     if (!emitJump(JSOp::Goto, &endOfDerivedClassConstructorBody)) {
       return false;
     }
-  } else if (isSimpleReturn) {
-    // We haven't generated any code since the JSOp::SetRval, so we can replace
-    // it with a JSOp::Return. See |emitReturn| above.
+    return true;
+  }
+
+  if (needsFinalYield) {
+    if (!emitJump(JSOp::Goto, &finalYields)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (isSimpleReturn) {
     MOZ_ASSERT(JSOp(bytecodeSection().code()[setRvalOffset.value()]) ==
                JSOp::SetRval);
     bytecodeSection().code()[setRvalOffset.value()] = jsbytecode(JSOp::Return);
-  } else {
-    if (!emitReturnRval()) {
-      return false;
-    }
+    return true;
   }
 
-  return true;
+  // Nothing special needs to be done.
+  return emitReturnRval();
 }
 
 bool BytecodeEmitter::emitGetDotGeneratorInScope(EmitterScope& currentScope) {
@@ -7116,7 +7082,7 @@ bool BytecodeEmitter::emitDeleteElementInOptChain(PropertyByValueBase* elemExpr,
   return true;
 }
 
-bool BytecodeEmitter::emitSelfHostedCallFunction(CallNode* callNode) {
+bool BytecodeEmitter::emitSelfHostedCallFunction(CallNode* callNode, JSOp op) {
   // Special-casing of callFunction to emit bytecode that directly
   // invokes the callee with the correct |this| object and arguments.
   // callFunction(fun, thisArg, arg0, arg1) thus becomes:
@@ -7133,16 +7099,12 @@ bool BytecodeEmitter::emitSelfHostedCallFunction(CallNode* callNode) {
     return false;
   }
 
-  JSOp callOp = callNode->callOp();
-  MOZ_ASSERT(callOp == JSOp::Call);
+  MOZ_ASSERT(callNode->callOp() == JSOp::Call);
 
   bool constructing =
       calleeNode->name() ==
       TaggedParserAtomIndex::WellKnown::constructContentFunction();
   ParseNode* funNode = argsList->head();
-  if (constructing) {
-    callOp = JSOp::New;
-  }
 
   if (!emitTree(funNode)) {
     return false;
@@ -7185,7 +7147,7 @@ bool BytecodeEmitter::emitSelfHostedCallFunction(CallNode* callNode) {
   }
 
   uint32_t argc = argsList->count() - 2;
-  if (!emitCall(callOp, argc)) {
+  if (!emitCall(op, argc)) {
     return false;
   }
 
@@ -7986,11 +7948,15 @@ bool BytecodeEmitter::emitCallOrNew(
     // "callContentFunction", or "resumeGenerator" in self-hosted
     // code generate inline bytecode.
     auto calleeName = calleeNode->as<NameNode>().name();
-    if (calleeName == TaggedParserAtomIndex::WellKnown::callFunction() ||
-        calleeName == TaggedParserAtomIndex::WellKnown::callContentFunction() ||
-        calleeName ==
-            TaggedParserAtomIndex::WellKnown::constructContentFunction()) {
-      return emitSelfHostedCallFunction(callNode);
+    if (calleeName == TaggedParserAtomIndex::WellKnown::callFunction()) {
+      return emitSelfHostedCallFunction(callNode, JSOp::Call);
+    }
+    if (calleeName == TaggedParserAtomIndex::WellKnown::callContentFunction()) {
+      return emitSelfHostedCallFunction(callNode, JSOp::CallContent);
+    }
+    if (calleeName ==
+        TaggedParserAtomIndex::WellKnown::constructContentFunction()) {
+      return emitSelfHostedCallFunction(callNode, JSOp::NewContent);
     }
     if (calleeName == TaggedParserAtomIndex::WellKnown::resumeGenerator()) {
       return emitSelfHostedResumeGenerator(callNode);

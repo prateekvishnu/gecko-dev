@@ -17,32 +17,28 @@ from copy import deepcopy
 
 import attr
 from mozbuild.util import memoize
+from taskgraph.transforms.base import TransformSequence
 from taskgraph.util.keyed_by import evaluate_keyed_by
-from taskgraph.util.time import value_of
-from voluptuous import Any, Required, Optional, Extra, Match, All, NotIn
-
-from gecko_taskgraph.util.attributes import TRUNK_PROJECTS, is_try, release_level
-from gecko_taskgraph.util.hash import hash_path
-from gecko_taskgraph.util.treeherder import split_symbol
-from gecko_taskgraph.transforms.base import TransformSequence
-from gecko_taskgraph.util.schema import (
-    validate_schema,
+from taskgraph.util.schema import (
     Schema,
     optionally_keyed_by,
     resolve_keyed_by,
     taskref_or_string,
+    validate_schema,
 )
-from gecko_taskgraph.optimize.schema import OptimizationSchema
-from gecko_taskgraph.util.partners import get_partners_to_be_published
-from gecko_taskgraph.util.scriptworker import (
-    BALROG_ACTIONS,
-    get_release_config,
-)
-from gecko_taskgraph.util.signed_artifacts import get_signed_artifacts
-from gecko_taskgraph.util.workertypes import worker_type_implementation
+from taskgraph.util.time import value_of
+from taskgraph.util.treeherder import split_symbol
+from voluptuous import Any, Required, Optional, Extra, Match, All, NotIn
+
 from gecko_taskgraph import GECKO, MAX_DEPENDENCIES
-from ..util import docker as dockerutil
-from ..util.workertypes import get_worker_type
+from gecko_taskgraph.optimize.schema import OptimizationSchema
+from gecko_taskgraph.util import docker as dockerutil
+from gecko_taskgraph.util.attributes import TRUNK_PROJECTS, is_try, release_level
+from gecko_taskgraph.util.hash import hash_path
+from gecko_taskgraph.util.partners import get_partners_to_be_published
+from gecko_taskgraph.util.scriptworker import BALROG_ACTIONS, get_release_config
+from gecko_taskgraph.util.signed_artifacts import get_signed_artifacts
+from gecko_taskgraph.util.workertypes import get_worker_type, worker_type_implementation
 
 RUN_TASK = os.path.join(GECKO, "taskcluster", "scripts", "run-task")
 

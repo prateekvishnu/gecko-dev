@@ -187,12 +187,34 @@ add_task(async function test_shouldShowFocusPromo() {
   Preferences.resetBranch("browser.promo.focus");
 });
 
+add_task(async function test_shouldShowPinPromo() {
+  // Show pin promo type by default when promo is enabled
+  Assert.ok(BrowserUtils.shouldShowPromo(BrowserUtils.PromoType.PIN));
+
+  // Don't show when there is an enterprise policy active
+  if (AppConstants.platform !== "android") {
+    // Services.policies isn't shipped on Android
+    await setupEnterprisePolicy();
+
+    Assert.ok(!BrowserUtils.shouldShowPromo(BrowserUtils.PromoType.PIN));
+
+    // revert policy changes made earlier
+    await EnterprisePolicyTesting.setupPolicyEngineWithJson("");
+  }
+
+  // Don't show when promo disabled by pref
+  Preferences.set("browser.promo.pin.enabled", false);
+  Assert.ok(!BrowserUtils.shouldShowPromo(BrowserUtils.PromoType.PIN));
+
+  Preferences.resetBranch("browser.promo.pin");
+});
+
 add_task(function test_isShareableURL() {
   // Some test suites, specifically android, don't have this setup properly -- so we add it manually
   if (!Preferences.get("services.sync.engine.tabs.filteredSchemes")) {
     Preferences.set(
       "services.sync.engine.tabs.filteredSchemes",
-      "about|resource|chrome|file|blob|moz-extension"
+      "about|resource|chrome|file|blob|moz-extension|data"
     );
   }
   // Empty shouldn't be sendable
@@ -204,5 +226,14 @@ add_task(function test_isShareableURL() {
   // Invalid
   Assert.ok(
     !BrowserUtils.isShareableURL(Services.io.newURI("file://path/to/pdf.pdf"))
+  );
+
+  // Invalid
+  Assert.ok(
+    !BrowserUtils.isShareableURL(
+      Services.io.newURI(
+        "data:application/json;base64,ewogICJ0eXBlIjogIm1haW4i=="
+      )
+    )
   );
 });

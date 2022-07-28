@@ -18,7 +18,6 @@ const MANAGE_ADDRESSES_URL =
 const MANAGE_CREDITCARDS_URL =
   "chrome://formautofill/content/manageCreditCards.xhtml";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { FormAutofill } = ChromeUtils.import(
   "resource://autofill/FormAutofill.jsm"
 );
@@ -48,8 +47,6 @@ const {
 } = FormAutofillUtils;
 // Add credit card enabled flag in telemetry environment for recording the number of
 // users who disable/enable the credit card autofill feature.
-
-FormAutofill.defineLazyLogGetter(lazy, EXPORTED_SYMBOLS[0]);
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -257,6 +254,7 @@ FormAutofillPreferences.prototype = {
         reauthCheckboxGroup.classList.add("indent");
         reauthLearnMore.classList.add("learnMore");
         reauthCheckbox.classList.add("tail-with-learn-more");
+        reauthCheckbox.setAttribute("flex", "1");
         reauthCheckbox.disabled = !FormAutofill.isAutofillCreditCardsEnabled;
 
         reauth.id = "creditCardReauthenticate";

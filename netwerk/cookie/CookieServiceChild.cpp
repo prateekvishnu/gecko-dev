@@ -145,13 +145,16 @@ void CookieServiceChild::TrackCookieLoad(nsIChannel* aChannel) {
       aChannel, attrs);
 
   bool isSafeTopLevelNav = CookieCommons::IsSafeTopLevelNav(aChannel);
-  bool isSameSiteForeign = CookieCommons::IsSameSiteForeign(aChannel, uri);
+  bool hadCrossSiteRedirects = false;
+  bool isSameSiteForeign =
+      CookieCommons::IsSameSiteForeign(aChannel, uri, &hadCrossSiteRedirects);
   SendPrepareCookieList(
       uri, result.contains(ThirdPartyAnalysis::IsForeign),
       result.contains(ThirdPartyAnalysis::IsThirdPartyTrackingResource),
       result.contains(ThirdPartyAnalysis::IsThirdPartySocialTrackingResource),
       result.contains(ThirdPartyAnalysis::IsStorageAccessPermissionGranted),
-      rejectedReason, isSafeTopLevelNav, isSameSiteForeign, attrs);
+      rejectedReason, isSafeTopLevelNav, isSameSiteForeign,
+      hadCrossSiteRedirects, attrs);
 }
 
 IPCResult CookieServiceChild::RecvRemoveAll() {
@@ -339,7 +342,7 @@ CookieServiceChild::GetCookieStringFromDocument(dom::Document* aDocument,
 
   aCookieString.Truncate();
 
-  nsCOMPtr<nsIPrincipal> principal = aDocument->EffectiveStoragePrincipal();
+  nsCOMPtr<nsIPrincipal> principal = aDocument->EffectiveCookiePrincipal();
 
   if (!CookieCommons::IsSchemeSupported(principal)) {
     return NS_OK;

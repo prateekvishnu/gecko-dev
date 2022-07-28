@@ -379,6 +379,7 @@ class XPCJSContext final : public mozilla::CycleCollectedJSContext,
     IDX_CI,
     IDX_CR,
     IDX_CU,
+    IDX_SERVICES,
     IDX_WRAPPED_JSOBJECT,
     IDX_PROTOTYPE,
     IDX_EVAL,
@@ -404,6 +405,10 @@ class XPCJSContext final : public mozilla::CycleCollectedJSContext,
     IDX_INTERFACE_ID,
     IDX_INITIALIZER,
     IDX_PRINT,
+    IDX_FETCH,
+    IDX_CRYPTO,
+    IDX_INDEXEDDB,
+    IDX_STRUCTUREDCLONE,
     IDX_TOTAL_COUNT  // just a count of the above
   };
 
@@ -820,6 +825,8 @@ class XPCWrappedNativeScope final
   nsXPCComponents* GetComponents() const { return mComponents; }
 
   bool AttachComponentsObject(JSContext* aCx);
+
+  bool AttachJSServices(JSContext* aCx);
 
   // Returns the JS object reflection of the Components object.
   bool GetComponentsJSObject(JSContext* cx, JS::MutableHandleObject obj);
@@ -2849,6 +2856,10 @@ void InitializeValue(const nsXPTType& aType, void* aValue);
 // The pointer 'aValue' must point to a valid value of type 'aType'.
 void DestructValue(const nsXPTType& aType, void* aValue,
                    uint32_t aArrayLen = 0);
+
+bool SandboxCreateCrypto(JSContext* cx, JS::Handle<JSObject*> obj);
+bool SandboxCreateFetch(JSContext* cx, JS::Handle<JSObject*> obj);
+bool SandboxCreateStructuredClone(JSContext* cx, JS::Handle<JSObject*> obj);
 
 }  // namespace xpc
 

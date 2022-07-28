@@ -294,6 +294,8 @@ static nsresult ConvertWinError(DWORD aWinErr) {
       rv = NS_ERROR_FILE_IS_LOCKED;
       break;
     case ERROR_NOT_ENOUGH_MEMORY:
+      [[fallthrough]];  // to NS_ERROR_OUT_OF_MEMORY
+    case ERROR_NO_SYSTEM_RESOURCES:
       rv = NS_ERROR_OUT_OF_MEMORY;
       break;
     case ERROR_DIR_NOT_EMPTY:
@@ -328,6 +330,8 @@ static nsresult ConvertWinError(DWORD aWinErr) {
     case ERROR_DEVICE_HARDWARE_ERROR:
       [[fallthrough]];  // to NS_ERROR_FILE_DEVICE_FAILURE
     case ERROR_DEVICE_NOT_CONNECTED:
+      [[fallthrough]];  // to NS_ERROR_FILE_DEVICE_FAILURE
+    case ERROR_DEV_NOT_EXIST:
       [[fallthrough]];  // to NS_ERROR_FILE_DEVICE_FAILURE
     case ERROR_IO_DEVICE:
       rv = NS_ERROR_FILE_DEVICE_FAILURE;

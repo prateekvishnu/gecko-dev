@@ -7,21 +7,24 @@
 
 var EXPORTED_SYMBOLS = ["BackgroundUpdate"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
+);
+const { BackgroundTasksManager } = ChromeUtils.import(
+  "resource://gre/modules/BackgroundTasksManager.jsm"
+);
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.jsm",
+  ASRouterTargeting: "resource://activity-stream/lib/ASRouterTargeting.jsm",
   BackgroundTasksUtils: "resource://gre/modules/BackgroundTasksUtils.jsm",
-  BackgroundTasksManager: "resource://gre/modules/BackgroundTasksManager.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
+  JSONFile: "resource://gre/modules/JSONFile.jsm",
   TaskScheduler: "resource://gre/modules/TaskScheduler.jsm",
   UpdateUtils: "resource://gre/modules/UpdateUtils.jsm",
 });
@@ -612,6 +615,55 @@ var BackgroundUpdate = {
     );
     Glean.update.canUsuallyUseBits.set(lazy.UpdateService.canUsuallyUseBits);
   },
+
+  /**
+   * Schedule periodic snapshotting of the Firefox Messaging System
+   * targeting configuration.
+   *
+   * The background update task will target messages based on the
+   * latest snapshot of the default profile's targeting configuration.
+   */
+  async scheduleFirefoxMessagingSystemTargetingSnapshotting() {
+    let SLUG = "scheduleFirefoxMessagingSystemTargetingSnapshotting";
+    let path = PathUtils.join(PathUtils.profileDir, "targeting.snapshot.json");
+
+    let snapshot = new lazy.JSONFile({
+      beforeSave: async () => {
+        lazy.log.debug(
+          `${SLUG}: preparing to write Firefox Messaging System targeting information to ${path}`
+        );
+        snapshot.data = await lazy.ASRouterTargeting.getEnvironmentSnapshot();
+      },
+      path,
+    });
+
+    // We don't `load`, since we don't care about reading existing (now stale)
+    // data.
+    snapshot.data = lazy.ASRouterTargeting.getEnvironmentSnapshot();
+
+    // Persist.
+    snapshot.saveSoon();
+
+    // Continue persisting periodically.  `JSONFile.jsm` will also persist one
+    // last time before shutdown.
+    this._targetingSnapshottingTimer = Cc[
+      "@mozilla.org/timer;1"
+    ].createInstance(Ci.nsITimer);
+
+    // Hold a reference to prevent GC.
+    this._targetingSnapshottingTimer.initWithCallback(
+      () => {
+        snapshot.saveSoon();
+      },
+      // By default, snapshot Firefox Messaging System targeting for use by the
+      // background update task every 30 minutes.
+      Services.prefs.getIntPref(
+        "app.update.background.messaging.targeting.snapshot.intervalSec",
+        1800
+      ) * 1000,
+      Ci.nsITimer.TYPE_REPEATING_SLACK_LOW_PRIORITY
+    );
+  },
 };
 
 BackgroundUpdate.REASON = {
@@ -641,7 +693,7 @@ BackgroundUpdate.REASON = {
  * more general errors reading from the default profile.
  */
 BackgroundUpdate.EXIT_CODE = {
-  ...lazy.BackgroundTasksManager.EXIT_CODE,
+  ...BackgroundTasksManager.EXIT_CODE,
   // We clone the other exit codes simply so we can use one object for all the codes.
   DEFAULT_PROFILE_DOES_NOT_EXIST: 11,
   DEFAULT_PROFILE_CANNOT_BE_LOCKED: 12,

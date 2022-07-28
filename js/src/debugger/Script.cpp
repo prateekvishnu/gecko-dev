@@ -20,9 +20,7 @@
 #include "debugger/Debugger.h"     // for DebuggerScriptReferent, Debugger
 #include "debugger/DebugScript.h"  // for DebugScript
 #include "debugger/Source.h"       // for DebuggerSource
-#include "gc/Barrier.h"            // for ImmutablePropertyNamePtr
 #include "gc/GC.h"                 // for MemoryUse, MemoryUse::Breakpoint
-#include "gc/Rooting.h"            // for RootedValue
 #include "gc/Tracer.h"         // for TraceManuallyBarrieredCrossCompartmentEdge
 #include "gc/Zone.h"           // for Zone
 #include "gc/ZoneAllocator.h"  // for AddCellMemory
@@ -33,6 +31,7 @@
 #include "js/Wrapper.h"               // for UncheckedUnwrap
 #include "vm/ArrayObject.h"           // for ArrayObject
 #include "vm/BytecodeUtil.h"          // for GET_JUMP_OFFSET
+#include "vm/EnvironmentObject.h"     // for EnvironmentCoordinateNameSlow
 #include "vm/GlobalObject.h"          // for GlobalObject
 #include "vm/JSContext.h"             // for JSContext, ReportValueError
 #include "vm/JSFunction.h"            // for JSFunction
@@ -105,7 +104,7 @@ NativeObject* DebuggerScript::initClass(JSContext* cx,
 /* static */
 DebuggerScript* DebuggerScript::create(JSContext* cx, HandleObject proto,
                                        Handle<DebuggerScriptReferent> referent,
-                                       HandleNativeObject debugger) {
+                                       Handle<NativeObject*> debugger) {
   DebuggerScript* scriptobj =
       NewTenuredObjectWithGivenProto<DebuggerScript>(cx, proto);
   if (!scriptobj) {
@@ -427,7 +426,7 @@ class DebuggerScript::GetSourceMatcher {
   using ReturnType = DebuggerSource*;
 
   ReturnType match(Handle<BaseScript*> script) {
-    RootedScriptSourceObject source(cx_, script->sourceObject());
+    Rooted<ScriptSourceObject*> source(cx_, script->sourceObject());
     return dbg_->wrapSource(cx_, source);
   }
   ReturnType match(Handle<WasmInstanceObject*> wasmInstance) {
@@ -590,6 +589,35 @@ static bool EnsureScriptOffsetIsValid(JSContext* cx, JSScript* script,
   return false;
 }
 
+static bool IsGeneratorSlotInitialization(JSScript* script, size_t offset,
+                                          JSContext* cx) {
+  jsbytecode* pc = script->offsetToPC(offset);
+  if (JSOp(*pc) != JSOp::SetAliasedVar) {
+    return false;
+  }
+
+  PropertyName* name = EnvironmentCoordinateNameSlow(script, pc);
+  return name == cx->names().dotGenerator;
+}
+
+static bool EnsureBreakpointIsAllowed(JSContext* cx, JSScript* script,
+                                      size_t offset) {
+  // Disallow breakpoint for `JSOp::SetAliasedVar` after `JSOp::Generator`.
+  // Those 2 instructions are supposed to be atomic, and nothing should happen
+  // in between them.
+  //
+  // Hitting a breakpoint there breaks the assumption around the existence of
+  // the frame's `GeneratorInfo`.
+  // (see `DebugAPI::slowPathOnNewGenerator` and `DebuggerFrame::create`)
+  if (IsGeneratorSlotInitialization(script, offset, cx)) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_DEBUG_BREAKPOINT_NOT_ALLOWED);
+    return false;
+  }
+
+  return true;
+}
+
 template <bool OnlyOffsets>
 class DebuggerScript::GetPossibleBreakpointsMatcher {
   JSContext* cx_;
@@ -639,7 +667,7 @@ class DebuggerScript::GetPossibleBreakpointsMatcher {
       return true;
     }
 
-    RootedPlainObject entry(cx_, NewPlainObject(cx_));
+    Rooted<PlainObject*> entry(cx_, NewPlainObject(cx_));
     if (!entry) {
       return false;
     }
@@ -934,11 +962,11 @@ bool DebuggerScript::CallData::getPossibleBreakpointOffsets() {
 class DebuggerScript::GetOffsetMetadataMatcher {
   JSContext* cx_;
   size_t offset_;
-  MutableHandlePlainObject result_;
+  MutableHandle<PlainObject*> result_;
 
  public:
   explicit GetOffsetMetadataMatcher(JSContext* cx, size_t offset,
-                                    MutableHandlePlainObject result)
+                                    MutableHandle<PlainObject*> result)
       : cx_(cx), offset_(offset), result_(result) {}
   using ReturnType = bool;
   ReturnType match(Handle<BaseScript*> base) {
@@ -1037,7 +1065,7 @@ bool DebuggerScript::CallData::getOffsetMetadata() {
     return false;
   }
 
-  RootedPlainObject result(cx);
+  Rooted<PlainObject*> result(cx);
   GetOffsetMetadataMatcher matcher(cx, offset, &result);
   if (!referent.match(matcher)) {
     return false;
@@ -1217,11 +1245,11 @@ class FlowGraphSummary {
 class DebuggerScript::GetOffsetLocationMatcher {
   JSContext* cx_;
   size_t offset_;
-  MutableHandlePlainObject result_;
+  MutableHandle<PlainObject*> result_;
 
  public:
   explicit GetOffsetLocationMatcher(JSContext* cx, size_t offset,
-                                    MutableHandlePlainObject result)
+                                    MutableHandle<PlainObject*> result)
       : cx_(cx), offset_(offset), result_(result) {}
   using ReturnType = bool;
   ReturnType match(Handle<BaseScript*> base) {
@@ -1345,7 +1373,7 @@ bool DebuggerScript::CallData::getOffsetLocation() {
     return false;
   }
 
-  RootedPlainObject result(cx);
+  Rooted<PlainObject*> result(cx);
   GetOffsetLocationMatcher matcher(cx, offset, &result);
   if (!referent.match(matcher)) {
     return false;
@@ -1486,9 +1514,11 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::InitHiddenElemSetter:
     case JSOp::SpreadCall:
     case JSOp::Call:
+    case JSOp::CallContent:
     case JSOp::CallIgnoresRv:
     case JSOp::CallIter:
     case JSOp::New:
+    case JSOp::NewContent:
     case JSOp::Eval:
     case JSOp::StrictEval:
     case JSOp::Int8:
@@ -1616,10 +1646,21 @@ bool DebuggerScript::CallData::getEffectfulOffsets() {
     return false;
   }
   for (BytecodeRange r(cx, script); !r.empty(); r.popFront()) {
-    if (BytecodeIsEffectful(r.frontOpcode())) {
-      if (!NewbornArrayPush(cx, result, NumberValue(r.frontOffset()))) {
-        return false;
-      }
+    if (!BytecodeIsEffectful(r.frontOpcode())) {
+      continue;
+    }
+
+    size_t offset = r.frontOffset();
+    if (IsGeneratorSlotInitialization(script, offset, cx)) {
+      // This is engine-internal operation and not visible outside the
+      // currently executing frame.
+      //
+      // Also this offset is not allowed for setting breakpoint.
+      continue;
+    }
+
+    if (!NewbornArrayPush(cx, result, NumberValue(offset))) {
+      return false;
     }
   }
 
@@ -1705,7 +1746,7 @@ class DebuggerScript::GetAllColumnOffsetsMatcher {
   MutableHandleObject result_;
 
   bool appendColumnOffsetEntry(size_t lineno, size_t column, size_t offset) {
-    RootedPlainObject entry(cx_, NewPlainObject(cx_));
+    Rooted<PlainObject*> entry(cx_, NewPlainObject(cx_));
     if (!entry) {
       return false;
     }
@@ -1954,6 +1995,10 @@ struct DebuggerScript::SetBreakpointMatcher {
     }
 
     if (!EnsureScriptOffsetIsValid(cx_, script, offset_)) {
+      return false;
+    }
+
+    if (!EnsureBreakpointIsAllowed(cx_, script, offset_)) {
       return false;
     }
 

@@ -175,9 +175,13 @@ class RemoteAccessibleBase : public Accessible, public HyperTextAccessibleBase {
   virtual double MaxValue() const override;
   virtual double Step() const override;
 
+  virtual Accessible* ChildAtPoint(
+      int32_t aX, int32_t aY,
+      LocalAccessible::EWhichChildAtPoint aWhichChild) override;
+
   virtual LayoutDeviceIntRect Bounds() const override;
 
-  nsRect GetBoundsInAppUnits() const;
+  virtual nsRect BoundsInAppUnits() const override;
 
   virtual uint64_t State() override;
 
@@ -189,13 +193,21 @@ class RemoteAccessibleBase : public Accessible, public HyperTextAccessibleBase {
 
   virtual Maybe<float> Opacity() const override;
 
+  virtual void LiveRegionAttributes(nsAString* aLive, nsAString* aRelevant,
+                                    Maybe<bool>* aAtomic,
+                                    nsAString* aBusy) const override;
+
   virtual uint8_t ActionCount() const override;
 
   virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
 
   virtual bool DoAction(uint8_t aIndex) const override;
 
+  virtual KeyBinding AccessKey() const override;
+
   virtual void SelectionRanges(nsTArray<TextRange>* aRanges) const override;
+
+  virtual Maybe<int32_t> GetIntARIAAttr(nsAtom* aAttrName) const override;
 
   //////////////////////////////////////////////////////////////////////////////
   // SelectAccessible
@@ -295,6 +307,7 @@ class RemoteAccessibleBase : public Accessible, public HyperTextAccessibleBase {
   Maybe<const nsTArray<int32_t>&> GetCachedTextLines();
   Maybe<nsTArray<nsRect>> GetCachedCharData();
   RefPtr<const AccAttributes> GetCachedTextAttributes();
+  RefPtr<const AccAttributes> GetCachedARIAAttributes() const;
 
   virtual HyperTextAccessibleBase* AsHyperTextBase() override {
     return IsHyperText() ? static_cast<HyperTextAccessibleBase*>(this)
@@ -343,6 +356,7 @@ class RemoteAccessibleBase : public Accessible, public HyperTextAccessibleBase {
   Maybe<nsRect> RetrieveCachedBounds() const;
   bool ApplyTransform(nsRect& aBounds) const;
   void ApplyScrollOffset(nsRect& aBounds) const;
+  void ApplyCrossProcOffset(nsRect& aBounds) const;
   LayoutDeviceIntRect BoundsWithOffset(Maybe<nsRect> aOffset) const;
 
   virtual void ARIAGroupPosition(int32_t* aLevel, int32_t* aSetSize,

@@ -6,15 +6,17 @@
 
 const EXPORTED_SYMBOLS = ["getMessageHandlerClass", "MessageHandlerRegistry"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const { EventEmitter } = ChromeUtils.import(
+  "resource://gre/modules/EventEmitter.jsm"
 );
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
-  EventEmitter: "resource://gre/modules/EventEmitter.jsm",
-
   Log: "chrome://remote/content/shared/Log.jsm",
   readSessionData:
     "chrome://remote/content/shared/messagehandler/sessiondata/SessionDataReader.jsm",
@@ -68,7 +70,7 @@ function getMessageHandlerClass(type) {
  * The registry is useful to retrieve the appropriate MessageHandler instance
  * after crossing a technical boundary (eg process, thread...).
  */
-class MessageHandlerRegistry extends lazy.EventEmitter {
+class MessageHandlerRegistry extends EventEmitter {
   /*
    * @param {String} type
    *     MessageHandler type, one of MessageHandler.type.

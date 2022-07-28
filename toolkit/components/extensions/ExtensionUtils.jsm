@@ -7,9 +7,8 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -19,8 +18,6 @@ ChromeUtils.defineModuleGetter(
   "setTimeout",
   "resource://gre/modules/Timer.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 // xpcshell doesn't handle idle callbacks well.
 XPCOMUtils.defineLazyGetter(lazy, "idleTimeout", () =>
@@ -324,7 +321,7 @@ function parseMatchPatterns(patterns, options) {
 async function makeDataURI(iconUrl) {
   let response;
   try {
-    response = await lazy.fetch(iconUrl);
+    response = await fetch(iconUrl);
   } catch (e) {
     // Failed to fetch, ignore engine's favicon.
     Cu.reportError(e);

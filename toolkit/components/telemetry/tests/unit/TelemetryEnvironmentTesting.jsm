@@ -1,10 +1,9 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -326,7 +325,7 @@ var TelemetryEnvironmentTesting = {
 
       let win32kLockdownState =
         data.settings.sandbox.contentWin32kLockdownState;
-      lazy.Assert.ok(win32kLockdownState >= 1 && win32kLockdownState <= 15);
+      lazy.Assert.ok(win32kLockdownState >= 1 && win32kLockdownState <= 17);
     }
 
     // Check "defaultSearchEngine" separately, as it can either be undefined or string.

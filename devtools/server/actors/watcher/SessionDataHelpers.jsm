@@ -31,14 +31,18 @@ if (typeof module == "object") {
     true
   );
 } else {
-  const { XPCOMUtils } = ChromeUtils.import(
-    "resource://gre/modules/XPCOMUtils.jsm"
+  const { XPCOMUtils } = ChromeUtils.importESModule(
+    "resource://gre/modules/XPCOMUtils.sys.mjs"
   );
+  // Ignore the "duplicate" definitions here as this are also defined
+  // in the if block above.
+  // eslint-disable-next-line mozilla/valid-lazy
   XPCOMUtils.defineLazyGetter(lazy, "validateBreakpointLocation", () => {
     return ChromeUtils.import(
       "resource://devtools/shared/validate-breakpoint.jsm"
     ).validateBreakpointLocation;
   });
+  // eslint-disable-next-line mozilla/valid-lazy
   XPCOMUtils.defineLazyGetter(lazy, "validateEventBreakpoint", () => {
     const { loader } = ChromeUtils.import(
       "resource://devtools/shared/loader/Loader.jsm"
@@ -139,6 +143,9 @@ const SessionDataHelpers = {
     const toBeAdded = [];
     const keyFunction = DATA_KEY_FUNCTION[type] || idFunction;
     for (const entry of entries) {
+      if (!sessionData[type]) {
+        sessionData[type] = [];
+      }
       const existingIndex = sessionData[type].findIndex(existingEntry => {
         return keyFunction(existingEntry) === keyFunction(entry);
       });
@@ -172,9 +179,11 @@ const SessionDataHelpers = {
     let includesAtLeastOne = false;
     const keyFunction = DATA_KEY_FUNCTION[type] || idFunction;
     for (const entry of entries) {
-      const idx = sessionData[type].findIndex(existingEntry => {
-        return keyFunction(existingEntry) === keyFunction(entry);
-      });
+      const idx = sessionData[type]
+        ? sessionData[type].findIndex(existingEntry => {
+            return keyFunction(existingEntry) === keyFunction(entry);
+          })
+        : -1;
       if (idx !== -1) {
         sessionData[type].splice(idx, 1);
         includesAtLeastOne = true;

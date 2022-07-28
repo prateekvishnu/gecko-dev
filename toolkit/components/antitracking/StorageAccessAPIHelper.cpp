@@ -358,7 +358,7 @@ StorageAccessAPIHelper::AllowAccessFor(
 /* static */ RefPtr<StorageAccessAPIHelper::StorageAccessPermissionGrantPromise>
 StorageAccessAPIHelper::CompleteAllowAccessFor(
     dom::BrowsingContext* aParentContext, uint64_t aTopLevelWindowId,
-    nsIPrincipal* aTrackingPrincipal, const nsCString& aTrackingOrigin,
+    nsIPrincipal* aTrackingPrincipal, const nsACString& aTrackingOrigin,
     uint32_t aCookieBehavior,
     ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason,
     const PerformFinalChecks& aPerformFinalChecks) {
@@ -548,7 +548,7 @@ StorageAccessAPIHelper::CompleteAllowAccessFor(
 }
 
 /* static */ void StorageAccessAPIHelper::OnAllowAccessFor(
-    dom::BrowsingContext* aParentContext, const nsCString& aTrackingOrigin,
+    dom::BrowsingContext* aParentContext, const nsACString& aTrackingOrigin,
     uint32_t aCookieBehavior,
     ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason) {
   MOZ_ASSERT(aParentContext->IsInProcess());
@@ -883,11 +883,13 @@ Maybe<bool> StorageAccessAPIHelper::CheckCallingContextDecidesStorageAccessAPI(
 
   // If the document has a null origin, reject.
   if (aDocument->NodePrincipal()->GetIsNullPrincipal()) {
-    // Report an error to the console for this case
-    nsContentUtils::ReportToConsole(nsIScriptError::errorFlag,
-                                    nsLiteralCString("requestStorageAccess"),
-                                    aDocument, nsContentUtils::eDOM_PROPERTIES,
-                                    "RequestStorageAccessNullPrincipal");
+    // Report an error to the console for this case if we are requesting access
+    if (aRequestingStorageAccess) {
+      nsContentUtils::ReportToConsole(
+          nsIScriptError::errorFlag, nsLiteralCString("requestStorageAccess"),
+          aDocument, nsContentUtils::eDOM_PROPERTIES,
+          "RequestStorageAccessNullPrincipal");
+    }
     return Some(false);
   }
 
@@ -943,13 +945,15 @@ StorageAccessAPIHelper::CheckSameSiteCallingContextDecidesStorageAccessAPI(
 // static
 Maybe<bool>
 StorageAccessAPIHelper::CheckExistingPermissionDecidesStorageAccessAPI(
-    dom::Document* aDocument) {
+    dom::Document* aDocument, bool aRequestingStorageAccess) {
   MOZ_ASSERT(aDocument);
   if (aDocument->StorageAccessSandboxed()) {
-    nsContentUtils::ReportToConsole(nsIScriptError::errorFlag,
-                                    nsLiteralCString("requestStorageAccess"),
-                                    aDocument, nsContentUtils::eDOM_PROPERTIES,
-                                    "RequestStorageAccessSandboxed");
+    if (aRequestingStorageAccess) {
+      nsContentUtils::ReportToConsole(
+          nsIScriptError::errorFlag, nsLiteralCString("requestStorageAccess"),
+          aDocument, nsContentUtils::eDOM_PROPERTIES,
+          "RequestStorageAccessSandboxed");
+    }
     return Some(false);
   }
   if (aDocument->HasStorageAccessPermissionGranted()) {

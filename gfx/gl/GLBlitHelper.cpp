@@ -666,13 +666,13 @@ const DrawBlitProg* GLBlitHelper::CreateDrawBlitProg(
 
   GLenum status = 0;
   mGL->fGetProgramiv(prog, LOCAL_GL_LINK_STATUS, (GLint*)&status);
-  if (status == LOCAL_GL_TRUE || !mGL->CheckContextLost()) {
+  if (status == LOCAL_GL_TRUE || mGL->CheckContextLost()) {
     const SaveRestoreCurrentProgram oldProg(mGL);
     mGL->fUseProgram(prog);
     const char* samplerNames[] = {"uTex0", "uTex1", "uTex2"};
     for (int i = 0; i < 3; i++) {
       const auto loc = mGL->fGetUniformLocation(prog, samplerNames[i]);
-      if (loc == -1) break;
+      if (loc == -1) continue;
       mGL->fUniform1i(loc, i);
     }
 
@@ -826,7 +826,7 @@ bool GLBlitHelper::BlitImageToFramebuffer(layers::Image* const srcImage,
 #else
       return false;
 #endif
-    case ImageFormat::CAIRO_SURFACE:
+    case ImageFormat::MOZ2D_SURFACE:
     case ImageFormat::NV_IMAGE:
     case ImageFormat::OVERLAY_IMAGE:
     case ImageFormat::SHARED_RGB:

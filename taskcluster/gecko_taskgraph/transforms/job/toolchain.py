@@ -6,9 +6,10 @@ Support for running toolchain-building jobs via dedicated scripts
 """
 
 
+import taskgraph
 from mozbuild.shellutil import quote as shell_quote
 
-from gecko_taskgraph.util.schema import Schema
+from taskgraph.util.schema import Schema
 from voluptuous import Optional, Required, Any
 
 from gecko_taskgraph.transforms.job import (
@@ -22,7 +23,6 @@ from gecko_taskgraph.transforms.job.common import (
 from gecko_taskgraph.util.hash import hash_paths
 from gecko_taskgraph.util.attributes import RELEASE_PROJECTS
 from gecko_taskgraph import GECKO
-import gecko_taskgraph
 
 
 CACHE_TYPE = "toolchains.v3"
@@ -156,10 +156,7 @@ def common_toolchain(config, job, taskdesc, is_docker):
 
     digest_data = get_digest_data(config, run, taskdesc)
 
-    if (
-        job.get("attributes", {}).get("cached_task") is not False
-        and not gecko_taskgraph.fast
-    ):
+    if job.get("attributes", {}).get("cached_task") is not False and not taskgraph.fast:
         name = taskdesc["label"].replace(f"{config.kind}-", "", 1)
         taskdesc["cache"] = {
             "type": CACHE_TYPE,

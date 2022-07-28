@@ -66,7 +66,7 @@ class StorageAccessAPIHelper final {
   // This function handles tasks that have to be done in the process
   // of the window that we just grant permission for.
   static void OnAllowAccessFor(
-      dom::BrowsingContext* aParentContext, const nsCString& aTrackingOrigin,
+      dom::BrowsingContext* aParentContext, const nsACString& aTrackingOrigin,
       uint32_t aCookieBehavior,
       ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason);
 
@@ -156,7 +156,7 @@ class StorageAccessAPIHelper final {
   //   None if the document has not been granted or denied access by the Storage
   //        Access API before
   static Maybe<bool> CheckExistingPermissionDecidesStorageAccessAPI(
-      dom::Document* aDocument);
+      dom::Document* aDocument, bool aRequestingStorageAccess);
 
  private:
   friend class dom::ContentParent;
@@ -165,7 +165,7 @@ class StorageAccessAPIHelper final {
   [[nodiscard]] static RefPtr<StorageAccessPermissionGrantPromise>
   CompleteAllowAccessFor(
       dom::BrowsingContext* aParentContext, uint64_t aTopLevelWindowId,
-      nsIPrincipal* aTrackingPrincipal, const nsCString& aTrackingOrigin,
+      nsIPrincipal* aTrackingPrincipal, const nsACString& aTrackingOrigin,
       uint32_t aCookieBehavior,
       ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason,
       const PerformFinalChecks& aPerformFinalChecks = nullptr);

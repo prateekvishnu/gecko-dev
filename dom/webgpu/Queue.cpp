@@ -71,8 +71,7 @@ void Queue::WriteBuffer(const Buffer& aBuffer, uint64_t aBufferOffset,
   }
 
   ipc::Shmem shmem;
-  if (!mBridge->AllocShmem(size, ipc::Shmem::SharedMemory::TYPE_BASIC,
-                           &shmem)) {
+  if (!mBridge->AllocShmem(size, &shmem)) {
     aRv.ThrowAbortError(
         nsPrintfCString("Unable to allocate shmem of size %" PRIuPTR, size));
     return;
@@ -113,6 +112,11 @@ void Queue::WriteTexture(const dom::GPUImageCopyTexture& aDestination,
     availableSize = ab.Length();
     data = ab.Data();
   }
+
+  if (!availableSize) {
+    aRv.ThrowAbortError("Input size cannot be zero.");
+    return;
+  }
   MOZ_ASSERT(data != nullptr);
 
   const auto checkedSize =
@@ -124,8 +128,7 @@ void Queue::WriteTexture(const dom::GPUImageCopyTexture& aDestination,
   const auto size = checkedSize.value();
 
   ipc::Shmem shmem;
-  if (!mBridge->AllocShmem(size, ipc::Shmem::SharedMemory::TYPE_BASIC,
-                           &shmem)) {
+  if (!mBridge->AllocShmem(size, &shmem)) {
     aRv.ThrowAbortError(
         nsPrintfCString("Unable to allocate shmem of size %" PRIuPTR, size));
     return;

@@ -1650,6 +1650,12 @@ impl<'le> TElement for GeckoElement<'le> {
 
         let after_change_ui_style = after_change_style.get_ui();
         let existing_transitions = self.css_transitions_info();
+
+        if after_change_style.get_box().clone_display().is_none() {
+            // We need to cancel existing transitions.
+            return !existing_transitions.is_empty();
+        }
+
         let mut transitions_to_keep = LonghandIdSet::new();
         for transition_property in after_change_style.transition_properties() {
             let physical_longhand = transition_property
@@ -1975,6 +1981,18 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
                 return Some(el);
             }
             sibling = sibling_node.next_sibling();
+        }
+        None
+    }
+
+    #[inline]
+    fn first_element_child(&self) -> Option<Self> {
+        let mut child = self.as_node().first_child();
+        while let Some(child_node) = child {
+            if let Some(el) = child_node.as_element() {
+                return Some(el);
+            }
+            child = child_node.next_sibling();
         }
         None
     }

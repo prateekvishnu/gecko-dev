@@ -469,9 +469,11 @@ nsresult nsHostResolver::ResolveHost(const nsACString& aHost,
     // and return.  otherwise, add ourselves as first pending
     // callback, and proceed to do the lookup.
 
+    Maybe<nsCString> originHost;
     if (StaticPrefs::network_dns_port_prefixed_qname_https_rr() &&
         type == nsIDNSService::RESOLVE_TYPE_HTTPSSVC && aPort != -1 &&
         aPort != 443) {
+      originHost = Some(host);
       host = nsPrintfCString("_%d._https.%s", aPort, host.get());
       LOG(("  Using port prefixed host name [%s]", host.get()));
     }
@@ -508,6 +510,11 @@ nsresult nsHostResolver::ResolveHost(const nsACString& aHost,
     MOZ_ASSERT(rec, "Record should not be null");
     MOZ_ASSERT((IS_ADDR_TYPE(type) && rec->IsAddrRecord() && addrRec) ||
                (IS_OTHER_TYPE(type) && !rec->IsAddrRecord()));
+
+    if (IS_OTHER_TYPE(type) && originHost) {
+      RefPtr<TypeHostRecord> typeRec = do_QueryObject(rec);
+      typeRec->mOriginHost = std::move(originHost);
+    }
 
     if (excludedFromTRR) {
       rec->RecordReason(TRRSkippedReason::TRR_EXCLUDED);
@@ -892,12 +899,12 @@ bool nsHostResolver::TRRServiceEnabledForRecord(nsHostRecord* aRec) {
     return false;
   }
 
-  if (!TRRService::Get()->IsConfirmed()) {
+  bool isConfirmed = TRRService::Get()->IsConfirmed();
+  if (!isConfirmed) {
     aRec->RecordReason(TRRSkippedReason::TRR_NOT_CONFIRMED);
-    return false;
   }
 
-  return false;
+  return isConfirmed;
 }
 
 // returns error if no TRR resolve is issued
@@ -1300,13 +1307,15 @@ void nsHostResolver::AddToEvictionQ(nsHostRecord* rec,
 }
 
 // After a first lookup attempt with TRR in mode 2, we may:
-// - If we are not in strict mode, retry with native.
-// - If we are in strict mode:
+// - If network.trr.retry_on_recoverable_errors is false, retry with native.
+// - If network.trr.retry_on_recoverable_errors is true:
 //   - Retry with native if the first attempt failed because we got NXDOMAIN, an
 //     unreachable address (TRR_DISABLED_FLAG), or we skipped TRR because
 //     Confirmation failed.
-//   - Trigger a "strict mode" Confirmation which will start a fresh
+//   - Trigger a "RetryTRR" Confirmation which will start a fresh
 //     connection for TRR, and then retry the lookup with TRR.
+//   - If the second attempt failed, fallback to native if
+//     network.trr.strict_native_fallback is false.
 // Returns true if we retried with either TRR or Native.
 bool nsHostResolver::MaybeRetryTRRLookup(
     AddrHostRecord* aAddrRec, nsresult aFirstAttemptStatus,
@@ -1318,16 +1327,14 @@ bool nsHostResolver::MaybeRetryTRRLookup(
   }
 
   MOZ_ASSERT(!aAddrRec->mResolving);
-  if (!StaticPrefs::network_trr_strict_native_fallback()) {
+  if (!StaticPrefs::network_trr_retry_on_recoverable_errors()) {
     LOG(("nsHostResolver::MaybeRetryTRRLookup retrying with native"));
     return NS_SUCCEEDED(NativeLookup(aAddrRec, aLock));
   }
 
-  if (aFirstAttemptSkipReason == TRRSkippedReason::TRR_RCODE_FAIL ||
-      aFirstAttemptSkipReason == TRRSkippedReason::TRR_NO_ANSWERS ||
-      aFirstAttemptSkipReason == TRRSkippedReason::TRR_NXDOMAIN ||
-      aFirstAttemptSkipReason == TRRSkippedReason::TRR_DISABLED_FLAG ||
-      aFirstAttemptSkipReason == TRRSkippedReason::TRR_NOT_CONFIRMED) {
+  if (IsFailedConfirmationOrNoConnectivity(aFirstAttemptSkipReason) ||
+      IsNonRecoverableTRRSkipReason(aFirstAttemptSkipReason) ||
+      IsBlockedTRRRequest(aFirstAttemptSkipReason)) {
     LOG(
         ("nsHostResolver::MaybeRetryTRRLookup retrying with native in strict "
          "mode, skip reason was %d",
@@ -1336,6 +1343,13 @@ bool nsHostResolver::MaybeRetryTRRLookup(
   }
 
   if (aAddrRec->mTrrAttempts > 1) {
+    if (!StaticPrefs::network_trr_strict_native_fallback()) {
+      LOG(
+          ("nsHostResolver::MaybeRetryTRRLookup retry failed. Using "
+           "native."));
+      return NS_SUCCEEDED(NativeLookup(aAddrRec, aLock));
+    }
+
     if (aFirstAttemptSkipReason == TRRSkippedReason::TRR_TIMEOUT &&
         StaticPrefs::network_trr_strict_native_fallback_allow_timeouts()) {
       LOG(
@@ -1351,7 +1365,7 @@ bool nsHostResolver::MaybeRetryTRRLookup(
       ("nsHostResolver::MaybeRetryTRRLookup triggering Confirmation and "
        "retrying with TRR, skip reason was %d",
        static_cast<uint32_t>(aFirstAttemptSkipReason)));
-  TRRService::Get()->StrictModeConfirm();
+  TRRService::Get()->RetryTRRConfirm();
 
   {
     // Clear out the old query

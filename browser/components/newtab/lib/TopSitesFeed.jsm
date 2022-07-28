@@ -3,9 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const { actionCreators: ac, actionTypes: at } = ChromeUtils.import(
@@ -73,8 +72,6 @@ ChromeUtils.defineModuleGetter(
   "Region",
   "resource://gre/modules/Region.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 XPCOMUtils.defineLazyGetter(lazy, "log", () => {
   const { Logger } = ChromeUtils.import(
@@ -186,7 +183,7 @@ class ContileIntegration {
     }
     try {
       let url = Services.prefs.getStringPref(CONTILE_ENDPOINT_PREF);
-      const response = await lazy.fetch(url, { credentials: "omit" });
+      const response = await fetch(url, { credentials: "omit" });
       if (!response.ok) {
         lazy.log.warn(
           `Contile endpoint returned unexpected status: ${response.status}`

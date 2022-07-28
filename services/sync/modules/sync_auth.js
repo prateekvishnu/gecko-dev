@@ -6,10 +6,9 @@
 
 var EXPORTED_SYMBOLS = ["SyncAuthManager", "AuthenticationError"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const { Async } = ChromeUtils.import("resource://services-common/async.js");
 const { TokenServerClient } = ChromeUtils.import(
@@ -48,12 +47,6 @@ XPCOMUtils.defineLazyGetter(lazy, "fxAccounts", () => {
     "resource://gre/modules/FxAccounts.jsm"
   ).getFxAccountsSingleton();
 });
-
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "CommonUtils",
-  "resource://services-common/utils.js"
-);
 
 XPCOMUtils.defineLazyGetter(lazy, "log", function() {
   let log = Log.repository.getLogger("Sync.SyncAuthManager");

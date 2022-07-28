@@ -6,7 +6,7 @@
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 
-<iframe id=frame1 srcdoc="<div popup=popup id=popup>Popup</div>"></iframe>
+<iframe id=frame1 srcdoc="<div popup id=popup>Popup</div>"></iframe>
 <iframe id=frame2></iframe>
 
 <script>
@@ -17,11 +17,11 @@
       const popup = frame1Doc.querySelector('[popup]');
       assert_true(!!popup);
       assert_false(popup.matches(':top-layer'));
-      popup.showPopup();
+      popup.showPopUp();
       assert_true(popup.matches(':top-layer'));
       frame2Doc.body.appendChild(popup);
       assert_false(popup.matches(':top-layer'));
-      popup.showPopup();
+      popup.showPopUp();
       assert_true(popup.matches(':top-layer'));
     }, 'Moving popup between documents shouldn\'t cause issues');
   };

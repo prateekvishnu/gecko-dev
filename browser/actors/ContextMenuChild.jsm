@@ -8,9 +8,8 @@
 
 var EXPORTED_SYMBOLS = ["ContextMenuChild"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -25,11 +24,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   InlineSpellCheckerContent:
     "resource://gre/modules/InlineSpellCheckerContent.jsm",
   ContentDOMReference: "resource://gre/modules/ContentDOMReference.jsm",
-});
-
-XPCOMUtils.defineLazyGetter(lazy, "PageMenuChild", () => {
-  let pageMenu = ChromeUtils.import("resource://gre/modules/PageMenu.jsm");
-  return new pageMenu.PageMenuChild();
 });
 
 let contextMenus = new WeakMap();
@@ -80,15 +74,6 @@ class ContextMenuChild extends JSWindowActorChild {
             resolve(blobURL);
           });
         });
-      }
-
-      case "ContextMenu:DoCustomCommand": {
-        lazy.E10SUtils.wrapHandlingUserInput(
-          this.contentWindow,
-          message.data.handlingUserInput,
-          () => lazy.PageMenuChild.executeMenu(message.data.generatedItemId)
-        );
-        break;
       }
 
       case "ContextMenu:Hiding": {
@@ -584,9 +569,9 @@ class ContextMenuChild extends JSWindowActorChild {
     docLocation = docLocation && docLocation.spec;
     let frameID = lazy.WebNavigationFrames.getFrameId(doc.defaultView);
     let frameBrowsingContextID = doc.defaultView.docShell.browsingContext.id;
-    let loginFillInfo = lazy.LoginManagerChild.forWindow(
-      doc.defaultView
-    ).getFieldContext(aEvent.composedTarget);
+    const loginManagerChild = lazy.LoginManagerChild.forWindow(doc.defaultView);
+    const docState = loginManagerChild.stateForDocument(doc);
+    const loginFillInfo = docState.getFieldContext(aEvent.composedTarget);
 
     let disableSetDesktopBackground = null;
 
@@ -639,7 +624,6 @@ class ContextMenuChild extends JSWindowActorChild {
     let spellInfo = null;
     let editFlags = null;
     let principal = null;
-    let customMenuItems = null;
 
     let referrerInfo = Cc["@mozilla.org/referrer-info;1"].createInstance(
       Ci.nsIReferrerInfo
@@ -695,7 +679,6 @@ class ContextMenuChild extends JSWindowActorChild {
       loginFillInfo,
       selectionInfo,
       userContextId,
-      customMenuItems,
       contentDisposition,
       frameID,
       frameBrowsingContextID,
@@ -712,10 +695,6 @@ class ContextMenuChild extends JSWindowActorChild {
       data.linkReferrerInfo = lazy.E10SUtils.serializeReferrerInfo(
         linkReferrerInfo
       );
-    }
-
-    if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
-      data.customMenuItems = lazy.PageMenuChild.build(aEvent.composedTarget);
     }
 
     Services.obs.notifyObservers(
@@ -913,6 +892,7 @@ class ContextMenuChild extends JSWindowActorChild {
     context.onSpellcheckable = false;
     context.onTextInput = false;
     context.onVideo = false;
+    context.inPDFEditor = false;
 
     // Remember the node and its owner document that was clicked
     // This may be modifed before sending to nsContextMenu
@@ -938,6 +918,10 @@ class ContextMenuChild extends JSWindowActorChild {
     context.inPDFViewer =
       context.target.ownerDocument.nodePrincipal.originNoSuffix ==
       "resource://pdf.js";
+    if (context.inPDFViewer) {
+      context.pdfEditorStates = context.target.ownerDocument.editorStates;
+      context.inPDFEditor = !!context.pdfEditorStates?.isEditing;
+    }
 
     // Check if we are in a synthetic document (stand alone image, video, etc.).
     context.inSyntheticDoc = context.target.ownerDocument.mozSyntheticDocument;

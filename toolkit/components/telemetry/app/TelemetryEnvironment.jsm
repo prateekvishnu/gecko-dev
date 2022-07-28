@@ -7,7 +7,6 @@
 var EXPORTED_SYMBOLS = ["TelemetryEnvironment", "Policy"];
 
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryUtils } = ChromeUtils.import(
   "resource://gre/modules/TelemetryUtils.jsm"
 );
@@ -16,6 +15,9 @@ const { ObjectUtils } = ChromeUtils.import(
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
+);
+const { UpdateUtils } = ChromeUtils.import(
+  "resource://gre/modules/UpdateUtils.jsm"
 );
 
 const Utils = TelemetryUtils;
@@ -41,13 +43,8 @@ ChromeUtils.defineModuleGetter(
   "WindowsRegistry",
   "resource://gre/modules/WindowsRegistry.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "UpdateUtils",
-  "resource://gre/modules/UpdateUtils.jsm"
-);
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 XPCOMUtils.defineLazyGetter(lazy, "fxAccounts", () => {
   return ChromeUtils.import(
@@ -250,6 +247,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.cache.memory.enable", { what: RECORD_PREF_VALUE }],
   ["browser.cache.offline.enable", { what: RECORD_PREF_VALUE }],
   ["browser.formfill.enable", { what: RECORD_PREF_VALUE }],
+  ["browser.fixup.alternate.enabled", { what: RECORD_DEFAULTPREF_VALUE }],
   ["browser.newtabpage.enabled", { what: RECORD_PREF_VALUE }],
   ["browser.shell.checkDefaultBrowser", { what: RECORD_PREF_VALUE }],
   ["browser.search.region", { what: RECORD_PREF_VALUE }],
@@ -260,6 +258,10 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.urlbar.autoFill", { what: RECORD_DEFAULTPREF_VALUE }],
   [
     "browser.urlbar.autoFill.adaptiveHistory.enabled",
+    { what: RECORD_DEFAULTPREF_VALUE },
+  ],
+  [
+    "browser.urlbar.dnsResolveSingleWordsAfterSearch",
     { what: RECORD_DEFAULTPREF_VALUE },
   ],
   [
@@ -396,9 +398,9 @@ const SESSIONSTORE_WINDOWS_RESTORED_TOPIC = "sessionstore-windows-restored";
 const PREF_CHANGED_TOPIC = "nsPref:changed";
 const GMP_PROVIDER_REGISTERED_TOPIC = "gmp-provider-registered";
 const AUTO_UPDATE_PREF_CHANGE_TOPIC =
-  lazy.UpdateUtils.PER_INSTALLATION_PREFS["app.update.auto"].observerTopic;
+  UpdateUtils.PER_INSTALLATION_PREFS["app.update.auto"].observerTopic;
 const BACKGROUND_UPDATE_PREF_CHANGE_TOPIC =
-  lazy.UpdateUtils.PER_INSTALLATION_PREFS["app.update.background.enabled"]
+  UpdateUtils.PER_INSTALLATION_PREFS["app.update.background.enabled"]
     .observerTopic;
 const SERVICES_INFO_CHANGE_TOPIC = "sync-ui-state:update";
 const FIREFOX_SUGGEST_UPDATE_TOPIC = "firefox-suggest-update";
@@ -1727,8 +1729,8 @@ EnvironmentCache.prototype = {
    */
   async _loadAsyncUpdateSettings() {
     if (AppConstants.MOZ_UPDATER) {
-      this._updateAutoDownloadCache = await lazy.UpdateUtils.getAppUpdateAutoEnabled();
-      this._updateBackgroundCache = await lazy.UpdateUtils.readUpdateConfigSetting(
+      this._updateAutoDownloadCache = await UpdateUtils.getAppUpdateAutoEnabled();
+      this._updateBackgroundCache = await UpdateUtils.readUpdateConfigSetting(
         "app.update.background.enabled"
       );
     } else {

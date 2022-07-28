@@ -29,8 +29,7 @@ const {
     FOCUS_FILTER_NON_NEEDS_FOCUS_TESTS,
 
     g,
-} = ChromeUtils.import("resource://reftest/globals.jsm", this);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+} = ChromeUtils.import("resource://reftest/globals.jsm");
 const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
 const { AppConstants } = ChromeUtils.import(
     "resource://gre/modules/AppConstants.jsm"

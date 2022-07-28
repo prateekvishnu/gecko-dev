@@ -22,6 +22,8 @@ import logging
 from importlib import import_module
 
 from mozbuild.schedules import INCLUSIVE_COMPONENTS
+from taskgraph.transforms.base import TransformSequence
+from taskgraph.util.schema import Schema, optionally_keyed_by, resolve_keyed_by
 from voluptuous import (
     Any,
     Optional,
@@ -30,13 +32,7 @@ from voluptuous import (
 )
 
 from gecko_taskgraph.optimize.schema import OptimizationSchema
-from gecko_taskgraph.transforms.base import TransformSequence
 from gecko_taskgraph.transforms.test.other import get_mobile_project
-from gecko_taskgraph.util.schema import (
-    optionally_keyed_by,
-    resolve_keyed_by,
-    Schema,
-)
 from gecko_taskgraph.util.chunking import manifest_loaders
 
 
@@ -426,9 +422,6 @@ def make_job_description(config, tasks):
             suffix = task.pop("variant-suffix")
             label += suffix
             try_name += suffix
-
-        if "1proc" not in attributes.get("unittest_variant", ""):
-            label += "-e10s"
 
         if task["chunks"] > 1:
             label += "-{}".format(task["this-chunk"])

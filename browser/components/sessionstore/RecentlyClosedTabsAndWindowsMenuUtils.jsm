@@ -4,8 +4,6 @@
 
 var EXPORTED_SYMBOLS = ["RecentlyClosedTabsAndWindowsMenuUtils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const lazy = {};
 
 ChromeUtils.defineModuleGetter(
@@ -19,11 +17,9 @@ ChromeUtils.defineModuleGetter(
   "resource:///modules/sessionstore/SessionStore.jsm"
 );
 
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 
 var navigatorBundle = Services.strings.createBundle(
   "chrome://browser/locale/browser.properties"
@@ -194,7 +190,7 @@ function createEntry(
 
   element.setAttribute("label", aMenuLabel);
   if (aClosedTab.image) {
-    const iconURL = lazy.PlacesUIUtils.getImageURL(aClosedTab);
+    const iconURL = lazy.PlacesUIUtils.getImageURL(aClosedTab.image);
     element.setAttribute("image", iconURL);
   }
   if (!aIsWindowsFragment) {

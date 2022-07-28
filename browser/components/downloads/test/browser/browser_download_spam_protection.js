@@ -4,8 +4,8 @@
 
 "use strict";
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 ChromeUtils.defineModuleGetter(
@@ -37,7 +37,7 @@ add_setup(async function() {
   PermissionTestUtils.add(
     TEST_URI,
     "automatic-download",
-    Services.perms.UNKNOWN
+    Services.perms.UNKNOWN_ACTION
   );
   await SpecialPowers.pushPrefEnv({
     set: [
@@ -110,6 +110,7 @@ add_task(async function check_download_spam_ui() {
   );
 
   ok(browserWin.DownloadsPanel.isPanelShowing, "Download panel should open");
+  await Downloads.getList(Downloads.PUBLIC);
 
   let listbox = document.getElementById("downloadsListBox");
   ok(listbox, "Download list box present");

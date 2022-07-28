@@ -40,10 +40,9 @@ var EXPORTED_SYMBOLS = [
  * to run in the same process of the existing addon debugging browser element).
  */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -138,8 +137,6 @@ var {
 const { getUniqueId, promiseTimeout } = ExtensionUtils;
 
 const { EventEmitter, updateAllowedOrigins } = ExtensionCommon;
-
-XPCOMUtils.defineLazyGetter(lazy, "console", ExtensionCommon.getConsole);
 
 XPCOMUtils.defineLazyGetter(
   lazy,
@@ -527,7 +524,6 @@ var ExtensionAddonObserver = {
         principal,
         "WebExtensions-unlimitedStorage"
       );
-      Services.perms.removeFromPrincipal(principal, "indexedDB");
       Services.perms.removeFromPrincipal(principal, "persistent-storage");
     }
 
@@ -1026,6 +1022,20 @@ class ExtensionData {
         // AddonSettings.EXPERIMENTS_ENABLED is true is currently needed to allow,
         // while running under automation, the test harness extensions (like mochikit
         // and specialpowers) to use that privileged manifest property.
+        lazy.AddonSettings.EXPERIMENTS_ENABLED)
+    );
+  }
+
+  canUseThemeExperiment() {
+    return (
+      ["extension", "theme"].includes(this.type) &&
+      (this.isPrivileged ||
+        // "theme_experiment" MDN docs are currently explicitly mentioning this is expected
+        // to be allowed also for non-signed extensions installed non-temporarily on builds
+        // where the signature checks can be disabled).
+        //
+        // NOTE: be careful to don't regress "theme_experiment" (see Bug 1773076) while changing
+        // AddonSettings.EXPERIMENTS_ENABLED (e.g. as part of fixing Bug 1771341).
         lazy.AddonSettings.EXPERIMENTS_ENABLED)
     );
   }
@@ -2873,11 +2883,6 @@ class Extension extends ExtensionData {
       );
       Services.perms.addFromPrincipal(
         principal,
-        "indexedDB",
-        Services.perms.ALLOW_ACTION
-      );
-      Services.perms.addFromPrincipal(
-        principal,
         "persistent-storage",
         Services.perms.ALLOW_ACTION
       );
@@ -2895,14 +2900,12 @@ class Extension extends ExtensionData {
           principal,
           "WebExtensions-unlimitedStorage"
         );
-        Services.perms.removeFromPrincipal(principal, "indexedDB");
         Services.perms.removeFromPrincipal(principal, "persistent-storage");
       }
     } else if (
       reason === "APP_STARTUP" &&
       this.hasPermission("unlimitedStorage") &&
-      (testPermission("indexedDB") !== Services.perms.ALLOW_ACTION ||
-        testPermission("persistent-storage") !== Services.perms.ALLOW_ACTION)
+      testPermission("persistent-storage") !== Services.perms.ALLOW_ACTION
     ) {
       // If the extension does have the unlimitedStorage permission, but the
       // expected site permissions are missing during the app startup, then

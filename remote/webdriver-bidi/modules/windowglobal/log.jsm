@@ -6,8 +6,12 @@
 
 const EXPORTED_SYMBOLS = ["log"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const { Module } = ChromeUtils.import(
+  "chrome://remote/content/shared/messagehandler/Module.jsm"
 );
 
 const lazy = {};
@@ -18,11 +22,10 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   ConsoleListener:
     "chrome://remote/content/shared/listeners/ConsoleListener.jsm",
   isChromeFrame: "chrome://remote/content/shared/Stack.jsm",
-  Module: "chrome://remote/content/shared/messagehandler/Module.jsm",
   serialize: "chrome://remote/content/webdriver-bidi/RemoteValue.jsm",
 });
 
-class LogModule extends lazy.Module {
+class LogModule extends Module {
   #consoleAPIListener;
   #consoleMessageListener;
 
@@ -47,6 +50,13 @@ class LogModule extends lazy.Module {
     this.#consoleAPIListener.destroy();
     this.#consoleMessageListener.off("error", this.#onJavaScriptError);
     this.#consoleMessageListener.destroy();
+  }
+
+  #buildSource() {
+    return {
+      realm: this.messageHandler.window.windowGlobalChild?.innerWindowId.toString(),
+      context: this.messageHandler.context,
+    };
   }
 
   /**
@@ -110,44 +120,45 @@ class LogModule extends lazy.Module {
     // Step numbers below refer to the specifications at
     //   https://w3c.github.io/webdriver-bidi/#event-log-entryAdded
 
-    // 1. Translate the console message method to a log.LogEntry level
+    // Translate the console message method to a log.LogEntry level
     const logEntrylevel = this.#getLogEntryLevelFromConsoleMethod(method);
 
-    // 2. Use the message's timeStamp or fallback on the current time value.
+    // Use the message's timeStamp or fallback on the current time value.
     const timestamp = timeStamp || Date.now();
 
-    // 3. Start assembling the text representation of the message.
+    // Start assembling the text representation of the message.
     let text = "";
 
-    // 4. Formatters have already been applied at this points.
+    // Formatters have already been applied at this points.
     // message.arguments corresponds to the "formatted args" from the
     // specifications.
 
-    // 5. Concatenate all formatted arguments in text
+    // Concatenate all formatted arguments in text
     // TODO: For m1 we only support string arguments, so we rely on the builtin
     // toString for each argument which will be available in message.arguments.
     const args = messageArguments || [];
     text += args.map(String).join(" ");
 
-    // Step 6 and 7: Serialize each arg as remote value.
+    // Serialize each arg as remote value.
     const serializedArgs = [];
     for (const arg of args) {
       serializedArgs.push(lazy.serialize(arg /*, null, true, new Set() */));
     }
 
-    // 8. Bug 1742589: set realm to the current realm id.
+    // Set source to an object which contains realm and browsing context.
+    const source = this.#buildSource();
 
-    // 9. Set stack trace only for certain methods.
+    // Set stack trace only for certain methods.
     let stackTrace;
     if (["assert", "error", "trace", "warn"].includes(method)) {
       stackTrace = this.#buildStackTrace(stacktrace);
     }
 
-    // 10. Build the ConsoleLogEntry
+    // Build the ConsoleLogEntry
     const entry = {
       type: "console",
       method,
-      realm: null,
+      source,
       args: serializedArgs,
       level: logEntrylevel,
       text,
@@ -155,7 +166,7 @@ class LogModule extends lazy.Module {
       stackTrace,
     };
 
-    // TODO: steps 11. to 15. Those steps relate to:
+    // TODO: Those steps relate to:
     // - emitting associated BrowsingContext. See log.entryAdded full support
     //   in https://bugzilla.mozilla.org/show_bug.cgi?id=1724669#c0
     // - handling cases where session doesn't exist or the event is not
@@ -173,6 +184,7 @@ class LogModule extends lazy.Module {
     const entry = {
       type: "javascript",
       level,
+      source: this.#buildSource(),
       text: message,
       timestamp: timeStamp || Date.now(),
       stackTrace: this.#buildStackTrace(stacktrace),
@@ -200,7 +212,7 @@ class LogModule extends lazy.Module {
    */
 
   _applySessionData(params) {
-    // TODO: Bug 1741861. Move this logic to a shared module or the an abstract
+    // TODO: Bug 1775231. Move this logic to a shared module or an abstract
     // class.
     const { category, added = [], removed = [] } = params;
     if (category === "event") {

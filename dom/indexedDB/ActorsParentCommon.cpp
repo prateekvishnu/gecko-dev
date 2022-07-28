@@ -36,6 +36,7 @@
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TelemetryScalarEnums.h"
@@ -64,7 +65,7 @@ class nsIFile;
 
 namespace mozilla::dom::indexedDB {
 
-static_assert(SNAPPY_VERSION == 0x010108);
+static_assert(SNAPPY_VERSION == 0x010109);
 
 using mozilla::ipc::IsOnBackgroundThread;
 
@@ -116,14 +117,7 @@ Result<StructuredCloneFileParent, nsresult> DeserializeStructuredCloneFile(
   // XXX In bug 1432133, for some reasons DatabaseFileInfo object cannot be
   // got. This is just a short-term fix, and we are working on finding the real
   // cause in bug 1519859.
-  if (!fileInfo) {
-    IDB_WARNING(
-        "Corrupt structured clone data detected in IndexedDB. Failing the "
-        "database request. Bug 1519859 will address this problem.");
-    Telemetry::ScalarAdd(Telemetry::ScalarID::IDB_FAILURE_FILEINFO_ERROR, 1);
-
-    return Err(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
-  }
+  QM_TRY(OkIf((bool)fileInfo), Err(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR));
 
   return StructuredCloneFileParent{type, std::move(fileInfo)};
 }
@@ -410,7 +404,7 @@ GetStructuredCloneReadInfoFromExternalBlob(
   QM_TRY(OkIf(index < files.Length()), Err(NS_ERROR_UNEXPECTED),
          [](const auto&) { MOZ_ASSERT(false, "Bad index value!"); });
 
-  if (IndexedDatabaseManager::PreprocessingEnabled()) {
+  if (StaticPrefs::dom_indexedDB_preprocessing()) {
     return StructuredCloneReadInfoParent{
         JSStructuredCloneData{JS::StructuredCloneScope::DifferentProcess},
         std::move(files), true};

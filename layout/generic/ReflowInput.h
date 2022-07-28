@@ -327,8 +327,19 @@ struct ReflowInput : public SizeComputationInput {
     return mComputedMaxSize.BSize(mWritingMode);
   }
 
-  nscoord& AvailableISize() { return mAvailableSize.ISize(mWritingMode); }
-  nscoord& AvailableBSize() { return mAvailableSize.BSize(mWritingMode); }
+  // WARNING: In general, adjusting available inline-size or block-size is not
+  // safe because ReflowInput has members whose values depend on the available
+  // size passing through the constructor. For example,
+  // CalculateBlockSideMargins() is called during initialization, and uses
+  // AvailableSize(). Make sure your use case doesn't lead to stale member
+  // values in ReflowInput!
+  void SetAvailableISize(nscoord aAvailableISize) {
+    mAvailableSize.ISize(mWritingMode) = aAvailableISize;
+  }
+  void SetAvailableBSize(nscoord aAvailableBSize) {
+    mAvailableSize.BSize(mWritingMode) = aAvailableBSize;
+  }
+
   nscoord& ComputedISize() { return mComputedSize.ISize(mWritingMode); }
   nscoord& ComputedBSize() { return mComputedSize.BSize(mWritingMode); }
   nscoord& ComputedMinISize() { return mComputedMinSize.ISize(mWritingMode); }
@@ -404,12 +415,9 @@ struct ReflowInput : public SizeComputationInput {
 
   // Cached pointers to the various style structs used during initialization.
   const nsStyleDisplay* mStyleDisplay = nullptr;
-  const nsStyleVisibility* mStyleVisibility = nullptr;
   const nsStylePosition* mStylePosition = nullptr;
   const nsStyleBorder* mStyleBorder = nullptr;
   const nsStyleMargin* mStyleMargin = nullptr;
-  const nsStylePadding* mStylePadding = nullptr;
-  const nsStyleText* mStyleText = nullptr;
 
   enum class BreakType : uint8_t {
     Auto,
@@ -835,9 +843,6 @@ struct ReflowInput : public SizeComputationInput {
     ComputedBSize() = aComputedBSize;
   }
 
-  void SetTruncated(const ReflowOutput& aMetrics,
-                    nsReflowStatus* aStatus) const;
-
   bool WillReflowAgainForClearance() const {
     return mDiscoveredClearance && *mDiscoveredClearance;
   }
@@ -872,21 +877,10 @@ struct ReflowInput : public SizeComputationInput {
                                        const nsMargin& aComputedOffsets,
                                        nsPoint* aPosition);
 
-  void ApplyRelativePositioning(nsPoint* aPosition) const {
-    ApplyRelativePositioning(mFrame, ComputedPhysicalOffsets(), aPosition);
-  }
-
   static void ApplyRelativePositioning(
       nsIFrame* aFrame, mozilla::WritingMode aWritingMode,
       const mozilla::LogicalMargin& aComputedOffsets,
       mozilla::LogicalPoint* aPosition, const nsSize& aContainerSize);
-
-  void ApplyRelativePositioning(mozilla::LogicalPoint* aPosition,
-                                const nsSize& aContainerSize) const {
-    ApplyRelativePositioning(mFrame, mWritingMode,
-                             ComputedLogicalOffsets(mWritingMode), aPosition,
-                             aContainerSize);
-  }
 
   // Resolve any block-axis 'auto' margins (if any) for an absolutely positioned
   // frame. aMargin and aOffsets are both outparams (though we only touch

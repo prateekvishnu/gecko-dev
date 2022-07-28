@@ -81,9 +81,6 @@ NS_IMPL_ISUPPORTS_INHERITED(PuppetWidget, nsBaseWidget,
 PuppetWidget::PuppetWidget(BrowserChild* aBrowserChild)
     : mBrowserChild(aBrowserChild),
       mMemoryPressureObserver(nullptr),
-      mDPI(-1),
-      mRounding(1),
-      mDefaultScale(-1),
       mEnabled(false),
       mVisible(false),
       mSizeMode(nsSizeMode_Normal),
@@ -400,9 +397,8 @@ nsresult PuppetWidget::SynthesizeNativeKeyEvent(
     return NS_ERROR_FAILURE;
   }
   mBrowserChild->SendSynthesizeNativeKeyEvent(
-      aNativeKeyboardLayout, aNativeKeyCode, aModifierFlags,
-      nsString(aCharacters), nsString(aUnmodifiedCharacters),
-      notifier.SaveObserver());
+      aNativeKeyboardLayout, aNativeKeyCode, aModifierFlags, aCharacters,
+      aUnmodifiedCharacters, notifier.SaveObserver());
   return NS_OK;
 }
 
@@ -1009,12 +1005,6 @@ bool PuppetWidget::NeedsPaint() {
   return mVisible;
 }
 
-float PuppetWidget::GetDPI() { return mDPI; }
-
-double PuppetWidget::GetDefaultScaleInternal() { return mDefaultScale; }
-
-int32_t PuppetWidget::RoundsWidgetCoordinatesTo() { return mRounding; }
-
 LayoutDeviceIntPoint PuppetWidget::GetChromeOffset() {
   if (!GetOwningBrowserChild()) {
     NS_WARNING("PuppetWidget without Tab does not have chrome information.");
@@ -1091,8 +1081,8 @@ void PuppetWidget::LookUpDictionary(
     return;
   }
 
-  mBrowserChild->SendLookUpDictionary(nsString(aText), aFontRangeArray,
-                                      aIsVertical, aPoint);
+  mBrowserChild->SendLookUpDictionary(aText, aFontRangeArray, aIsVertical,
+                                      aPoint);
 }
 
 bool PuppetWidget::HasPendingInputEvent() {

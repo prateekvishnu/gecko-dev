@@ -140,6 +140,7 @@
 #include "js/MemoryFunctions.h"
 #include "js/Modules.h"  // JS::GetModulePrivate, JS::SetModule{DynamicImport,Metadata,Resolve}Hook, JS::SetModulePrivate
 #include "js/Object.h"  // JS::GetClass, JS::GetCompartment, JS::GetReservedSlot, JS::SetReservedSlot
+#include "js/Principals.h"
 #include "js/Printf.h"
 #include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineFunctions, JS_DefineProperties, JS_DefineProperty, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_SetElement, JS_SetProperty, JS_SetPropertyById
 #include "js/PropertySpec.h"
@@ -174,6 +175,7 @@
 #include "vm/ArgumentsObject.h"
 #include "vm/Compression.h"
 #include "vm/ErrorObject.h"
+#include "vm/ErrorReporting.h"
 #include "vm/HelperThreads.h"
 #include "vm/JSAtom.h"
 #include "vm/JSContext.h"
@@ -181,6 +183,7 @@
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
 #include "vm/ModuleBuilder.h"  // js::ModuleBuilder
+#include "vm/Modules.h"
 #include "vm/Monitor.h"
 #include "vm/MutexIDs.h"
 #include "vm/Printer.h"        // QuoteString
@@ -581,7 +584,7 @@ JS::OffThreadToken* OffThreadJob::waitUntilDone(JSContext* cx) {
 }
 
 struct ShellCompartmentPrivate {
-  GCPtrObject grayRoot;
+  GCPtr<JSObject*> grayRoot;
 };
 
 struct MOZ_STACK_CLASS EnvironmentPreparer
@@ -613,9 +616,6 @@ JS_FOR_WASM_FEATURES(WASM_DEFAULT_FEATURE, WASM_DEFAULT_FEATURE,
 #undef WASM_DEFAULT_FEATURE
 #undef WASM_EXPERIMENTAL_FEATURE
 
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-bool shell::enableWasmSimdWormhole = false;
-#endif
 bool shell::enableWasmVerbose = false;
 bool shell::enableTestWasmAwaitTier2 = false;
 bool shell::enableSourcePragmas = true;
@@ -626,6 +626,7 @@ bool shell::enableWeakRefs = false;
 bool shell::enableToSource = false;
 bool shell::enablePropertyErrorMessageFix = false;
 bool shell::enableIteratorHelpers = false;
+bool shell::enableShadowRealms = false;
 #ifdef NIGHTLY_BUILD
 bool shell::enableArrayGrouping = true;
 #endif
@@ -1312,12 +1313,11 @@ static bool SetPromiseRejectionTrackerCallback(JSContext* cx, unsigned argc,
 }
 
 // clang-format off
-#define LIT(NAME) #NAME,
-static const char* telemetryNames[JS_TELEMETRY_END + 1] = {
-  MAP_JS_TELEMETRY(LIT)
-  "JS_TELEMETRY_END"
-};
+static const char* telemetryNames[static_cast<int>(JSMetric::Count)] = {
+#define LIT(NAME, _) #NAME,
+  FOR_EACH_JS_METRIC(LIT)
 #undef LIT
+};
 // clang-format on
 
 // Telemetry can be executed from multiple threads, and the callback is
@@ -1332,12 +1332,11 @@ class MOZ_RAII AutoLockTelemetry : public LockGuard<Mutex> {
 
 using TelemetryData = uint32_t;
 using TelemetryVec = Vector<TelemetryData, 0, SystemAllocPolicy>;
-static mozilla::Array<TelemetryVec, JS_TELEMETRY_END> telemetryResults;
-static void AccumulateTelemetryDataCallback(int id, uint32_t sample,
-                                            const char* key) {
+static mozilla::Array<TelemetryVec, size_t(JSMetric::Count)> telemetryResults;
+static void AccumulateTelemetryDataCallback(JSMetric id, uint32_t sample) {
   AutoLockTelemetry alt;
   // We ignore OOMs while writting teleemtry data.
-  if (telemetryResults[id].append(sample)) {
+  if (telemetryResults[static_cast<int>(id)].append(sample)) {
     return;
   }
 }
@@ -1358,7 +1357,7 @@ static void WriteTelemetryDataToDisk(const char* dir) {
     return true;
   };
 
-  for (size_t id = 0; id < JS_TELEMETRY_END; id++) {
+  for (size_t id = 0; id < size_t(JSMetric::Count); id++) {
     auto clear = MakeScopeExit([&] { telemetryResults[id].clearAndFree(); });
     if (!initOutput(telemetryNames[id])) {
       continue;
@@ -1708,8 +1707,8 @@ static bool CreateExternalArrayBuffer(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
-  if (bytes <= 0) {
-    JS_ReportErrorASCII(cx, "Size must be positive");
+  if (bytes < 0) {
+    JS_ReportErrorASCII(cx, "Size must be non-negative");
     return false;
   }
 
@@ -1888,7 +1887,7 @@ static bool Options(JSContext* cx, unsigned argc, Value* vp) {
       return false;
     }
 
-    RootedLinearString opt(cx, str->ensureLinear(cx));
+    Rooted<JSLinearString*> opt(cx, str->ensureLinear(cx));
     if (!opt) {
       return false;
     }
@@ -3920,7 +3919,7 @@ static bool Fuzzilli(JSContext* cx, unsigned argc, Value* vp) {
   if (!arg) {
     return false;
   }
-  RootedLinearString operation(cx, StringToLinearString(cx, arg));
+  Rooted<JSLinearString*> operation(cx, StringToLinearString(cx, arg));
   if (!operation) {
     return false;
   }
@@ -4245,6 +4244,7 @@ static void SetStandardRealmOptions(JS::RealmOptions& options) {
       .setToSourceEnabled(enableToSource)
       .setPropertyErrorMessageFixEnabled(enablePropertyErrorMessageFix)
       .setIteratorHelpersEnabled(enableIteratorHelpers)
+      .setShadowRealmsEnabled(enableShadowRealms)
 #ifdef NIGHTLY_BUILD
       .setArrayGroupingEnabled(enableArrayGrouping)
 #endif
@@ -5312,7 +5312,8 @@ static bool ParseModule(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
-  RootedObject module(cx, frontend::CompileModule(cx, options, srcBuf));
+  MainThreadErrorContext ec(cx);
+  RootedObject module(cx, frontend::CompileModule(cx, &ec, options, srcBuf));
   if (!module) {
     return false;
   }
@@ -5560,7 +5561,7 @@ static bool RegisterModule(JSContext* cx, unsigned argc, Value* vp) {
   Rooted<ModuleObject*> module(
       cx, args[1].toObject().as<ShellModuleObjectWrapper>().get());
 
-  RootedAtom specifier(cx, AtomizeString(cx, args[0].toString()));
+  Rooted<JSAtom*> specifier(cx, AtomizeString(cx, args[0].toString()));
   if (!specifier) {
     return false;
   }
@@ -5582,6 +5583,71 @@ static bool RegisterModule(JSContext* cx, unsigned argc, Value* vp) {
   }
   args.rval().setObject(*wrapper);
   return true;
+}
+
+static bool ClearModules(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  ShellContext* sc = GetShellContext(cx);
+  sc->moduleLoader->clearModules(cx);
+  args.rval().setUndefined();
+  return true;
+}
+
+static bool ModuleLink(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+
+  if (args.length() != 1 || !args[0].isObject()) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_INVALID_ARGS,
+                              "moduleLink");
+    return false;
+  }
+
+  RootedObject object(cx, UncheckedUnwrap(&args[0].toObject()));
+  if (!object->is<ShellModuleObjectWrapper>()) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_INVALID_ARGS,
+                              "moduleLink");
+    return false;
+  }
+
+  AutoRealm ar(cx, object);
+
+  Rooted<ModuleObject*> module(cx,
+                               object->as<ShellModuleObjectWrapper>().get());
+  if (!js::ModuleLink(cx, module)) {
+    return false;
+  }
+
+  args.rval().setUndefined();
+  return true;
+}
+
+static bool ModuleEvaluate(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+
+  if (args.length() != 1 || !args[0].isObject()) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_INVALID_ARGS,
+                              "moduleEvaluate");
+    return false;
+  }
+
+  RootedObject object(cx, UncheckedUnwrap(&args[0].toObject()));
+  if (!object->is<ShellModuleObjectWrapper>()) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_INVALID_ARGS,
+                              "moduleEvaluate");
+    return false;
+  }
+
+  {
+    AutoRealm ar(cx, object);
+
+    Rooted<ModuleObject*> module(cx,
+                                 object->as<ShellModuleObjectWrapper>().get());
+    if (!js::ModuleEvaluate(cx, module, args.rval())) {
+      return false;
+    }
+  }
+
+  return JS_WrapValue(cx, args.rval());
 }
 
 static ModuleEnvironmentObject* GetModuleInitialEnvironment(
@@ -5626,7 +5692,7 @@ static bool GetModuleEnvironmentNames(JSContext* cx, unsigned argc, Value* vp) {
   ids.eraseIfEqual(NameToId(cx->names().starNamespaceStar));
 
   uint32_t length = ids.length();
-  RootedArrayObject array(cx, NewDenseFullyAllocatedArray(cx, length));
+  Rooted<ArrayObject*> array(cx, NewDenseFullyAllocatedArray(cx, length));
   if (!array) {
     return false;
   }
@@ -5698,7 +5764,8 @@ static bool DumpAST(JSContext* cx, const JS::ReadOnlyCompileOptions& options,
                     js::frontend::ParseGoal goal) {
   using namespace js::frontend;
 
-  Parser<FullParseHandler, Unit> parser(cx, options, units, length,
+  MainThreadErrorContext ec(cx);
+  Parser<FullParseHandler, Unit> parser(cx, &ec, options, units, length,
                                         /* foldConstants = */ false,
                                         compilationState,
                                         /* syntaxParser = */ nullptr);
@@ -5717,10 +5784,6 @@ static bool DumpAST(JSContext* cx, const JS::ReadOnlyCompileOptions& options,
   if (goal == frontend::ParseGoal::Script) {
     pn = parser.parse();
   } else {
-    if (!GlobalObject::ensureModulePrototypesCreated(cx, cx->global())) {
-      return false;
-    }
-
     ModuleBuilder builder(cx, &parser);
 
     SourceExtent extent = SourceExtent::makeGlobalExtent(length);
@@ -5753,12 +5816,14 @@ template <typename Unit>
     return false;
   }
 
+  MainThreadErrorContext ec(cx);
   UniquePtr<frontend::ExtensibleCompilationStencil> stencil;
   if (goal == frontend::ParseGoal::Script) {
     stencil = frontend::CompileGlobalScriptToExtensibleStencil(
-        cx, input.get(), srcBuf, ScopeKind::Global);
+        cx, &ec, input.get(), srcBuf, ScopeKind::Global);
   } else {
-    stencil = frontend::ParseModuleToExtensibleStencil(cx, input.get(), srcBuf);
+    stencil =
+        frontend::ParseModuleToExtensibleStencil(cx, &ec, input.get(), srcBuf);
   }
 
   if (!stencil) {
@@ -5852,7 +5917,7 @@ static bool FrontendTest(JSContext* cx, unsigned argc, Value* vp,
   }
 
   JSString* scriptContents = args[0].toString();
-  RootedLinearString linearString(cx, scriptContents->ensureLinear(cx));
+  Rooted<JSLinearString*> linearString(cx, scriptContents->ensureLinear(cx));
   if (!linearString) {
     return false;
   }
@@ -5921,11 +5986,12 @@ static bool FrontendTest(JSContext* cx, unsigned argc, Value* vp,
             return false;
           }
 
+          MainThreadErrorContext ec(cx);
           Rooted<frontend::CompilationInput> input(
               cx, frontend::CompilationInput(options));
           UniquePtr<frontend::ExtensibleCompilationStencil> stencil;
           if (!Smoosh::tryCompileGlobalScriptToExtensibleStencil(
-                  cx, input.get(), srcBuf, stencil)) {
+                  cx, &ec, input.get(), srcBuf, stencil)) {
             return false;
           }
           if (!stencil) {
@@ -6064,8 +6130,9 @@ static bool SyntaxParse(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
+  MainThreadErrorContext ec(cx);
   Parser<frontend::SyntaxParseHandler, char16_t> parser(
-      cx, options, chars, length,
+      cx, &ec, options, chars, length,
       /* foldConstants = */ false, compilationState,
       /* syntaxParser = */ nullptr);
   if (!parser.checkOptions()) {
@@ -7215,11 +7282,11 @@ static bool GetSelfHostedValue(JSContext* cx, unsigned argc, Value* vp) {
                               JSSMSG_INVALID_ARGS, "getSelfHostedValue");
     return false;
   }
-  RootedAtom srcAtom(cx, ToAtom<CanGC>(cx, args[0]));
+  Rooted<JSAtom*> srcAtom(cx, ToAtom<CanGC>(cx, args[0]));
   if (!srcAtom) {
     return false;
   }
-  RootedPropertyName srcName(cx, srcAtom->asPropertyName());
+  Rooted<PropertyName*> srcName(cx, srcAtom->asPropertyName());
   return GlobalObject::getIntrinsicValue(cx, cx->global(), srcName,
                                          args.rval());
 }
@@ -7902,7 +7969,7 @@ class StreamCacheEntryObject : public NativeObject {
       return false;
     }
 
-    RootedNativeObject obj(
+    Rooted<NativeObject*> obj(
         cx, NewObjectWithGivenProto<StreamCacheEntryObject>(cx, nullptr));
     if (!obj) {
       return false;
@@ -8734,10 +8801,8 @@ static bool WasmLoop(JSContext* cx, unsigned argc, Value* vp) {
     }
 
     Rooted<TypedArrayObject*> typedArray(cx, &ret->as<TypedArrayObject>());
-    RootedWasmInstanceObject instanceObj(cx);
-    // No additional compile options here, we don't need them for this use case.
-    RootedValue maybeOptions(cx);
-    if (!wasm::Eval(cx, typedArray, importObj, maybeOptions, &instanceObj)) {
+    Rooted<WasmInstanceObject*> instanceObj(cx);
+    if (!wasm::Eval(cx, typedArray, importObj, &instanceObj)) {
       // Clear any pending exceptions, we don't care about them
       cx->clearPendingException();
     }
@@ -9338,6 +9403,18 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "registerModule(specifier, module)",
 "  Register a module with the module loader, so that subsequent import from\n"
 "  |specifier| will resolve to |module|.  Returns |module|."),
+
+    JS_FN_HELP("clearModules", ClearModules, 0, 0,
+"clearModules()",
+"  Clear knowledge of all loaded modules."),
+
+    JS_FN_HELP("moduleLink", ModuleLink, 1, 0,
+"moduleLink(moduleOjbect)",
+"  Link a module graph, performing the spec's Link method."),
+
+    JS_FN_HELP("moduleEvaluate", ModuleEvaluate, 1, 0,
+"moduleEvaluate(moduleOjbect)",
+"  Evaluate a module graph, performing the spec's Evaluate method."),
 
     JS_FN_HELP("getModuleEnvironmentNames", GetModuleEnvironmentNames, 1, 0,
 "getModuleEnvironmentNames(module)",
@@ -9993,7 +10070,7 @@ static bool PrintEnumeratedHelp(JSContext* cx, HandleObject obj,
       if (!JSString::ensureLinear(cx, v.toString())) {
         return false;
       }
-      RootedLinearString input(cx, &v.toString()->asLinear());
+      Rooted<JSLinearString*> input(cx, &v.toString()->asLinear());
       if (!ExecuteRegExpLegacy(cx, nullptr, regex, input, &ignored, true, &v)) {
         return false;
       }
@@ -10991,21 +11068,12 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
                strcmp(str, "baseline+optimized") == 0) {
       MOZ_ASSERT(enableWasmBaseline);
       MOZ_ASSERT(enableWasmOptimizing);
-#ifdef ENABLE_WASM_CRANELIFT
-    } else if (strcmp(str, "cranelift") == 0) {
-      enableWasmBaseline = false;
-      enableWasmOptimizing = true;
-    } else if (strcmp(str, "baseline+cranelift") == 0) {
-      MOZ_ASSERT(enableWasmBaseline);
-      enableWasmOptimizing = true;
-#else
     } else if (strcmp(str, "ion") == 0) {
       enableWasmBaseline = false;
       enableWasmOptimizing = true;
     } else if (strcmp(str, "baseline+ion") == 0) {
       MOZ_ASSERT(enableWasmBaseline);
       enableWasmOptimizing = true;
-#endif
     } else {
       return OptionFailure("wasm-compiler", str);
     }
@@ -11022,9 +11090,6 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
 #undef WASM_DEFAULT_FEATURE
 #undef WASM_EXPERIMENTAL_FEATURE
 
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-  enableWasmSimdWormhole = op.getBoolOption("wasm-simd-wormhole");
-#endif
   enableWasmVerbose = op.getBoolOption("wasm-verbose");
   enableTestWasmAwaitTier2 = op.getBoolOption("test-wasm-await-tier2");
   enableSourcePragmas = !op.getBoolOption("no-source-pragmas");
@@ -11037,6 +11102,7 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
   enablePropertyErrorMessageFix =
       !op.getBoolOption("disable-property-error-message-fix");
   enableIteratorHelpers = op.getBoolOption("enable-iterator-helpers");
+  enableShadowRealms = op.getBoolOption("enable-shadow-realms");
 #ifdef NIGHTLY_BUILD
   enableArrayGrouping = op.getBoolOption("enable-array-grouping");
 #endif
@@ -11054,21 +11120,12 @@ static bool SetContextOptions(JSContext* cx, const OptionParser& op) {
       .setWasm(enableWasm)
       .setWasmForTrustedPrinciples(enableWasm)
       .setWasmBaseline(enableWasmBaseline)
-#if defined(ENABLE_WASM_CRANELIFT)
-      .setWasmCranelift(enableWasmOptimizing)
-      .setWasmIon(false)
-#else
-      .setWasmCranelift(false)
       .setWasmIon(enableWasmOptimizing)
-#endif
 
 #define WASM_FEATURE(NAME, ...) .setWasm##NAME(enableWasm##NAME)
           JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE, WASM_FEATURE)
 #undef WASM_FEATURE
 
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-      .setWasmSimdWormhole(enableWasmSimdWormhole)
-#endif
       .setWasmVerbose(enableWasmVerbose)
       .setTestWasmAwaitTier2(enableTestWasmAwaitTier2)
       .setSourcePragmas(enableSourcePragmas)
@@ -11464,20 +11521,11 @@ static void SetWorkerContextOptions(JSContext* cx) {
       .setAsmJS(enableAsmJS)
       .setWasm(enableWasm)
       .setWasmBaseline(enableWasmBaseline)
-#if defined(ENABLE_WASM_CRANELIFT)
-      .setWasmCranelift(enableWasmOptimizing)
-      .setWasmIon(false)
-#else
-      .setWasmCranelift(false)
       .setWasmIon(enableWasmOptimizing)
-#endif
 #define WASM_FEATURE(NAME, ...) .setWasm##NAME(enableWasm##NAME)
           JS_FOR_WASM_FEATURES(WASM_FEATURE, WASM_FEATURE, WASM_FEATURE)
 #undef WASM_FEATURE
 
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-      .setWasmSimdWormhole(enableWasmSimdWormhole)
-#endif
       .setWasmVerbose(enableWasmVerbose)
       .setTestWasmAwaitTier2(enableTestWasmAwaitTier2)
       .setSourcePragmas(enableSourcePragmas);
@@ -11570,7 +11618,7 @@ static void SetWorkerContextOptions(JSContext* cx) {
     return false;
   }
 
-  RootedArrayObject resultObj(cx, &obj->as<ArrayObject>());
+  Rooted<ArrayObject*> resultObj(cx, &obj->as<ArrayObject>());
   while (true) {
     bool done = SetIteratorObject::next(iterObj, resultObj);
     if (done) {
@@ -11601,18 +11649,11 @@ static void SetWorkerContextOptions(JSContext* cx) {
 }
 
 static int Shell(JSContext* cx, OptionParser* op) {
-  if (JS::TraceLoggerSupported()) {
-    JS::StartTraceLogger(cx);
-  }
 #ifdef JS_STRUCTURED_SPEW
   cx->spewer().enableSpewing();
 #endif
 
   auto exitShell = MakeScopeExit([&] {
-    if (JS::TraceLoggerSupported()) {
-      JS::SpewTraceLoggerForCurrentProcess();
-      JS::StopTraceLogger(cx);
-    }
 #ifdef JS_STRUCTURED_SPEW
     cx->spewer().disableSpewing();
 #endif
@@ -12006,13 +12047,8 @@ int main(int argc, char** argv) {
       !op.addStringOption(
           '\0', "wasm-compiler", "[option]",
           "Choose to enable a subset of the wasm compilers, valid options are "
-          "'none', 'baseline', 'ion', 'cranelift', 'optimizing', "
-          "'baseline+ion', "
-          "'baseline+cranelift', 'baseline+optimizing'. Choosing 'ion' when "
-          "Ion is "
-          "not available or 'cranelift' when Cranelift is not available will "
-          "fail; "
-          "use 'optimizing' for cross-compiler compatibility.") ||
+          "'none', 'baseline', 'ion', 'optimizing', "
+          "'baseline+ion', 'baseline+optimizing'.") ||
       !op.addBoolOption('\0', "wasm-verbose",
                         "Enable WebAssembly verbose logging") ||
       !op.addBoolOption('\0', "disable-wasm-huge-memory",
@@ -12038,14 +12074,8 @@ int main(int argc, char** argv) {
 #undef WASM_DEFAULT_FEATURE
 #undef WASM_TENTATIVE_FEATURE
 #undef WASM_EXPERIMENTAL_FEATURE
-#ifdef ENABLE_WASM_SIMD_WORMHOLE
-          !op.addBoolOption('\0', "wasm-simd-wormhole",
-                            "Enable wasm SIMD wormhole (UTSL)") ||
-#else
-          !op.addBoolOption('\0', "wasm-simd-wormhole", "No-op") ||
-#endif
-      !op.addBoolOption('\0', "no-native-regexp",
-                        "Disable native regexp compilation") ||
+          !op.addBoolOption('\0', "no-native-regexp",
+                            "Disable native regexp compilation") ||
       !op.addIntOption(
           '\0', "regexp-warmup-threshold", "COUNT",
           "Wait for COUNT invocations before compiling regexps to native code "
@@ -12071,6 +12101,7 @@ int main(int argc, char** argv) {
                         "property of null or undefined") ||
       !op.addBoolOption('\0', "enable-iterator-helpers",
                         "Enable iterator helpers") ||
+      !op.addBoolOption('\0', "enable-shadow-realms", "Enable ShadowRealms") ||
       !op.addBoolOption('\0', "enable-array-grouping",
                         "Enable Array Grouping") ||
 #ifdef ENABLE_CHANGE_ARRAY_BY_COPY
@@ -12631,6 +12662,7 @@ int main(int argc, char** argv) {
   // Waiting is allowed on the shell's main thread, for now.
   JS_SetFutexCanWait(cx);
   JS::SetWarningReporter(cx, WarningReporter);
+
   if (!SetContextOptions(cx, op)) {
     return 1;
   }
@@ -12773,10 +12805,9 @@ int main(int argc, char** argv) {
                            WASM_EXPERIMENTAL_FEATURE)
 #  undef WASM_DEFAULT_FEATURE
 #  undef WASM_EXPERIMENTAL_FEATURE
-      // Feature selection options
-      "--wasm-simd-wormhole",
       // Compiler selection options
-      "--test-wasm-await-tier2", NULL};
+      "--test-wasm-await-tier2",
+      NULL};
   for (const char** p = &to_propagate[0]; *p; p++) {
     if (op.getBoolOption(&(*p)[2] /* 2 => skip the leading '--' */)) {
       if (!sCompilerProcessFlags.append(*p)) {
@@ -12799,9 +12830,8 @@ int main(int argc, char** argv) {
     static char buf[n_avail];
     // `n_needed` depends on the compiler name specified.  However, it can't
     // be arbitrarily long, since previous flag-checking should have limited
-    // it to a set of known possibilities: "baseline", "ion", "cranelift",
-    // "baseline+ion", "baseline+cranelift", etc.  Still, assert this for
-    // safety.
+    // it to a set of known possibilities: "baseline", "ion",
+    // "baseline+ion",  Still, assert this for safety.
     MOZ_RELEASE_ASSERT(n_needed < n_avail);
     memset(buf, 0, sizeof(buf));
     SprintfBuf(buf, n_avail, "--%s=%s", "wasm-compiler", wasm_compiler);

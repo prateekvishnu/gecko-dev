@@ -685,6 +685,8 @@ static bool IsPopupBlocked(Document* aDoc) {
 }
 
 nsresult HTMLInputElement::InitColorPicker() {
+  MOZ_ASSERT(IsMutable());
+
   if (mPickerRunning) {
     NS_WARNING("Just one nsIColorPicker is allowed");
     return NS_ERROR_FAILURE;
@@ -729,6 +731,8 @@ nsresult HTMLInputElement::InitColorPicker() {
 }
 
 nsresult HTMLInputElement::InitFilePicker(FilePickerType aType) {
+  MOZ_ASSERT(IsMutable());
+
   if (mPickerRunning) {
     NS_WARNING("Just one nsIFilePicker is allowed");
     return NS_ERROR_FAILURE;
@@ -2520,7 +2524,11 @@ void HTMLInputElement::AfterSetFilesOrDirectories(bool aSetValueChanged) {
     }
   }
 
-  UpdateFileList();
+  // Null out |mFileData->mFileList| to return a new file list when asked for.
+  // Don't clear it since the file list might come from the user via SetFiles.
+  if (mFileData->mFileList) {
+    mFileData->mFileList = nullptr;
+  }
 
   if (aSetValueChanged) {
     SetValueChanged(true);
@@ -2553,7 +2561,11 @@ FileList* HTMLInputElement::GetFiles() {
 
   if (!mFileData->mFileList) {
     mFileData->mFileList = new FileList(static_cast<nsIContent*>(this));
-    UpdateFileList();
+    for (const OwningFileOrDirectory& item : GetFilesOrDirectoriesInternal()) {
+      if (item.IsFile()) {
+        mFileData->mFileList->Append(item.GetAsFile());
+      }
+    }
   }
 
   return mFileData->mFileList;
@@ -2564,14 +2576,10 @@ void HTMLInputElement::SetFiles(FileList* aFiles) {
     return;
   }
 
-  // Clear |mFileData->mFileList| to omit |UpdateFileList|
-  if (mFileData->mFileList) {
-    mFileData->mFileList->Clear();
-    mFileData->mFileList = nullptr;
-  }
-
   // Update |mFileData->mFilesOrDirectories|
   SetFiles(aFiles, true);
+
+  MOZ_ASSERT(!mFileData->mFileList, "Should've cleared the existing file list");
 
   // Update |mFileData->mFileList| without copy
   mFileData->mFileList = aFiles;
@@ -2594,23 +2602,6 @@ void HTMLInputElement::HandleNumberControlSpin(void* aData) {
   } else {
     input->StepNumberControlForUserEvent(
         input->mNumberControlSpinnerSpinsUp ? 1 : -1);
-  }
-}
-
-void HTMLInputElement::UpdateFileList() {
-  MOZ_ASSERT(mFileData);
-
-  if (mFileData->mFileList) {
-    mFileData->mFileList->Clear();
-
-    const nsTArray<OwningFileOrDirectory>& array =
-        GetFilesOrDirectoriesInternal();
-
-    for (uint32_t i = 0; i < array.Length(); ++i) {
-      if (array[i].IsFile()) {
-        mFileData->mFileList->Append(array[i].GetAsFile());
-      }
-    }
   }
 }
 
@@ -2728,6 +2719,12 @@ nsresult HTMLInputElement::SetValueInternal(
       if (mType == FormControlType::InputHidden) {
         SetValueChanged(true);
       }
+
+      // Make sure to keep track of the last value change not being interactive,
+      // just in case this used to be another kind of editable input before.
+      // Note that a checked change _could_ really be interactive, but we don't
+      // keep track of that elsewhere so seems fine to just do this.
+      SetLastValueChangeWasInteractive(false);
 
       // Treat value == defaultValue for other input elements.
       return nsGenericHTMLFormControlElementWithState::SetAttr(
@@ -3490,14 +3487,9 @@ bool HTMLInputElement::ShouldPreventDOMActivateDispatch(
 nsresult HTMLInputElement::MaybeInitPickers(EventChainPostVisitor& aVisitor) {
   // Open a file picker when we receive a click on a <input type='file'>, or
   // open a color picker when we receive a click on a <input type='color'>.
-  // A click is handled in the following cases:
-  // - preventDefault() has not been called (or something similar);
-  // - it's the left mouse button.
+  // A click is handled if it's the left mouse button.
   // We do not prevent non-trusted click because authors can already use
   // .click(). However, the pickers will follow the rules of popup-blocking.
-  if (aVisitor.mEvent->DefaultPrevented()) {
-    return NS_OK;
-  }
   WidgetMouseEvent* mouseEvent = aVisitor.mEvent->AsMouseEvent();
   if (!(mouseEvent && mouseEvent->IsLeftClickEvent())) {
     return NS_OK;
@@ -4055,7 +4047,10 @@ nsresult HTMLInputElement::PostHandleEvent(EventChainPostVisitor& aVisitor) {
     PostHandleEventForRangeThumb(aVisitor);
   }
 
-  return MaybeInitPickers(aVisitor);
+  if (!preventDefault) {
+    MOZ_TRY(MaybeInitPickers(aVisitor));
+  }
+  return NS_OK;
 }
 
 enum class RadioButtonMove { Back, Forward, None };
@@ -5096,6 +5091,17 @@ bool HTMLInputElement::IsDateTimeTypeSupported(
     default:
       return false;
   }
+}
+
+void HTMLInputElement::GetLastInteractiveValue(nsAString& aValue) {
+  if (mLastValueChangeWasInteractive) {
+    return GetValue(aValue, CallerType::System);
+  }
+  if (TextControlState* state = GetEditorState()) {
+    return aValue.Assign(
+        state->LastInteractiveValueIfLastChangeWasNonInteractive());
+  }
+  aValue.Truncate();
 }
 
 bool HTMLInputElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,

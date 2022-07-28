@@ -200,20 +200,8 @@ fn prepare_prim_for_render(
             data_stores,
             scratch,
         ) {
-            if prim_instance.is_chased() {
-                info!("\tconsidered invisible");
-            }
             return false;
         }
-
-        if prim_instance.is_chased() {
-            info!("\tconsidered visible and ready with local pos {:?}", prim_rect.min);
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        prim_instance.prepared_frame_id = frame_state.rg_builder.frame_id();
     }
 
     prepare_interned_prim_for_render(
@@ -246,7 +234,6 @@ fn prepare_interned_prim_for_render(
     scratch: &mut PrimitiveScratchBuffer,
 ) {
     let prim_spatial_node_index = cluster.spatial_node_index;
-    let is_chased = prim_instance.is_chased();
     let device_pixel_scale = frame_state.surfaces[pic_context.surface_index.0].device_pixel_scale;
 
     match &mut prim_instance.kind {
@@ -261,9 +248,6 @@ fn prepare_interned_prim_for_render(
             line_dec_data.update(common_data, frame_state);
 
             // Work out the device pixel size to be used to cache this line decoration.
-            if is_chased {
-                info!("\tline decoration key={:?}", line_dec_data.cache_key);
-            }
 
             // If we have a cache key, it's a wavy / dashed / dotted line. Otherwise, it's
             // a simple solid line.
@@ -769,7 +753,7 @@ fn prepare_interned_prim_for_render(
                         frame_context.spatial_tree,
                         prim_spatial_node_index,
                         local_prim_rect,
-                        &prim_instance.vis.combined_local_clip_rect,
+                        &prim_instance.vis.clip_chain.local_clip_rect,
                         dirty_rect,
                         plane_split_anchor,
                     );
@@ -868,7 +852,8 @@ fn decompose_repeated_gradient(
     // produce primitives that are partially covering the original image
     // rect and we want to clip these extra parts out.
     if let Some(tight_clip_rect) = prim_vis
-        .combined_local_clip_rect
+        .clip_chain
+        .local_clip_rect
         .intersection(prim_local_rect) {
 
         let visible_rect = compute_conservative_visible_rect(
@@ -1073,7 +1058,6 @@ fn update_clip_task_for_brush(
                     &dirty_world_rect,
                     &mut data_stores.clip,
                     false,
-                    instance.is_chased(),
                 );
 
             let clip_mask_kind = update_brush_segment_clip_task(
@@ -1108,10 +1092,6 @@ pub fn update_clip_task(
 ) -> bool {
     let device_pixel_scale = frame_state.surfaces[pic_context.surface_index.0].device_pixel_scale;
 
-    if instance.is_chased() {
-        info!("\tupdating clip task with pic rect {:?}", instance.vis.clip_chain.pic_coverage_rect);
-    }
-
     build_segments_if_needed(
         instance,
         frame_state,
@@ -1138,9 +1118,6 @@ pub fn update_clip_task(
         &mut scratch.clip_mask_instances,
         device_pixel_scale,
     ) {
-        if instance.is_chased() {
-            info!("\tsegment tasks have been created for clipping: {:?}", clip_task_index);
-        }
         clip_task_index
     } else if instance.vis.clip_chain.needs_mask {
         // Get a minimal device space rect, clipped to the screen that we
@@ -1171,10 +1148,6 @@ pub fn update_clip_task(
             frame_context.fb_config,
             &mut frame_state.surface_builder,
         );
-        if instance.is_chased() {
-            info!("\tcreated task {:?} with device rect {:?}",
-                clip_task_id, device_rect);
-        }
         // Set the global clip mask instance for this primitive.
         let clip_task_index = ClipTaskIndex(scratch.clip_mask_instances.len() as _);
         scratch.clip_mask_instances.push(ClipMaskKind::Mask(clip_task_id));
@@ -1185,9 +1158,6 @@ pub fn update_clip_task(
         );
         clip_task_index
     } else {
-        if instance.is_chased() {
-            info!("\tno mask is needed");
-        }
         ClipTaskIndex::INVALID
     };
 
@@ -1249,7 +1219,6 @@ pub fn update_brush_segment_clip_task(
 
 fn write_brush_segment_description(
     prim_local_rect: LayoutRect,
-    prim_local_clip_rect: LayoutRect,
     clip_chain: &ClipChainInstance,
     segment_builder: &mut SegmentBuilder,
     clip_store: &ClipStore,
@@ -1264,7 +1233,7 @@ fn write_brush_segment_description(
     segment_builder.initialize(
         prim_local_rect,
         None,
-        prim_local_clip_rect
+        clip_chain.local_clip_rect
     );
 
     // Segment the primitive on all the local-space clip sources that we can.
@@ -1409,7 +1378,6 @@ fn build_segments_if_needed(
 
         if write_brush_segment_description(
             prim_local_rect,
-            instance.clip_set.local_clip_rect,
             prim_clip_chain,
             &mut frame_state.segment_builder,
             frame_state.clip_store,

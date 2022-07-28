@@ -6,7 +6,6 @@
 
 #include "vm/StringType-inl.h"
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/Latin1.h"
@@ -55,7 +54,6 @@
 
 using namespace js;
 
-using mozilla::ArrayEqual;
 using mozilla::AsWritableChars;
 using mozilla::ConvertLatin1toUtf16;
 using mozilla::IsAsciiDigit;
@@ -216,25 +214,24 @@ mozilla::Maybe<mozilla::Tuple<size_t, size_t> > JSString::encodeUTF8Partial(
         }
         pendingLeadSurrogate = 0;
       }
-      if (src.IsEmpty()) {
-        return mozilla::Some(mozilla::MakeTuple(totalRead, totalWritten));
-      }
-      char16_t last = src[src.Length() - 1];
-      if (unicode::IsLeadSurrogate(last)) {
-        src = src.To(src.Length() - 1);
-        pendingLeadSurrogate = last;
-      } else {
-        MOZ_ASSERT(!pendingLeadSurrogate);
-      }
-      size_t read;
-      size_t written;
-      mozilla::Tie(read, written) =
-          mozilla::ConvertUtf16toUtf8Partial(src, buffer);
-      buffer = buffer.From(written);
-      totalRead += read;
-      totalWritten += written;
-      if (read < src.Length()) {
-        return mozilla::Some(mozilla::MakeTuple(totalRead, totalWritten));
+      if (!src.IsEmpty()) {
+        char16_t last = src[src.Length() - 1];
+        if (unicode::IsLeadSurrogate(last)) {
+          src = src.To(src.Length() - 1);
+          pendingLeadSurrogate = last;
+        } else {
+          MOZ_ASSERT(!pendingLeadSurrogate);
+        }
+        size_t read;
+        size_t written;
+        mozilla::Tie(read, written) =
+            mozilla::ConvertUtf16toUtf8Partial(src, buffer);
+        buffer = buffer.From(written);
+        totalRead += read;
+        totalWritten += written;
+        if (read < src.Length()) {
+          return mozilla::Some(mozilla::MakeTuple(totalRead, totalWritten));
+        }
       }
     }
     if (stack.empty()) {
@@ -1041,7 +1038,7 @@ bool js::EqualChars(const JSLinearString* str1, const JSLinearString* str2) {
   AutoCheckCannotGC nogc;
   if (str1->hasTwoByteChars()) {
     if (str2->hasTwoByteChars()) {
-      return ArrayEqual(str1->twoByteChars(nogc), str2->twoByteChars(nogc),
+      return EqualChars(str1->twoByteChars(nogc), str2->twoByteChars(nogc),
                         len);
     }
 
@@ -1049,7 +1046,7 @@ bool js::EqualChars(const JSLinearString* str1, const JSLinearString* str2) {
   }
 
   if (str2->hasLatin1Chars()) {
-    return ArrayEqual(str1->latin1Chars(nogc), str2->latin1Chars(nogc), len);
+    return EqualChars(str1->latin1Chars(nogc), str2->latin1Chars(nogc), len);
   }
 
   return EqualChars(str1->latin1Chars(nogc), str2->twoByteChars(nogc), len);
@@ -1065,7 +1062,7 @@ bool js::HasSubstringAt(JSLinearString* text, JSLinearString* pat,
   if (text->hasLatin1Chars()) {
     const Latin1Char* textChars = text->latin1Chars(nogc) + start;
     if (pat->hasLatin1Chars()) {
-      return ArrayEqual(textChars, pat->latin1Chars(nogc), patLen);
+      return EqualChars(textChars, pat->latin1Chars(nogc), patLen);
     }
 
     return EqualChars(textChars, pat->twoByteChars(nogc), patLen);
@@ -1073,7 +1070,7 @@ bool js::HasSubstringAt(JSLinearString* text, JSLinearString* pat,
 
   const char16_t* textChars = text->twoByteChars(nogc) + start;
   if (pat->hasTwoByteChars()) {
-    return ArrayEqual(textChars, pat->twoByteChars(nogc), patLen);
+    return EqualChars(textChars, pat->twoByteChars(nogc), patLen);
   }
 
   return EqualChars(pat->latin1Chars(nogc), textChars, patLen);
@@ -1204,7 +1201,7 @@ bool js::StringEqualsAscii(JSLinearString* str, const char* asciiBytes,
 
   AutoCheckCannotGC nogc;
   return str->hasLatin1Chars()
-             ? ArrayEqual(latin1, str->latin1Chars(nogc), length)
+             ? EqualChars(latin1, str->latin1Chars(nogc), length)
              : EqualChars(latin1, str->twoByteChars(nogc), length);
 }
 
@@ -1305,7 +1302,7 @@ static void MarkStringAndBasesNonDeduplicatable(JSLinearString* s) {
 }
 
 bool AutoStableStringChars::init(JSContext* cx, JSString* s) {
-  RootedLinearString linearString(cx, s->ensureLinear(cx));
+  Rooted<JSLinearString*> linearString(cx, s->ensureLinear(cx));
   if (!linearString) {
     return false;
   }
@@ -1334,7 +1331,7 @@ bool AutoStableStringChars::init(JSContext* cx, JSString* s) {
 }
 
 bool AutoStableStringChars::initTwoByte(JSContext* cx, JSString* s) {
-  RootedLinearString linearString(cx, s->ensureLinear(cx));
+  Rooted<JSLinearString*> linearString(cx, s->ensureLinear(cx));
   if (!linearString) {
     return false;
   }
@@ -1360,7 +1357,7 @@ bool AutoStableStringChars::initTwoByte(JSContext* cx, JSString* s) {
   return true;
 }
 
-bool AutoStableStringChars::baseIsInline(HandleLinearString linearString) {
+bool AutoStableStringChars::baseIsInline(Handle<JSLinearString*> linearString) {
   JSString* base = linearString;
   while (base->isDependent()) {
     base = base->asDependent().base();
@@ -1393,7 +1390,7 @@ T* AutoStableStringChars::allocOwnChars(JSContext* cx, size_t count) {
 }
 
 bool AutoStableStringChars::copyAndInflateLatin1Chars(
-    JSContext* cx, HandleLinearString linearString) {
+    JSContext* cx, Handle<JSLinearString*> linearString) {
   char16_t* chars = allocOwnChars<char16_t>(cx, linearString->length());
   if (!chars) {
     return false;
@@ -1407,8 +1404,8 @@ bool AutoStableStringChars::copyAndInflateLatin1Chars(
   return true;
 }
 
-bool AutoStableStringChars::copyLatin1Chars(JSContext* cx,
-                                            HandleLinearString linearString) {
+bool AutoStableStringChars::copyLatin1Chars(
+    JSContext* cx, Handle<JSLinearString*> linearString) {
   size_t length = linearString->length();
   JS::Latin1Char* chars = allocOwnChars<JS::Latin1Char>(cx, length);
   if (!chars) {
@@ -1423,8 +1420,8 @@ bool AutoStableStringChars::copyLatin1Chars(JSContext* cx,
   return true;
 }
 
-bool AutoStableStringChars::copyTwoByteChars(JSContext* cx,
-                                             HandleLinearString linearString) {
+bool AutoStableStringChars::copyTwoByteChars(
+    JSContext* cx, Handle<JSLinearString*> linearString) {
   size_t length = linearString->length();
   char16_t* chars = allocOwnChars<char16_t>(cx, length);
   if (!chars) {
@@ -1839,7 +1836,7 @@ MOZ_ALWAYS_INLINE JSString* ExternalStringCache::lookup(const char16_t* chars,
     // Compare the chars. Don't do this for long strings as it will be
     // faster to allocate a new external string.
     static const size_t MaxLengthForCharComparison = 100;
-    if (len <= MaxLengthForCharComparison && ArrayEqual(chars, strChars, len)) {
+    if (len <= MaxLengthForCharComparison && EqualChars(chars, strChars, len)) {
       return str;
     }
   }
@@ -1933,11 +1930,11 @@ struct RepresentativeExternalString : public JSExternalStringCallbacks {
 static const RepresentativeExternalString RepresentativeExternalStringCallbacks;
 
 template <typename CheckString, typename CharT>
-static bool FillWithRepresentatives(JSContext* cx, HandleArrayObject array,
+static bool FillWithRepresentatives(JSContext* cx, Handle<ArrayObject*> array,
                                     uint32_t* index, const CharT* chars,
                                     size_t len, size_t fatInlineMaxLength,
                                     const CheckString& check) {
-  auto AppendString = [&check](JSContext* cx, HandleArrayObject array,
+  auto AppendString = [&check](JSContext* cx, Handle<ArrayObject*> array,
                                uint32_t* index, HandleString s) {
     MOZ_ASSERT(check(s));
     (void)check;  // silence clang -Wunused-lambda-capture in opt builds
@@ -2064,7 +2061,8 @@ static bool FillWithRepresentatives(JSContext* cx, HandleArrayObject array,
 }
 
 /* static */
-bool JSString::fillWithRepresentatives(JSContext* cx, HandleArrayObject array) {
+bool JSString::fillWithRepresentatives(JSContext* cx,
+                                       Handle<ArrayObject*> array) {
   uint32_t index = 0;
 
   auto CheckTwoByte = [](JSString* str) { return str->hasTwoByteChars(); };

@@ -32,6 +32,7 @@
 #include "ScopedGLHelpers.h"
 #include "GLBlitHelper.h"
 #include "GLReadTexImageHelper.h"
+#include "nsGtkUtils.h"
 
 #include "mozilla/layers/LayersSurfaces.h"
 #include "mozilla/ScopeExit.h"
@@ -69,6 +70,7 @@ RefPtr<GLContext> ClaimSnapshotGLContext() {
       LOGDMABUF(("GetAsSourceSurface: Failed to create snapshot GLContext."));
       return nullptr;
     }
+    sSnapshotContext->mOwningThreadId = Nothing();  // No singular owner.
   }
   if (!sSnapshotContext->MakeCurrent()) {
     LOGDMABUF(("GetAsSourceSurface: Failed to make GLContext current."));
@@ -380,6 +382,11 @@ bool DMABufSurfaceRGBA::Create(int aWidth, int aHeight,
   LOGDMABUF(("DMABufSurfaceRGBA::Create() UID %d size %d x %d\n", mUID, mWidth,
              mHeight));
 
+  if (!GetDMABufDevice()->GetGbmDevice()) {
+    LOGDMABUF(("    Missing GbmDevice!"));
+    return false;
+  }
+
   mGmbFormat = GetDMABufDevice()->GetGbmFormat(mSurfaceFlags & DMABUF_ALPHA);
   if (!mGmbFormat) {
     // Requested DRM format is not supported.
@@ -462,8 +469,9 @@ bool DMABufSurfaceRGBA::Create(mozilla::gl::GLContext* aGLContext,
     return false;
   }
 
-  LOGDMABUF(("  imported size %d x %d format %x planes %d", mWidth, mHeight,
-             mDrmFormats[0], mBufferPlaneCount));
+  LOGDMABUF(("  imported size %d x %d format %x planes %d modifiers %" PRIx64,
+             mWidth, mHeight, mDrmFormats[0], mBufferPlaneCount,
+             mBufferModifiers[0]));
   return true;
 }
 
@@ -644,12 +652,12 @@ void DMABufSurfaceRGBA::ReleaseTextures() {
   LOGDMABUF(("DMABufSurfaceRGBA::ReleaseTextures() UID %d\n", mUID));
   FenceDelete();
 
-  if (!mTexture) {
+  if (!mTexture && !mEGLImage) {
     return;
   }
 
   if (!mGL) {
-#ifdef NIGHTLY
+#ifdef NIGHTLY_BUILD
     MOZ_DIAGNOSTIC_ASSERT(mGL, "Missing GL context!");
 #else
     NS_WARNING(
@@ -665,13 +673,13 @@ void DMABufSurfaceRGBA::ReleaseTextures() {
   if (mTexture && mGL->MakeCurrent()) {
     mGL->fDeleteTextures(1, &mTexture);
     mTexture = 0;
-    mGL = nullptr;
   }
 
   if (mEGLImage != LOCAL_EGL_NO_IMAGE) {
     egl->fDestroyImage(mEGLImage);
     mEGLImage = LOCAL_EGL_NO_IMAGE;
   }
+  mGL = nullptr;
 }
 
 void DMABufSurfaceRGBA::ReleaseSurface() {
@@ -708,7 +716,7 @@ bool DMABufSurfaceRGBA::CreateWlBuffer() {
 }
 
 void DMABufSurfaceRGBA::ReleaseWlBuffer() {
-  g_clear_pointer(&mWlBuffer, wl_buffer_destroy);
+  MozClearPointer(mWlBuffer, wl_buffer_destroy);
 }
 
 // We should synchronize DMA Buffer object access from CPU to avoid potential
@@ -1022,6 +1030,11 @@ bool DMABufSurfaceYUV::CreateYUVPlane(int aPlane, int aWidth, int aHeight,
   LOGDMABUF(("DMABufSurfaceYUV::CreateYUVPlane() UID %d size %d x %d", mUID,
              aWidth, aHeight));
 
+  if (!GetDMABufDevice()->GetGbmDevice()) {
+    LOGDMABUF(("    Missing GbmDevice!"));
+    return false;
+  }
+
   mWidth[aPlane] = aWidth;
   mHeight[aPlane] = aHeight;
   mDrmFormats[aPlane] = aDrmFormat;
@@ -1327,7 +1340,7 @@ void DMABufSurfaceYUV::ReleaseTextures() {
 
   bool textureActive = false;
   for (int i = 0; i < mBufferPlaneCount; i++) {
-    if (mTexture[i]) {
+    if (mTexture[i] || mEGLImage[i]) {
       textureActive = true;
       break;
     }
@@ -1338,7 +1351,7 @@ void DMABufSurfaceYUV::ReleaseTextures() {
   }
 
   if (!mGL) {
-#ifdef NIGHTLY
+#ifdef NIGHTLY_BUILD
     MOZ_DIAGNOSTIC_ASSERT(mGL, "Missing GL context!");
 #else
     NS_WARNING(
@@ -1348,14 +1361,19 @@ void DMABufSurfaceYUV::ReleaseTextures() {
 #endif
   }
 
-  if (textureActive && mGL->MakeCurrent()) {
-    mGL->fDeleteTextures(DMABUF_BUFFER_PLANES, mTexture);
-    for (int i = 0; i < DMABUF_BUFFER_PLANES; i++) {
-      mTexture[i] = 0;
-    }
-    ReleaseEGLImages(mGL);
-    mGL = nullptr;
+  if (!mGL->MakeCurrent()) {
+    NS_WARNING(
+        "DMABufSurfaceYUV::ReleaseTextures(): MakeCurrent failed. We're "
+        "leaking textures!");
+    return;
   }
+
+  mGL->fDeleteTextures(DMABUF_BUFFER_PLANES, mTexture);
+  for (int i = 0; i < DMABUF_BUFFER_PLANES; i++) {
+    mTexture[i] = 0;
+  }
+  ReleaseEGLImages(mGL);
+  mGL = nullptr;
 }
 
 bool DMABufSurfaceYUV::VerifyTextureCreation() {

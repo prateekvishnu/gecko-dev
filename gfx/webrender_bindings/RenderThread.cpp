@@ -25,6 +25,7 @@
 #include "mozilla/layers/WebRenderBridgeParent.h"
 #include "mozilla/layers/SharedSurfacesParent.h"
 #include "mozilla/layers/SurfacePool.h"
+#include "mozilla/PerfStats.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/webrender/RendererOGL.h"
@@ -266,6 +267,9 @@ void RenderThread::AddRenderer(wr::WindowId aWindowId,
   }
 
   mRenderers[aWindowId] = std::move(aRenderer);
+  CrashReporter::AnnotateCrashReport(
+      CrashReporter::Annotation::GraphicsNumRenderers,
+      (unsigned int)mRenderers.size());
 
   auto windows = mWindowInfos.Lock();
   windows->emplace(AsUint64(aWindowId), new WindowInfo());
@@ -281,6 +285,9 @@ void RenderThread::RemoveRenderer(wr::WindowId aWindowId) {
   }
 
   mRenderers.erase(aWindowId);
+  CrashReporter::AnnotateCrashReport(
+      CrashReporter::Annotation::GraphicsNumRenderers,
+      (unsigned int)mRenderers.size());
 
   if (mRenderers.empty()) {
     if (mHandlingDeviceReset) {
@@ -311,9 +318,20 @@ RendererOGL* RenderThread::GetRenderer(wr::WindowId aWindowId) {
   return it->second.get();
 }
 
-size_t RenderThread::RendererCount() {
+size_t RenderThread::RendererCount() const {
   MOZ_ASSERT(IsInRenderThread());
   return mRenderers.size();
+}
+
+size_t RenderThread::ActiveRendererCount() const {
+  MOZ_ASSERT(IsInRenderThread());
+  size_t num_active = 0;
+  for (const auto& it : mRenderers) {
+    if (!it.second->IsPaused()) {
+      num_active++;
+    }
+  }
+  return num_active;
 }
 
 void RenderThread::BeginRecordingForWindow(wr::WindowId aWindowId,
@@ -381,6 +399,11 @@ void RenderThread::HandleFrameOneDoc(wr::WindowId aWindowId, bool aRender) {
     frame = frameInfo;
   }
 
+  // Sadly this doesn't include the lock, since we don't have the frame there
+  // yet.
+  glean::wr::time_to_render_start.AccumulateRawDuration(TimeStamp::Now() -
+                                                        frame.mStartTime);
+
   // It is for ensuring that PrepareForUse() is called before
   // RenderTextureHost::Lock().
   HandleRenderTextureOps();
@@ -404,8 +427,11 @@ void RenderThread::HandleFrameOneDoc(wr::WindowId aWindowId, bool aRender) {
   // The start time is from WebRenderBridgeParent::CompositeToTarget. From that
   // point until now (when the frame is finally pushed to the screen) is
   // equivalent to the COMPOSITE_TIME metric in the non-WR codepath.
-  mozilla::Telemetry::AccumulateTimeDelta(mozilla::Telemetry::COMPOSITE_TIME,
-                                          frame.mStartTime);
+  TimeDuration compositeDuration = TimeStamp::Now() - frame.mStartTime;
+  mozilla::Telemetry::Accumulate(mozilla::Telemetry::COMPOSITE_TIME,
+                                 uint32_t(compositeDuration.ToMilliseconds()));
+  PerfStats::RecordMeasurement(PerfStats::Metric::Compositing,
+                               compositeDuration);
 }
 
 void RenderThread::SetClearColor(wr::WindowId aWindowId, wr::ColorF aColor) {
@@ -431,7 +457,8 @@ void RenderThread::SetClearColor(wr::WindowId aWindowId, wr::ColorF aColor) {
   }
 }
 
-void RenderThread::SetProfilerUI(wr::WindowId aWindowId, const nsCString& aUI) {
+void RenderThread::SetProfilerUI(wr::WindowId aWindowId,
+                                 const nsACString& aUI) {
   if (mHasShutdown) {
     return;
   }
@@ -439,7 +466,7 @@ void RenderThread::SetProfilerUI(wr::WindowId aWindowId, const nsCString& aUI) {
   if (!IsInRenderThread()) {
     PostRunnable(NewRunnableMethod<wr::WindowId, nsCString>(
         "wr::RenderThread::SetProfilerUI", this, &RenderThread::SetProfilerUI,
-        aWindowId, aUI));
+        aWindowId, nsCString(aUI)));
     return;
   }
 
@@ -544,16 +571,12 @@ void RenderThread::UpdateAndRender(
   renderer->CheckGraphicsResetStatus("PostUpdate", /* aForce */ false);
 
   TimeStamp end = TimeStamp::Now();
-  RefPtr<const WebRenderPipelineInfo> info = renderer->FlushPipelineInfo();
+  RefPtr<const WebRenderPipelineInfo> info = renderer->GetLastPipelineInfo();
 
   layers::CompositorThread()->Dispatch(
       NewRunnableFunction("NotifyDidRenderRunnable", &NotifyDidRender,
                           renderer->GetCompositorBridge(), info, aStartId,
                           aStartTime, start, end, aRender, stats));
-
-  if (latestFrameId.IsValid()) {
-    renderer->MaybeRecordFrame(info);
-  }
 
   ipc::FileDescriptor fenceFd;
 
@@ -597,10 +620,16 @@ void RenderThread::Pause(wr::WindowId aWindowId) {
   auto it = mRenderers.find(aWindowId);
   MOZ_ASSERT(it != mRenderers.end());
   if (it == mRenderers.end()) {
+    gfxCriticalNote << "RenderThread cannot find renderer for window "
+                    << gfx::hexa(aWindowId) << " to pause.";
     return;
   }
   auto& renderer = it->second;
   renderer->Pause();
+
+  CrashReporter::AnnotateCrashReport(
+      CrashReporter::Annotation::GraphicsNumActiveRenderers,
+      (unsigned int)ActiveRendererCount());
 }
 
 bool RenderThread::Resume(wr::WindowId aWindowId) {
@@ -610,10 +639,18 @@ bool RenderThread::Resume(wr::WindowId aWindowId) {
   auto it = mRenderers.find(aWindowId);
   MOZ_ASSERT(it != mRenderers.end());
   if (it == mRenderers.end()) {
+    gfxCriticalNote << "RenderThread cannot find renderer for window "
+                    << gfx::hexa(aWindowId) << " to resume.";
     return false;
   }
   auto& renderer = it->second;
-  return renderer->Resume();
+  bool resumed = renderer->Resume();
+
+  CrashReporter::AnnotateCrashReport(
+      CrashReporter::Annotation::GraphicsNumActiveRenderers,
+      (unsigned int)ActiveRendererCount());
+
+  return resumed;
 }
 
 bool RenderThread::TooManyPendingFrames(wr::WindowId aWindowId) {

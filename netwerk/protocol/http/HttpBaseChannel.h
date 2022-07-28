@@ -121,7 +121,8 @@ class HttpBaseChannel : public nsHashPropertyBag,
                                       nsProxyInfo* aProxyInfo,
                                       uint32_t aProxyResolveFlags,
                                       nsIURI* aProxyURI, uint64_t aChannelId,
-                                      ExtContentPolicyType aContentPolicyType);
+                                      ExtContentPolicyType aContentPolicyType,
+                                      nsILoadInfo* aLoadInfo);
 
   // nsIRequest
   NS_IMETHOD GetName(nsACString& aName) override;
@@ -236,9 +237,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
   NS_IMETHOD GetTopBrowsingContextId(uint64_t* aId) override;
   NS_IMETHOD SetTopBrowsingContextId(uint64_t aId) override;
 
-  NS_IMETHOD GetFlashPluginState(
-      nsIHttpChannel::FlashPluginState* aState) override;
-
   using nsIClassifiedChannel::IsThirdPartyTrackingResource;
 
   virtual void SetSource(UniquePtr<ProfileChunkedBuffer> aSource) override {
@@ -297,8 +295,8 @@ class HttpBaseChannel : public nsHashPropertyBag,
   NS_IMETHOD GetLastModifiedTime(PRTime* lastModifiedTime) override;
   NS_IMETHOD GetCorsIncludeCredentials(bool* aInclude) override;
   NS_IMETHOD SetCorsIncludeCredentials(bool aInclude) override;
-  NS_IMETHOD GetCorsMode(uint32_t* aCorsMode) override;
-  NS_IMETHOD SetCorsMode(uint32_t aCorsMode) override;
+  NS_IMETHOD GetRequestMode(dom::RequestMode* aRequestMode) override;
+  NS_IMETHOD SetRequestMode(dom::RequestMode aRequestMode) override;
   NS_IMETHOD GetRedirectMode(uint32_t* aRedirectMode) override;
   NS_IMETHOD SetRedirectMode(uint32_t aRedirectMode) override;
   NS_IMETHOD GetFetchCacheMode(uint32_t* aFetchCacheMode) override;
@@ -332,6 +330,7 @@ class HttpBaseChannel : public nsHashPropertyBag,
       nsILoadInfo::CrossOriginOpenerPolicy* aOutPolicy) override;
   NS_IMETHOD HasCrossOriginOpenerPolicyMismatch(bool* aIsMismatch) override;
   NS_IMETHOD GetResponseEmbedderPolicy(
+      bool aIsOriginTrialCoepCredentiallessEnabled,
       nsILoadInfo::CrossOriginEmbedderPolicy* aOutPolicy) override;
 
   inline void CleanRedirectCacheChainIfNecessary() {
@@ -455,8 +454,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
   void AddClassificationFlags(uint32_t aClassificationFlags,
                               bool aIsThirdParty);
 
-  void SetFlashPluginState(nsIHttpChannel::FlashPluginState aState);
-
   const uint64_t& ChannelId() const { return mChannelId; }
 
   nsresult InternalSetUploadStream(nsIInputStream* uploadStream,
@@ -531,6 +528,9 @@ class HttpBaseChannel : public nsHashPropertyBag,
   // True if we've already applied content conversion to the data
   // passed to mListener.
   bool HasAppliedConversion() { return LoadHasAppliedConversion(); }
+
+  // https://fetch.spec.whatwg.org/#concept-request-tainted-origin
+  bool HasRedirectTaintedOrigin() { return LoadTaintedOriginFlag(); }
 
  protected:
   nsresult GetTopWindowURI(nsIURI* aURIBeingLoaded, nsIURI** aTopWindowURI);
@@ -753,7 +753,6 @@ class HttpBaseChannel : public nsHashPropertyBag,
   Atomic<bool, ReleaseAcquire> mCanceled;
   Atomic<uint32_t, ReleaseAcquire> mFirstPartyClassificationFlags;
   Atomic<uint32_t, ReleaseAcquire> mThirdPartyClassificationFlags;
-  Atomic<uint32_t, ReleaseAcquire> mFlashPluginState;
 
   UniquePtr<ProfileChunkedBuffer> mSource;
 
@@ -871,7 +870,7 @@ class HttpBaseChannel : public nsHashPropertyBag,
 
   uint32_t mContentDispositionHint;
 
-  uint32_t mCorsMode;
+  dom::RequestMode mRequestMode;
   uint32_t mRedirectMode;
 
   // If this channel was created as the result of a redirect, then this value

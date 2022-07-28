@@ -19,6 +19,10 @@ const CURRENT_THEME_SCALAR = "devtools.current_theme";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const REGEX_4XX_5XX = /^[4,5]\d\d$/;
 
+const BROWSERTOOLBOX_SCOPE_PREF = "devtools.browsertoolbox.scope";
+const BROWSERTOOLBOX_SCOPE_EVERYTHING = "everything";
+const BROWSERTOOLBOX_SCOPE_PARENTPROCESS = "parent-process";
+
 var { Ci, Cc } = require("chrome");
 const { debounce } = require("devtools/shared/debounce");
 const { throttle } = require("devtools/shared/throttle");
@@ -66,14 +70,14 @@ loader.lazyRequireGetter(
 );
 loader.lazyRequireGetter(
   this,
-  [
-    "refreshTargets",
-    "registerTarget",
-    "registerWalkerListeners",
-    "selectTarget",
-    "unregisterTarget",
-  ],
+  ["registerWalkerListeners"],
   "devtools/client/framework/actions/index",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  ["selectTarget"],
+  "devtools/shared/commands/target/actions/targets",
   true
 );
 
@@ -140,7 +144,7 @@ loader.lazyRequireGetter(
 loader.lazyRequireGetter(
   this,
   "getSelectedTarget",
-  "devtools/client/framework/reducers/targets",
+  "devtools/shared/commands/target/selectors/targets",
   true
 );
 loader.lazyRequireGetter(
@@ -287,6 +291,9 @@ function Toolbox(
   this.closeToolbox = this.closeToolbox.bind(this);
   this.destroy = this.destroy.bind(this);
   this._applyCacheSettings = this._applyCacheSettings.bind(this);
+  this._applyCustomFormatterSetting = this._applyCustomFormatterSetting.bind(
+    this
+  );
   this._applyServiceWorkersTestingSettings = this._applyServiceWorkersTestingSettings.bind(
     this
   );
@@ -394,10 +401,7 @@ Toolbox.prototype = {
 
   get nodePicker() {
     if (!this._nodePicker) {
-      this._nodePicker = new NodePicker(
-        this.commands.targetCommand,
-        this.selection
-      );
+      this._nodePicker = new NodePicker(this.commands, this.selection);
       this._nodePicker.on("picker-starting", this._onPickerStarting);
       this._nodePicker.on("picker-started", this._onPickerStarted);
       this._nodePicker.on("picker-stopped", this._onPickerStopped);
@@ -412,7 +416,6 @@ Toolbox.prototype = {
   get store() {
     if (!this._store) {
       this._store = createToolboxStore();
-      registerStoreObserver(this._store, this._onToolboxStateChange.bind(this));
     }
     return this._store;
   },
@@ -603,7 +606,9 @@ Toolbox.prototype = {
    */
   selectTarget(targetActorID) {
     if (this.getSelectedTargetFront()?.actorID !== targetActorID) {
-      this.store.dispatch(selectTarget(targetActorID));
+      // The selected target is managed by the TargetCommand's store.
+      // So dispatch this action against that other store.
+      this.commands.targetCommand.store.dispatch(selectTarget(targetActorID));
     }
   },
 
@@ -611,7 +616,11 @@ Toolbox.prototype = {
    * @returns {ThreadFront|null} The selected thread front, or null if there is none.
    */
   getSelectedTargetFront: function() {
-    const selectedTarget = getSelectedTarget(this.store.getState());
+    // The selected target is managed by the TargetCommand's store.
+    // So pull the state from that other store.
+    const selectedTarget = getSelectedTarget(
+      this.commands.targetCommand.store.getState()
+    );
     if (!selectedTarget) {
       return null;
     }
@@ -619,7 +628,12 @@ Toolbox.prototype = {
     return this.commands.client.getFrontByID(selectedTarget.actorID);
   },
 
-  _onToolboxStateChange(state, oldState) {
+  /**
+   * For now, the debugger isn't hooked to TargetCommand's store
+   * to display its thread list. So manually forward target selection change
+   * to the debugger via a dedicated action
+   */
+  _onTargetCommandStateChange(state, oldState) {
     if (getSelectedTarget(state) !== getSelectedTarget(oldState)) {
       const dbg = this.getPanel("jsdebugger");
       if (!dbg) {
@@ -707,10 +721,6 @@ Toolbox.prototype = {
       registerWalkerListeners(this.store, inspectorFront.walker);
     });
 
-    if (this.hostType !== Toolbox.HostType.PAGE) {
-      await this.store.dispatch(registerTarget(targetFront));
-    }
-
     if (targetFront.isTopLevel && isTargetSwitching) {
       // These methods expect the target to be attached, which is guaranteed by the time
       // _onTargetAvailable is called by the targetCommand.
@@ -764,16 +774,17 @@ Toolbox.prototype = {
         consoleFront.off("inspectObject", this._onInspectObject);
       }
       targetFront.off("frame-update", this._updateFrames);
-      // When navigating the old target can get destroyed before the thread state changed
-      // event for the target is received, so it gets lost. This currently happens with bf-cache
-      // navigations when paused, so lets make sure we resumed if not.
-      this._resumeToolbox();
     } else if (this.selection) {
       this.selection.onTargetDestroyed(targetFront);
     }
 
-    if (this.hostType !== Toolbox.HostType.PAGE) {
-      this.store.dispatch(unregisterTarget(targetFront));
+    // When navigating the old (top level) target can get destroyed before the thread state changed
+    // event for the target is received, so it gets lost. This currently happens with bf-cache
+    // navigations when paused, so lets make sure we resumed if not.
+    //
+    // We should also resume if a paused non-top-level target is destroyed
+    if (targetFront.isTopLevel || targetFront.threadFront?.paused) {
+      this._resumeToolbox();
     }
 
     if (targetFront.targetForm.ignoreSubFrames) {
@@ -836,6 +847,10 @@ Toolbox.prototype = {
         "target-thread-wrong-order-on-resume",
         this._onTargetThreadFrontResumeWrongOrder.bind(this)
       );
+      registerStoreObserver(
+        this.commands.targetCommand.store,
+        this._onTargetCommandStateChange.bind(this)
+      );
 
       // Bug 1709063: Use commands.resourceCommand instead of toolbox.resourceCommand
       this.resourceCommand = this.commands.resourceCommand;
@@ -852,6 +867,10 @@ Toolbox.prototype = {
         options
       );
 
+      // This needs to be done before watching for resources so console messages can be
+      // custom formatted right away.
+      await this._applyCustomFormatterSetting();
+
       // The targetCommand is created right before this code.
       // It means that this call to watchTargets is the first,
       // and we are registering the first target listener, which means
@@ -864,21 +883,26 @@ Toolbox.prototype = {
         onDestroyed: this._onTargetDestroyed,
       });
 
+      const watchedResources = [
+        // Watch for console API messages, errors and network events in order to populate
+        // the error count icon in the toolbox.
+        this.resourceCommand.TYPES.CONSOLE_MESSAGE,
+        this.resourceCommand.TYPES.ERROR_MESSAGE,
+        this.resourceCommand.TYPES.DOCUMENT_EVENT,
+        this.resourceCommand.TYPES.THREAD_STATE,
+      ];
+
+      if (!this.isBrowserToolbox) {
+        // Independently of watching network event resources for the error count icon,
+        // we need to start tracking network activity on toolbox open for targets such
+        // as tabs, in order to ensure there is always at least one listener existing
+        // for network events across the lifetime of the various panels, so stopping
+        // the resource command from clearing out its cache of network event resources.
+        watchedResources.push(this.resourceCommand.TYPES.NETWORK_EVENT);
+      }
+
       const onResourcesWatched = this.resourceCommand.watchResources(
-        [
-          // Watch for console API messages, errors and network events in order to populate
-          // the error count icon in the toolbox.
-          this.resourceCommand.TYPES.CONSOLE_MESSAGE,
-          this.resourceCommand.TYPES.ERROR_MESSAGE,
-          // Independently of watching network event resources for the error count icon,
-          // we need to start tracking network activity on toolbox open for targets such
-          // as tabs, in order to ensure there is always at least one listener existing
-          // for network events across the lifetime of the various panels, so stopping
-          // the resource command from clearing out its cache of network event resources.
-          this.resourceCommand.TYPES.NETWORK_EVENT,
-          this.resourceCommand.TYPES.DOCUMENT_EVENT,
-          this.resourceCommand.TYPES.THREAD_STATE,
-        ],
+        watchedResources,
         {
           onAvailable: this._onResourceAvailable,
           onUpdated: this._onResourceUpdated,
@@ -901,8 +925,16 @@ Toolbox.prototype = {
         this._applyCacheSettings
       );
       Services.prefs.addObserver(
+        "devtools.custom-formatters.enabled",
+        this._applyCustomFormatterSetting
+      );
+      Services.prefs.addObserver(
         "devtools.serviceWorkers.testing.enabled",
         this._applyServiceWorkersTestingSettings
+      );
+      Services.prefs.addObserver(
+        BROWSERTOOLBOX_SCOPE_PREF,
+        this._refreshHostTitle
       );
 
       // Get the DOM element to mount the ToolboxController to.
@@ -2183,6 +2215,26 @@ Toolbox.prototype = {
   },
 
   /**
+   * Apply the custom formatter setting (from `devtools.custom-formatters.enabled`) to this
+   * toolbox's tab.
+   */
+  _applyCustomFormatterSetting: async function() {
+    if (!this.commands) {
+      return;
+    }
+
+    const customFormatters =
+      Services.prefs.getBoolPref("devtools.custom-formatters", false) &&
+      Services.prefs.getBoolPref("devtools.custom-formatters.enabled", false);
+
+    await this.commands.targetConfigurationCommand.updateConfiguration({
+      customFormatters,
+    });
+
+    this.emitForTests("custom-formatters-reconfigured");
+  },
+
+  /**
    * Apply the current service workers testing setting from
    * devtools.serviceWorkers.testing.enabled to this toolbox's tab.
    */
@@ -2900,6 +2952,16 @@ Toolbox.prototype = {
   },
 
   /**
+   * Disable all network logs in the console
+   */
+  disableAllConsoleNetworkLogs: function() {
+    const consolePanel = this.getPanel("webconsole");
+    if (consolePanel) {
+      consolePanel.hud.ui.disableAllNetworkMessages();
+    }
+  },
+
+  /**
    * If the console is split and we are focusing an element outside
    * of the console, then store the newly focused element, so that
    * it can be restored once the split console closes.
@@ -3151,7 +3213,14 @@ Toolbox.prototype = {
       // hardcoded in english.
       title = "XPCShell Toolbox";
     } else if (isMultiProcessBrowserToolbox) {
-      title = L10N.getStr("toolbox.multiProcessBrowserToolboxTitle");
+      const scope = Services.prefs.getCharPref(BROWSERTOOLBOX_SCOPE_PREF);
+      if (scope == BROWSERTOOLBOX_SCOPE_EVERYTHING) {
+        title = L10N.getStr("toolbox.multiProcessBrowserToolboxTitle");
+      } else if (scope == BROWSERTOOLBOX_SCOPE_PARENTPROCESS) {
+        title = L10N.getStr("toolbox.parentProcessBrowserToolboxTitle");
+      } else {
+        throw new Error("Unsupported scope: " + scope);
+      }
     } else if (this.target.name && this.target.name != this.target.url) {
       const url = this.target.isWebExtension
         ? this.target.getExtensionPathName(this.target.url)
@@ -3378,7 +3447,12 @@ Toolbox.prototype = {
       this.frameMap.clear();
       this.selectedFrameId = null;
     } else if (data.selected) {
-      this.selectedFrameId = data.selected;
+      // If we select the top level target, default back to no particular selected document.
+      if (data.selected == this.target.actorID) {
+        this.selectedFrameId = null;
+      } else {
+        this.selectedFrameId = data.selected;
+      }
     } else if (data.frameData && this.frameMap.has(data.frameData.id)) {
       const existingFrameData = this.frameMap.get(data.frameData.id);
       if (
@@ -3935,8 +4009,16 @@ Toolbox.prototype = {
       this._applyCacheSettings
     );
     Services.prefs.removeObserver(
+      "devtools.custom-formatters.enabled",
+      this._applyCustomFormatterSetting
+    );
+    Services.prefs.removeObserver(
       "devtools.serviceWorkers.testing.enabled",
       this._applyServiceWorkersTestingSettings
+    );
+    Services.prefs.removeObserver(
+      BROWSERTOOLBOX_SCOPE_PREF,
+      this._refreshHostTitle
     );
 
     // We normally handle toolClosed from selectTool() but in the event of the
@@ -4007,18 +4089,21 @@ Toolbox.prototype = {
       onSelected: this._onTargetSelected,
       onDestroyed: this._onTargetDestroyed,
     });
-    this.resourceCommand.unwatchResources(
-      [
-        this.resourceCommand.TYPES.CONSOLE_MESSAGE,
-        this.resourceCommand.TYPES.ERROR_MESSAGE,
-        this.resourceCommand.TYPES.NETWORK_EVENT,
-        this.resourceCommand.TYPES.DOCUMENT_EVENT,
-        this.resourceCommand.TYPES.THREAD_STATE,
-      ],
-      {
-        onAvailable: this._onResourceAvailable,
-      }
-    );
+
+    const watchedResources = [
+      this.resourceCommand.TYPES.CONSOLE_MESSAGE,
+      this.resourceCommand.TYPES.ERROR_MESSAGE,
+      this.resourceCommand.TYPES.DOCUMENT_EVENT,
+      this.resourceCommand.TYPES.THREAD_STATE,
+    ];
+
+    if (!this.isBrowserToolbox) {
+      watchedResources.push(this.resourceCommand.TYPES.NETWORK_EVENT);
+    }
+
+    this.resourceCommand.unwatchResources(watchedResources, {
+      onAvailable: this._onResourceAvailable,
+    });
 
     // Unregister buttons listeners
     this.toolbarButtons.forEach(button => {
@@ -4584,9 +4669,6 @@ Toolbox.prototype = {
         // the host title a bit in order for the event listener in targetCommand to be
         // executed.
         setTimeout(() => {
-          // Update the EvaluationContext selector so url/title of targets can be updated
-          this.store.dispatch(refreshTargets());
-
           this._updateFrames({
             frameData: {
               id: resource.targetFront.actorID,

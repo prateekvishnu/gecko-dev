@@ -21,10 +21,17 @@ function removeOverrides(config) {
   return config;
 }
 
+// The expressions defined below for test paths are the main path formats we
+// prefer to support for tests as they are commonly used across the tree.
+// See https://firefox-source-docs.mozilla.org/code-quality/lint/linters/eslint.html#i-m-adding-tests-how-do-i-set-up-the-right-configuration
+// for more information.
+
 const xpcshellTestPaths = [
   "**/test*/unit*/**/",
   "**/test*/*/unit*/",
   "**/test*/xpcshell/**/",
+  // Special case for xpcshell harness.
+  "testing/xpcshell/example/unit/",
 ];
 
 const browserTestPaths = ["**/test*/**/browser*/"];
@@ -113,7 +120,6 @@ module.exports = {
         "import/no-unassigned-import": "error",
         "import/no-unresolved": "error",
         "import/no-useless-path-segments": "error",
-        "import/prefer-default-export": "error",
       },
     },
     {
@@ -220,8 +226,6 @@ module.exports = {
         "dom/**",
         "netwerk/**",
         "security/manager/ssl/tests/unit/**",
-        "services/**",
-        "testing/xpcshell/**",
         "toolkit/components/**",
         "toolkit/modules/**",
       ],
@@ -560,6 +564,13 @@ module.exports = {
         "browser/components/pocket/**",
         "devtools/**",
       ],
+    },
+    {
+      // Turn off the osfile rule for osfile.
+      files: ["toolkit/components/osfile/**"],
+      rules: {
+        "mozilla/reject-osfile": "off",
+      },
     },
   ],
 };

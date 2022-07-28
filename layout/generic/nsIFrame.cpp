@@ -17,6 +17,8 @@
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/DisplayPortUtils.h"
+#include "mozilla/dom/CSSAnimation.h"
+#include "mozilla/dom/CSSTransition.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/ElementInlines.h"
@@ -104,6 +106,7 @@
 
 #include "gfxContext.h"
 #include "nsAbsoluteContainingBlock.h"
+#include "ScrollSnap.h"
 #include "StickyScrollContainer.h"
 #include "nsFontInflationData.h"
 #include "nsRegion.h"
@@ -246,22 +249,6 @@ static bool IsXULBoxWrapped(const nsIFrame* aFrame) {
          !aFrame->IsXULBoxFrame();
 }
 
-void nsReflowStatus::UpdateTruncated(const ReflowInput& aReflowInput,
-                                     const ReflowOutput& aMetrics) {
-  const WritingMode containerWM = aMetrics.GetWritingMode();
-  if (aReflowInput.GetWritingMode().IsOrthogonalTo(containerWM)) {
-    // Orthogonal flows are always reflowed with an unconstrained dimension,
-    // so should never end up truncated (see ReflowInput::Init()).
-    mTruncated = false;
-  } else if (aReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE &&
-             aReflowInput.AvailableBSize() < aMetrics.BSize(containerWM) &&
-             !aReflowInput.mFlags.mIsTopOfPage) {
-    mTruncated = true;
-  } else {
-    mTruncated = false;
-  }
-}
-
 /* static */
 void nsIFrame::DestroyAnonymousContent(
     nsPresContext* aPresContext, already_AddRefed<nsIContent>&& aContent) {
@@ -292,7 +279,6 @@ std::ostream& operator<<(std::ostream& aStream, const nsReflowStatus& aStatus) {
   aStream << "["
           << "Complete=" << complete << ","
           << "NIF=" << (aStatus.NextInFlowNeedsReflow() ? 'Y' : 'N') << ","
-          << "Truncated=" << (aStatus.IsTruncated() ? 'Y' : 'N') << ","
           << "Break=" << brk << ","
           << "FirstLetter=" << (aStatus.FirstLetterComplete() ? 'Y' : 'N')
           << "]";
@@ -300,21 +286,6 @@ std::ostream& operator<<(std::ostream& aStream, const nsReflowStatus& aStatus) {
 }
 
 #ifdef DEBUG
-static bool gShowFrameBorders = false;
-
-void nsIFrame::ShowFrameBorders(bool aEnable) { gShowFrameBorders = aEnable; }
-
-bool nsIFrame::GetShowFrameBorders() { return gShowFrameBorders; }
-
-static bool gShowEventTargetFrameBorder = false;
-
-void nsIFrame::ShowEventTargetFrameBorder(bool aEnable) {
-  gShowEventTargetFrameBorder = aEnable;
-}
-
-bool nsIFrame::GetShowEventTargetFrameBorder() {
-  return gShowEventTargetFrameBorder;
-}
 
 /**
  * Note: the log module is created during library initialization which
@@ -807,6 +778,12 @@ void nsIFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   if (!IsPlaceholderFrame() && !aPrevInFlow) {
     UpdateVisibleDescendantsState();
   }
+
+  // TODO(mrobinson): Once bug 1765615 is fixed, this should be called on
+  // layout changes. In addition, when `content-visibility: auto` is implemented
+  // this should also be called when scrolling or focus causes content to be
+  // skipped or unskipped.
+  UpdateAnimationVisibility();
 }
 
 void nsIFrame::DestroyFrom(nsIFrame* aDestructRoot,
@@ -1293,6 +1270,16 @@ void nsIFrame::DidSetComputedStyle(ComputedStyle* aOldComputedStyle) {
 
       handleStickyChange = disp->mPosition == StylePositionProperty::Sticky ||
                            oldDisp->mPosition == StylePositionProperty::Sticky;
+    }
+    if (disp->mScrollSnapAlign != oldDisp->mScrollSnapAlign) {
+      ScrollSnapUtils::PostPendingResnapFor(this);
+    }
+    if (aOldComputedStyle->IsRootElementStyle() &&
+        disp->mScrollSnapType != oldDisp->mScrollSnapType) {
+      if (nsIScrollableFrame* scrollableFrame =
+              PresShell()->GetRootScrollFrameAsScrollable()) {
+        scrollableFrame->PostPendingResnap();
+      }
     }
   } else {  // !aOldComputedStyle
     handleStickyChange = disp->mPosition == StylePositionProperty::Sticky;
@@ -2743,45 +2730,6 @@ nsSize nsIFrame::OverflowClipMargin(PhysicalAxes aClipAxes) const {
   return result;
 }
 
-#ifdef DEBUG
-static void PaintDebugBorder(nsIFrame* aFrame, DrawTarget* aDrawTarget,
-                             const nsRect& aDirtyRect, nsPoint aPt) {
-  nsRect r(aPt, aFrame->GetSize());
-  int32_t appUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
-  sRGBColor blueOrRed(aFrame->HasView() ? sRGBColor(0.f, 0.f, 1.f, 1.f)
-                                        : sRGBColor(1.f, 0.f, 0.f, 1.f));
-  aDrawTarget->StrokeRect(NSRectToRect(r, appUnitsPerDevPixel),
-                          ColorPattern(ToDeviceColor(blueOrRed)));
-}
-
-static void PaintEventTargetBorder(nsIFrame* aFrame, DrawTarget* aDrawTarget,
-                                   const nsRect& aDirtyRect, nsPoint aPt) {
-  nsRect r(aPt, aFrame->GetSize());
-  int32_t appUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
-  ColorPattern purple(ToDeviceColor(sRGBColor(.5f, 0.f, .5f, 1.f)));
-  aDrawTarget->StrokeRect(NSRectToRect(r, appUnitsPerDevPixel), purple);
-}
-
-static void DisplayDebugBorders(nsDisplayListBuilder* aBuilder,
-                                nsIFrame* aFrame,
-                                const nsDisplayListSet& aLists) {
-  // Draw a border around the child
-  // REVIEW: From nsContainerFrame::PaintChild
-  if (nsIFrame::GetShowFrameBorders() && !aFrame->GetRect().IsEmpty()) {
-    aLists.Outlines()->AppendNewToTop<nsDisplayGeneric>(
-        aBuilder, aFrame, PaintDebugBorder, "DebugBorder",
-        DisplayItemType::TYPE_DEBUG_BORDER);
-  }
-  // Draw a border around the current event target
-  if (nsIFrame::GetShowEventTargetFrameBorder() &&
-      aFrame->PresShell()->GetDrawEventTargetFrame() == aFrame) {
-    aLists.Outlines()->AppendNewToTop<nsDisplayGeneric>(
-        aBuilder, aFrame, PaintEventTargetBorder, "EventTargetBorder",
-        DisplayItemType::TYPE_EVENT_TARGET_BORDER);
-  }
-}
-#endif
-
 /**
  * Returns whether a display item that gets created with the builder's current
  * state will have a scrolled clip, i.e. a clip that is scrolled by a scroll
@@ -3475,10 +3423,6 @@ void nsIFrame::BuildDisplayListForStackingContext(
   nsDisplayList resultList(aBuilder);
   set.SerializeWithCorrectZOrder(&resultList, content);
 
-#ifdef DEBUG
-  DisplayDebugBorders(aBuilder, this, set);
-#endif
-
   // Get the ASR to use for the container items that we create here.
   const ActiveScrolledRoot* containerItemASR = contASRTracker.GetContainerASR();
 
@@ -3978,9 +3922,6 @@ void nsIFrame::BuildDisplayListForSimpleChild(nsDisplayListBuilder* aBuilder,
   aChild->SetBuiltDisplayList(true);
   aBuilder->Check();
   aBuilder->DisplayCaret(aChild, aLists.Outlines());
-#ifdef DEBUG
-  DisplayDebugBorders(aBuilder, aChild, aLists);
-#endif
 }
 
 nsIFrame::DisplayChildFlag nsIFrame::DisplayFlagForFlexOrGridItem() const {
@@ -4303,9 +4244,6 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
       child->BuildDisplayList(aBuilder, aLists);
       aBuilder->Check();
       aBuilder->DisplayCaret(child, aLists.Outlines());
-#ifdef DEBUG
-      DisplayDebugBorders(aBuilder, child, aLists);
-#endif
       return;
     }
 
@@ -4331,9 +4269,6 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
     list.AppendToTop(pseudoStack.Content());
     list.AppendToTop(pseudoStack.Outlines());
     extraPositionedDescendants.AppendToTop(pseudoStack.PositionedDescendants());
-#ifdef DEBUG
-    DisplayDebugBorders(aBuilder, child, aLists);
-#endif
   }
 
   buildingForChild.RestoreBuildingInvisibleItemsValue();
@@ -4372,7 +4307,7 @@ void nsIFrame::MarkAbsoluteFramesForDisplayList(
   }
 }
 
-nsresult nsIFrame::GetContentForEvent(WidgetEvent* aEvent,
+nsresult nsIFrame::GetContentForEvent(const WidgetEvent* aEvent,
                                       nsIContent** aContent) {
   nsIFrame* f = nsLayoutUtils::GetNonGeneratedAncestor(this);
   *aContent = f->GetContent();
@@ -5773,7 +5708,11 @@ void nsIFrame::DisassociateImage(const StyleImage& aImage) {
 StyleImageRendering nsIFrame::UsedImageRendering() const {
   ComputedStyle* style;
   if (nsCSSRendering::IsCanvasFrame(this)) {
-    nsCSSRendering::FindBackground(this, &style);
+    // XXXdholbert Maybe we should use FindCanvasBackground here (instead of
+    // FindBackground), since we're inside an IsCanvasFrame check? Though then
+    // we'd also have to copypaste or abstract-away the multi-part root-frame
+    // lookup that the canvas-flavored API requires.
+    style = nsCSSRendering::FindBackground(this);
   } else {
     style = Style();
   }
@@ -6859,7 +6798,6 @@ void nsIFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
   DO_GLOBAL_REFLOW_COUNT("nsFrame");
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
   aDesiredSize.ClearSize();
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 bool nsIFrame::IsContentDisabled() const {
@@ -9730,25 +9668,15 @@ static void ComputeAndIncludeOutlineArea(nsIFrame* aFrame,
     SetOrUpdateRectValuedProperty(aFrame, nsIFrame::OutlineInnerRectProperty(),
                                   innerRect);
   }
+
   const nscoord offset = outline->mOutlineOffset.ToAppUnits();
   nsRect outerRect(innerRect);
-  bool useOutlineAuto = false;
-  if (StaticPrefs::layout_css_outline_style_auto_enabled()) {
-    useOutlineAuto = outline->mOutlineStyle.IsAuto();
-    if (MOZ_UNLIKELY(useOutlineAuto)) {
-      nsPresContext* presContext = aFrame->PresContext();
-      nsITheme* theme = presContext->Theme();
-      if (theme->ThemeSupportsWidget(presContext, aFrame,
-                                     StyleAppearance::FocusOutline)) {
-        outerRect.Inflate(offset);
-        theme->GetWidgetOverflow(presContext->DeviceContext(), aFrame,
-                                 StyleAppearance::FocusOutline, &outerRect);
-      } else {
-        useOutlineAuto = false;
-      }
-    }
-  }
-  if (MOZ_LIKELY(!useOutlineAuto)) {
+  if (outline->mOutlineStyle.IsAuto()) {
+    nsPresContext* pc = aFrame->PresContext();
+    outerRect.Inflate(offset);
+    pc->Theme()->GetWidgetOverflow(pc->DeviceContext(), aFrame,
+                                   StyleAppearance::FocusOutline, &outerRect);
+  } else {
     nscoord width = outline->GetOutlineWidth();
     outerRect.Inflate(width + offset);
   }
@@ -11634,6 +11562,31 @@ void nsIFrame::UpdateVisibleDescendantsState() {
     }
   } else {
     mAllDescendantsAreInvisible = HasNoVisibleDescendants(this);
+  }
+}
+
+void nsIFrame::UpdateAnimationVisibility() {
+  auto* animationCollection =
+      AnimationCollection<CSSAnimation>::GetAnimationCollection(this);
+  auto* transitionCollection =
+      AnimationCollection<CSSTransition>::GetAnimationCollection(this);
+
+  if ((!animationCollection || animationCollection->mAnimations.IsEmpty()) &&
+      (!transitionCollection || transitionCollection->mAnimations.IsEmpty())) {
+    return;
+  }
+
+  bool hidden = AncestorHidesContent();
+  if (animationCollection) {
+    for (auto& animation : animationCollection->mAnimations) {
+      animation->SetHiddenByContentVisibility(hidden);
+    }
+  }
+
+  if (transitionCollection) {
+    for (auto& transition : transitionCollection->mAnimations) {
+      transition->SetHiddenByContentVisibility(hidden);
+    }
   }
 }
 

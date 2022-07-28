@@ -14,21 +14,6 @@ include("build/moz.configure/init.configure")
 # - Spidermonkey-specific options and rules should go in js/moz.configure.
 # - etc.
 
-option(
-    "--enable-artifact-builds",
-    env="MOZ_ARTIFACT_BUILDS",
-    help="Download and use prebuilt binary artifacts.",
-)
-
-
-@depends("--enable-artifact-builds")
-def artifact_builds(value):
-    if value:
-        return True
-
-
-set_config("MOZ_ARTIFACT_BUILDS", artifact_builds)
-
 imply_option(
     "--enable-artifact-build-symbols",
     depends(artifact_builds)(lambda v: False if v is None else None),
@@ -380,6 +365,7 @@ imply_option("--build-backends", build_backend)
     "--help",
 )
 @imports("sys")
+@imports(_from="mozbuild.backend.clangd", _import="find_vscode_cmd")
 def build_backend_defaults(
     host,
     target,
@@ -410,6 +396,12 @@ def build_backend_defaults(
         and project not in ("mobile/android", "memory", "tools/update-programs")
     ):
         all_backends.append("VisualStudio")
+    if (
+        compile_environment
+        and find_vscode_cmd()
+        and project not in ("mobile/android", "memory", "tools/update-programs")
+    ):
+        all_backends.append("Clangd")
     return tuple(all_backends) or None
 
 

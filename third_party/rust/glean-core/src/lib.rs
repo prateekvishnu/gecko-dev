@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+#![allow(clippy::significant_drop_in_scrutinee)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(missing_docs)]
 
@@ -59,8 +60,8 @@ pub use crate::metrics::{
     BooleanMetric, CounterMetric, CustomDistributionMetric, Datetime, DatetimeMetric,
     DenominatorMetric, DistributionData, EventMetric, MemoryDistributionMetric, MemoryUnit,
     NumeratorMetric, PingType, QuantityMetric, Rate, RateMetric, RecordedEvent, RecordedExperiment,
-    StringListMetric, StringMetric, TimeUnit, TimerId, TimespanMetric, TimingDistributionMetric,
-    UrlMetric, UuidMetric,
+    StringListMetric, StringMetric, TextMetric, TimeUnit, TimerId, TimespanMetric,
+    TimingDistributionMetric, UrlMetric, UuidMetric,
 };
 pub use crate::upload::{PingRequest, PingUploadTask, UploadResult};
 
@@ -486,26 +487,6 @@ pub fn persist_ping_lifetime_data() {
     });
 }
 
-/// Unblock the global dispatcher to start processing queued tasks.
-pub extern "C" fn rlb_flush_dispatcher() {
-    let was_initialized = was_initialize_called();
-
-    // Panic in debug mode
-    debug_assert!(!was_initialized);
-
-    // In release do a check and bail out
-    if was_initialized {
-        log::error!(
-            "Tried to flush the dispatcher from outside, but Glean was initialized in the RLB."
-        );
-        return;
-    }
-
-    if let Err(err) = dispatcher::flush_init() {
-        log::error!("Unable to flush the preinit queue: {}", err);
-    }
-}
-
 fn initialize_core_metrics(glean: &Glean, client_info: &ClientInfoMetrics) {
     core_metrics::internal_metrics::app_build.set_sync(glean, &client_info.app_build[..]);
     core_metrics::internal_metrics::app_display_version
@@ -517,6 +498,19 @@ fn initialize_core_metrics(glean: &Glean, client_info: &ClientInfoMetrics) {
     }
     core_metrics::internal_metrics::os_version.set_sync(glean, system::get_os_version());
     core_metrics::internal_metrics::architecture.set_sync(glean, system::ARCH.to_string());
+
+    if let Some(android_sdk_version) = client_info.android_sdk_version.as_ref() {
+        core_metrics::internal_metrics::android_sdk_version.set_sync(glean, android_sdk_version);
+    }
+    if let Some(device_manufacturer) = client_info.device_manufacturer.as_ref() {
+        core_metrics::internal_metrics::device_manufacturer.set_sync(glean, device_manufacturer);
+    }
+    if let Some(device_model) = client_info.device_model.as_ref() {
+        core_metrics::internal_metrics::device_model.set_sync(glean, device_model);
+    }
+    if let Some(locale) = client_info.locale.as_ref() {
+        core_metrics::internal_metrics::locale.set_sync(glean, locale);
+    }
 }
 
 /// Checks if [`initialize`] was ever called.

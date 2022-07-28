@@ -54,6 +54,9 @@
 #include "prenv.h"
 #include "ScopedGLHelpers.h"
 #include "VRManagerChild.h"
+#include "mozilla/gfx/Swizzle.h"
+#include "mozilla/layers/BufferTexture.h"
+#include "mozilla/layers/RemoteTextureMap.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
 #include "mozilla/layers/ImageBridgeChild.h"
 #include "mozilla/layers/TextureClientSharedSurface.h"
@@ -73,6 +76,7 @@
 #include "WebGLFramebuffer.h"
 #include "WebGLMemoryTracker.h"
 #include "WebGLObjectModel.h"
+#include "WebGLParent.h"
 #include "WebGLProgram.h"
 #include "WebGLQuery.h"
 #include "WebGLSampler.h"
@@ -118,19 +122,39 @@ bool WebGLContextOptions::operator==(const WebGLContextOptions& r) const {
   return eq;
 }
 
-static std::list<WebGLContext*> sWebglLru;
+StaticMutex WebGLContext::sLruMutex;
+std::list<WebGLContext*> WebGLContext::sLru;
 
-WebGLContext::LruPosition::LruPosition() : mItr(sWebglLru.end()) {}  // NOLINT
+WebGLContext::LruPosition::LruPosition() {
+  StaticMutexAutoLock lock(sLruMutex);
+  mItr = sLru.end();
+}  // NOLINT
 
-WebGLContext::LruPosition::LruPosition(WebGLContext& context)
-    : mItr(sWebglLru.insert(sWebglLru.end(), &context)) {}
+WebGLContext::LruPosition::LruPosition(WebGLContext& context) {
+  StaticMutexAutoLock lock(sLruMutex);
+  mItr = sLru.insert(sLru.end(), &context);
+}
 
-void WebGLContext::LruPosition::reset() {
-  const auto end = sWebglLru.end();
+void WebGLContext::LruPosition::AssignLocked(
+    WebGLContext& aContext, const StaticMutexAutoLock& aProofOfLock) {
+  sLruMutex.AssertCurrentThreadOwns();
+  ResetLocked(aProofOfLock);
+  mItr = sLru.insert(sLru.end(), &aContext);
+}
+
+void WebGLContext::LruPosition::ResetLocked(
+    const StaticMutexAutoLock& aProofOfLock) {
+  sLruMutex.AssertCurrentThreadOwns();
+  const auto end = sLru.end();
   if (mItr != end) {
-    sWebglLru.erase(mItr);
+    sLru.erase(mItr);
     mItr = end;
   }
+}
+
+void WebGLContext::LruPosition::Reset() {
+  StaticMutexAutoLock lock(sLruMutex);
+  ResetLocked(lock);
 }
 
 WebGLContext::WebGLContext(HostWebGLContext& host,
@@ -155,6 +179,12 @@ WebGLContext::WebGLContext(HostWebGLContext& host,
 WebGLContext::~WebGLContext() { DestroyResourcesAndContext(); }
 
 void WebGLContext::DestroyResourcesAndContext() {
+  if (mRemoteTextureOwner) {
+    // Clean up any remote textures registered for framebuffer swap chains.
+    mRemoteTextureOwner->UnregisterAllTextureOwners();
+    mRemoteTextureOwner = nullptr;
+  }
+
   if (!gl) return;
 
   mDefaultFB = nullptr;
@@ -677,7 +707,19 @@ void WebGLContext::SetCompositableHost(
   mCompositableHost = aCompositableHost;
 }
 
+void WebGLContext::BumpLruLocked(const StaticMutexAutoLock& aProofOfLock) {
+  sLruMutex.AssertCurrentThreadOwns();
+  mLruPosition.AssignLocked(*this, aProofOfLock);
+}
+
+void WebGLContext::BumpLru() {
+  StaticMutexAutoLock lock(sLruMutex);
+  BumpLruLocked(lock);
+}
+
 void WebGLContext::LoseLruContextIfLimitExceeded() {
+  StaticMutexAutoLock lock(sLruMutex);
+
   const auto maxContexts = std::max(1u, StaticPrefs::webgl_max_contexts());
   const auto maxContextsPerPrincipal =
       std::max(1u, StaticPrefs::webgl_max_contexts_per_principal());
@@ -685,11 +727,11 @@ void WebGLContext::LoseLruContextIfLimitExceeded() {
   // it's important to update the index on a new context before losing old
   // contexts, otherwise new unused contexts would all have index 0 and we
   // couldn't distinguish older ones when choosing which one to lose first.
-  BumpLru();
+  BumpLruLocked(lock);
 
   {
     size_t forPrincipal = 0;
-    for (const auto& context : sWebglLru) {
+    for (const auto& context : sLru) {
       if (context->mPrincipalKey == mPrincipalKey) {
         forPrincipal += 1;
       }
@@ -702,10 +744,10 @@ void WebGLContext::LoseLruContextIfLimitExceeded() {
           maxContextsPerPrincipal);
       mHost->JsWarning(ToString(text));
 
-      for (const auto& context : sWebglLru) {
+      for (const auto& context : sLru) {
         if (context->mPrincipalKey == mPrincipalKey) {
           MOZ_ASSERT(context != this);
-          context->LoseContext(webgl::ContextLossReason::None);
+          context->LoseContextLruLocked(webgl::ContextLossReason::None, lock);
           forPrincipal -= 1;
           break;
         }
@@ -713,7 +755,7 @@ void WebGLContext::LoseLruContextIfLimitExceeded() {
     }
   }
 
-  auto total = sWebglLru.size();
+  auto total = sLru.size();
   while (total > maxContexts) {
     const auto text = nsPrintfCString(
         "Exceeded %u live WebGL contexts, losing the least "
@@ -721,9 +763,9 @@ void WebGLContext::LoseLruContextIfLimitExceeded() {
         maxContexts);
     mHost->JsWarning(ToString(text));
 
-    const auto& context = sWebglLru.front();
+    const auto& context = sLru.front();
     MOZ_ASSERT(context != this);
-    context->LoseContext(webgl::ContextLossReason::None);
+    context->LoseContextLruLocked(webgl::ContextLossReason::None, lock);
     total -= 1;
   }
 }
@@ -971,17 +1013,14 @@ void InitSwapChain(gl::GLContext& gl, gl::SwapChain& swapChain,
 
 void WebGLContext::Present(WebGLFramebuffer* const xrFb,
                            const layers::TextureType consumerType,
-                           const bool webvr) {
+                           const bool webvr,
+                           const webgl::SwapChainOptions& options) {
   const FuncScope funcScope(*this, "<Present>");
   if (IsContextLost()) return;
 
-  auto swapChain = webvr ? &mWebVRSwapChain : &mSwapChain;
-  if (xrFb) {
-    swapChain = &xrFb->mSwapChain;
-  }
+  auto swapChain = GetSwapChain(xrFb, webvr);
   const gl::MozFramebuffer* maybeFB = nullptr;
   if (xrFb) {
-    swapChain = &xrFb->mSwapChain;
     maybeFB = xrFb->mOpaque.get();
   } else {
     mResolvedDefaultFB = nullptr;
@@ -989,10 +1028,16 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
 
   InitSwapChain(*gl, *swapChain, consumerType);
 
-  if (maybeFB) {
-    (void)PresentIntoXR(*swapChain, *maybeFB);
-  } else {
-    (void)PresentInto(*swapChain);
+  bool valid =
+      maybeFB ? PresentIntoXR(*swapChain, *maybeFB) : PresentInto(*swapChain);
+  if (!valid) {
+    return;
+  }
+
+  bool useAsync = options.remoteTextureOwnerId.IsValid() &&
+                  options.remoteTextureId.IsValid();
+  if (useAsync) {
+    PushRemoteTexture(nullptr, *swapChain, swapChain->FrontBuffer(), options);
   }
 }
 
@@ -1013,21 +1058,161 @@ void WebGLContext::CopyToSwapChain(WebGLFramebuffer* const srcFb,
 
   InitSwapChain(*gl, srcFb->mSwapChain, consumerType);
 
-  // ColorSpace will need to be part of SwapChainOptions for DTWebgl.
-  const auto colorSpace = ToColorSpace2(mOptions);
-  auto presenter = srcFb->mSwapChain.Acquire(size, colorSpace);
-  if (!presenter) {
-    GenerateWarning("Swap chain surface creation failed.");
-    LoseContext();
+  bool useAsync = options.remoteTextureOwnerId.IsValid() &&
+                  options.remoteTextureId.IsValid();
+  // If we're using async present and if there is no way to serialize surfaces,
+  // then a readback is required to do the copy. In this case, there's no reason
+  // to copy into a separate shared surface for the front buffer. Just directly
+  // read back the WebGL framebuffer into and push it as a remote texture.
+  if (useAsync && srcFb->mSwapChain.mFactory->GetConsumerType() ==
+                      layers::TextureType::Unknown) {
+    PushRemoteTexture(srcFb, srcFb->mSwapChain, nullptr, options);
     return;
   }
 
-  const ScopedFBRebinder saveFB(this);
+  {
+    // ColorSpace will need to be part of SwapChainOptions for DTWebgl.
+    const auto colorSpace = ToColorSpace2(mOptions);
+    auto presenter = srcFb->mSwapChain.Acquire(size, colorSpace);
+    if (!presenter) {
+      GenerateWarning("Swap chain surface creation failed.");
+      LoseContext();
+      return;
+    }
 
-  const auto destFb = presenter->Fb();
-  gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, destFb);
+    const ScopedFBRebinder saveFB(this);
 
-  BlitBackbufferToCurDriverFB(srcFb, nullptr, options.bgra);
+    const auto destFb = presenter->Fb();
+    gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, destFb);
+
+    BlitBackbufferToCurDriverFB(srcFb, nullptr, options.bgra);
+  }
+
+  if (useAsync) {
+    PushRemoteTexture(srcFb, srcFb->mSwapChain, srcFb->mSwapChain.FrontBuffer(),
+                      options);
+  }
+}
+
+bool WebGLContext::PushRemoteTexture(WebGLFramebuffer* fb,
+                                     gl::SwapChain& swapChain,
+                                     std::shared_ptr<gl::SharedSurface> surf,
+                                     const webgl::SwapChainOptions& options) {
+  const auto onFailure = [&]() -> bool {
+    GenerateWarning("Remote texture creation failed.");
+    LoseContext();
+    return false;
+  };
+
+  if (!mRemoteTextureOwner) {
+    // Ensure we have a remote texture owner client for WebGLParent.
+    const auto* outOfProcess = mHost ? mHost->mOwnerData.outOfProcess : nullptr;
+    if (!outOfProcess) {
+      return onFailure();
+    }
+    mRemoteTextureOwner =
+        MakeRefPtr<layers::RemoteTextureOwnerClient>(outOfProcess->OtherPid());
+  }
+
+  layers::RemoteTextureOwnerId ownerId = options.remoteTextureOwnerId;
+  layers::RemoteTextureId textureId = options.remoteTextureId;
+
+  if (!mRemoteTextureOwner->IsRegistered(ownerId)) {
+    // Register a texture owner to represent the swap chain.
+    RefPtr<layers::RemoteTextureOwnerClient> textureOwner = mRemoteTextureOwner;
+    auto destroyedCallback = [textureOwner, ownerId]() {
+      textureOwner->UnregisterTextureOwner(ownerId);
+    };
+
+    swapChain.SetDestroyedCallback(destroyedCallback);
+    mRemoteTextureOwner->RegisterTextureOwner(ownerId);
+  }
+
+  MOZ_ASSERT(fb || surf);
+  gfx::IntSize size;
+  if (surf) {
+    size = surf->mDesc.size;
+  } else {
+    const auto* info = fb->GetCompletenessInfo();
+    MOZ_ASSERT(info);
+    size = gfx::IntSize(info->width, info->height);
+  }
+
+  const auto surfaceFormat = mOptions.alpha ? gfx::SurfaceFormat::B8G8R8A8
+                                            : gfx::SurfaceFormat::B8G8R8X8;
+  Maybe<layers::SurfaceDescriptor> desc;
+  if (surf) {
+    desc = surf->ToSurfaceDescriptor();
+  }
+  if (!desc) {
+    // If we can't serialize to a surface descriptor, then we need to create
+    // a buffer to read back into that will become the remote texture.
+    auto data = mRemoteTextureOwner->CreateOrRecycleBufferTextureData(
+        ownerId, size, surfaceFormat);
+    if (!data) {
+      gfxCriticalNoteOnce << "Failed to allocate BufferTextureData";
+      return onFailure();
+    }
+
+    layers::MappedTextureData mappedData;
+    if (!data->BorrowMappedData(mappedData)) {
+      return onFailure();
+    }
+
+    const auto stride = CheckedInt<size_t>(mappedData.size.width) * 4;
+    const auto byteSize = stride * mappedData.size.height;
+    MOZ_RELEASE_ASSERT(byteSize.isValid());
+    MOZ_RELEASE_ASSERT(mappedData.stride ==
+                       static_cast<int64_t>(stride.value()));
+    Range<uint8_t> range = {mappedData.data, byteSize.value()};
+
+    // If we have a surface representing the front buffer, then try to snapshot
+    // that. Otherwise, when there is no surface, we read back directly from the
+    // WebGL framebuffer.
+    auto valid = surf ? FrontBufferSnapshotInto(surf, Some(range))
+                      : SnapshotInto(fb->mGLName, size, range);
+    if (!valid) {
+      return onFailure();
+    }
+
+    if (!options.bgra) {
+      // If the buffer is already BGRA, we don't need to swizzle. However, if it
+      // is RGBA, then a swizzle to BGRA is required.
+      bool rv = gfx::SwizzleData(mappedData.data, mappedData.stride,
+                                 gfx::SurfaceFormat::R8G8B8A8, mappedData.data,
+                                 mappedData.stride,
+                                 gfx::SurfaceFormat::B8G8R8A8, mappedData.size);
+      MOZ_RELEASE_ASSERT(rv, "SwizzleData failed!");
+    }
+
+    mRemoteTextureOwner->PushTexture(textureId, ownerId, std::move(data),
+                                     /* aSharedSurface */ nullptr);
+    return true;
+  }
+
+  // SharedSurfaces of SurfaceDescriptorD3D10 and SurfaceDescriptorMacIOSurface
+  // need to be kept alive. They will be recycled by
+  // RemoteTextureOwnerClient::GetRecycledSharedSurface() when their usages are
+  // ended.
+  std::shared_ptr<gl::SharedSurface> keepAlive;
+  switch (desc->type()) {
+    case layers::SurfaceDescriptor::TSurfaceDescriptorD3D10:
+    case layers::SurfaceDescriptor::TSurfaceDescriptorMacIOSurface:
+      keepAlive = surf;
+      break;
+    default:
+      break;
+  }
+
+  auto data =
+      MakeUnique<layers::SharedSurfaceTextureData>(*desc, surfaceFormat, size);
+  mRemoteTextureOwner->PushTexture(textureId, ownerId, std::move(data),
+                                   keepAlive);
+  auto recycledSurface = mRemoteTextureOwner->GetRecycledSharedSurface(ownerId);
+  if (recycledSurface) {
+    swapChain.StoreRecycledSurface(recycledSurface);
+  }
+  return true;
 }
 
 void WebGLContext::EndOfFrame() {
@@ -1037,12 +1222,19 @@ void WebGLContext::EndOfFrame() {
   OnEndOfFrame();
 }
 
-Maybe<layers::SurfaceDescriptor> WebGLContext::GetFrontBuffer(
-    WebGLFramebuffer* const xrFb, const bool webvr) {
+gl::SwapChain* WebGLContext::GetSwapChain(WebGLFramebuffer* const xrFb,
+                                          const bool webvr) {
   auto swapChain = webvr ? &mWebVRSwapChain : &mSwapChain;
   if (xrFb) {
     swapChain = &xrFb->mSwapChain;
   }
+  return swapChain;
+}
+
+Maybe<layers::SurfaceDescriptor> WebGLContext::GetFrontBuffer(
+    WebGLFramebuffer* const xrFb, const bool webvr) {
+  auto* swapChain = GetSwapChain(xrFb, webvr);
+  if (!swapChain) return {};
   const auto& front = swapChain->FrontBuffer();
   if (!front) return {};
 
@@ -1053,10 +1245,14 @@ Maybe<uvec2> WebGLContext::FrontBufferSnapshotInto(
     const Maybe<Range<uint8_t>> maybeDest) {
   const auto& front = mSwapChain.FrontBuffer();
   if (!front) return {};
+  return FrontBufferSnapshotInto(front, maybeDest);
+}
+
+Maybe<uvec2> WebGLContext::FrontBufferSnapshotInto(
+    const std::shared_ptr<gl::SharedSurface>& front,
+    const Maybe<Range<uint8_t>> maybeDest) {
   const auto& size = front->mDesc.size;
-  const auto ret = Some(*uvec2::FromSize(size));
-  if (!maybeDest) return ret;
-  const auto& dest = *maybeDest;
+  if (!maybeDest) return Some(*uvec2::FromSize(size));
 
   // -
 
@@ -1070,6 +1266,11 @@ Maybe<uvec2> WebGLContext::FrontBufferSnapshotInto(
 
   // -
 
+  return SnapshotInto(front->mFb ? front->mFb->mFB : 0, size, *maybeDest);
+}
+
+Maybe<uvec2> WebGLContext::SnapshotInto(GLuint srcFb, const gfx::IntSize& size,
+                                        const Range<uint8_t>& dest) {
   gl->fPixelStorei(LOCAL_GL_PACK_ALIGNMENT, 1);
   if (IsWebGL2()) {
     gl->fPixelStorei(LOCAL_GL_PACK_ROW_LENGTH, 0);
@@ -1093,25 +1294,29 @@ Maybe<uvec2> WebGLContext::FrontBufferSnapshotInto(
     }
   });
 
-  gl->fBindFramebuffer(fbTarget, front->mFb ? front->mFb->mFB : 0);
+  gl->fBindFramebuffer(fbTarget, srcFb);
   if (pboWas) {
     BindBuffer(LOCAL_GL_PIXEL_PACK_BUFFER, nullptr);
   }
 
   // -
 
-  const size_t stride = size.width * 4;
-  const size_t srcByteCount = stride * size.height;
+  const auto stride = CheckedInt<size_t>(size.width) * 4;
+  const auto srcByteCount = stride * size.height;
+  if (!srcByteCount.isValid()) {
+    gfxCriticalError() << "SnapshotInto: invalid srcByteCount, width:"
+                       << size.width << ", height:" << size.height;
+    return {};
+  }
   const auto dstByteCount = dest.length();
-  if (srcByteCount != dstByteCount) {
-    gfxCriticalError() << "FrontBufferSnapshotInto: srcByteCount:"
-                       << srcByteCount << " != dstByteCount:" << dstByteCount;
+  if (srcByteCount.value() != dstByteCount) {
+    gfxCriticalError() << "SnapshotInto: srcByteCount:" << srcByteCount.value()
+                       << " != dstByteCount:" << dstByteCount;
     return {};
   }
   gl->fReadPixels(0, 0, size.width, size.height, LOCAL_GL_RGBA,
                   LOCAL_GL_UNSIGNED_BYTE, dest.begin().get());
-
-  return ret;
+  return Some(*uvec2::FromSize(size));
 }
 
 void WebGLContext::ClearVRSwapChain() { mWebVRSwapChain.ClearPool(); }
@@ -1218,12 +1423,20 @@ void WebGLContext::CheckForContextLoss() {
   LoseContext(reason);
 }
 
-void WebGLContext::LoseContext(const webgl::ContextLossReason reason) {
+void WebGLContext::LoseContextLruLocked(
+    const webgl::ContextLossReason reason,
+    const StaticMutexAutoLock& aProofOfLock) {
   printf_stderr("WebGL(%p)::LoseContext(%u)\n", this,
                 static_cast<uint32_t>(reason));
+  sLruMutex.AssertCurrentThreadOwns();
   mIsContextLost = true;
-  mLruPosition = {};
+  mLruPosition.ResetLocked(aProofOfLock);
   mHost->OnContextLoss(reason);
+}
+
+void WebGLContext::LoseContext(const webgl::ContextLossReason reason) {
+  StaticMutexAutoLock lock(sLruMutex);
+  LoseContextLruLocked(reason, lock);
 }
 
 void WebGLContext::DidRefresh() {

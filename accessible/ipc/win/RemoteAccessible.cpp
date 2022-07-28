@@ -252,7 +252,11 @@ LayoutDeviceIntRect RemoteAccessible::Bounds() const {
   return rect;
 }
 
-nsIntRect RemoteAccessible::BoundsInCSSPixels() {
+nsIntRect RemoteAccessible::BoundsInCSSPixels() const {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return RemoteAccessibleBase<RemoteAccessible>::BoundsInCSSPixels();
+  }
+
   RefPtr<IGeckoCustom> custom = QueryInterface<IGeckoCustom>(this);
   if (!custom) {
     return nsIntRect();
@@ -513,6 +517,11 @@ static IA2TextBoundaryType GetIA2TextBoundary(
 
 int32_t RemoteAccessible::OffsetAtPoint(int32_t aX, int32_t aY,
                                         uint32_t aCoordinateType) {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return RemoteAccessibleBase<RemoteAccessible>::OffsetAtPoint(
+        aX, aY, aCoordinateType);
+  }
+
   RefPtr<IAccessibleText> acc = QueryInterface<IAccessibleText>(this);
   if (!acc) {
     return -1;
@@ -820,6 +829,11 @@ void RemoteAccessible::TakeFocus() const {
 
 Accessible* RemoteAccessible::ChildAtPoint(
     int32_t aX, int32_t aY, Accessible::EWhichChildAtPoint aWhichChild) {
+  if (StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return RemoteAccessibleBase<RemoteAccessible>::ChildAtPoint(aX, aY,
+                                                                aWhichChild);
+  }
+
   RefPtr<IAccessible2_2> target = QueryInterface<IAccessible2_2>(this);
   if (!target) {
     return nullptr;

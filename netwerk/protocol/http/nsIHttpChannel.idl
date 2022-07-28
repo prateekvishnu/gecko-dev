@@ -12,6 +12,8 @@ interface nsIReferrerInfo;
 #include "GeckoProfiler.h"
 %}
 
+native UniqueProfileChunkedBuffer(mozilla::UniquePtr<mozilla::ProfileChunkedBuffer>);
+
 /**
  * nsIHttpChannel
  *
@@ -464,20 +466,6 @@ interface nsIHttpChannel : nsIIdentChannel
     [must_use] attribute uint64_t topLevelContentWindowId;
 
     /**
-     * Returns the allowing status for flash plugin for this channel.
-     */
-    cenum FlashPluginState : 8 {
-      FlashPluginUnknown = 0,
-      FlashPluginAllowed = 1,
-      FlashPluginDenied = 2,
-      FlashPluginDeniedInSubdocuments = 3,
-
-      // Keep this equal to the last value.
-      FlashPluginLastValue = 3,
-    };
-    [infallible] readonly attribute nsIHttpChannel_FlashPluginState flashPluginState;
-
-    /**
      * ID of the top-level browsing context for this channel.
      *
      * NOTE: The setter of this attribute is currently for xpcshell test only.
@@ -503,7 +491,5 @@ interface nsIHttpChannel : nsIIdentChannel
                              in AString aURL,
                              in AString aContentType);
 
-%{ C++
-  virtual void SetSource(mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource) {}
-%}
+    [notxpcom, nostdcall] void setSource(in UniqueProfileChunkedBuffer aSource);
 };

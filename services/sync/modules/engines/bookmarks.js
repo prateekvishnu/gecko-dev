@@ -12,10 +12,9 @@ var EXPORTED_SYMBOLS = [
   "BookmarkSeparator",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Async } = ChromeUtils.import("resource://services-common/async.js");
 const { SCORE_INCREMENT_XLARGE } = ChromeUtils.import(
   "resource://services-sync/constants.js"
@@ -30,22 +29,18 @@ const { Svc, Utils } = ChromeUtils.import("resource://services-sync/util.js");
 
 const lazy = {};
 
-XPCOMUtils.defineLazyModuleGetters(lazy, {
-  BookmarkValidator: "resource://services-sync/bookmark_validator.js",
-  Observers: "resource://services-common/observers.js",
-  OS: "resource://gre/modules/osfile.jsm",
-  PlacesBackups: "resource://gre/modules/PlacesBackups.jsm",
-  PlacesDBUtils: "resource://gre/modules/PlacesDBUtils.jsm",
-  PlacesSyncUtils: "resource://gre/modules/PlacesSyncUtils.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  Resource: "resource://services-sync/resource.js",
-  SyncedBookmarksMirror: "resource://gre/modules/SyncedBookmarksMirror.jsm",
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesBackups: "resource://gre/modules/PlacesBackups.sys.mjs",
+  PlacesDBUtils: "resource://gre/modules/PlacesDBUtils.sys.mjs",
+  PlacesSyncUtils: "resource://gre/modules/PlacesSyncUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  SyncedBookmarksMirror: "resource://gre/modules/SyncedBookmarksMirror.sys.mjs",
 });
 
-XPCOMUtils.defineLazyGetter(lazy, "PlacesBundle", () => {
-  return Services.strings.createBundle(
-    "chrome://places/locale/places.properties"
-  );
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  Observers: "resource://services-common/observers.js",
+  OS: "resource://gre/modules/osfile.jsm",
+  Resource: "resource://services-sync/resource.js",
 });
 
 XPCOMUtils.defineLazyGetter(lazy, "ANNOS_TO_TRACK", () => [

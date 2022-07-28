@@ -677,6 +677,8 @@ class SourceSurface : public SupportsThreadSafeWeakPtr<SourceSurface> {
       case SurfaceType::DATA_ALIGNED:
       case SurfaceType::DATA_SHARED_WRAPPER:
       case SurfaceType::DATA_MAPPED:
+      case SurfaceType::SKIA:
+      case SurfaceType::WEBGL:
         return true;
       default:
         return false;
@@ -1216,6 +1218,8 @@ class ScaledFont : public SupportsThreadSafeWeakPtr<ScaledFont> {
   virtual bool HasVariationSettings() { return false; }
 
   virtual bool MayUseBitmaps() { return false; }
+
+  virtual bool UseSubpixelPosition() const { return false; }
 
   void AddUserData(UserDataKey* key, void* userData, void (*destroy)(void*)) {
     mUserData.Add(key, userData, destroy);

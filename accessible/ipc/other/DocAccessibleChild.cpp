@@ -247,7 +247,7 @@ mozilla::ipc::IPCResult DocAccessibleChild::RecvScrollToPoint(
 }
 
 mozilla::ipc::IPCResult DocAccessibleChild::RecvAnnounce(
-    const uint64_t& aID, const nsString& aAnnouncement,
+    const uint64_t& aID, const nsAString& aAnnouncement,
     const uint16_t& aPriority) {
   LocalAccessible* acc = IdToAccessible(aID);
   if (acc) {
@@ -511,7 +511,7 @@ mozilla::ipc::IPCResult DocAccessibleChild::RecvText(const uint64_t& aID,
 }
 
 mozilla::ipc::IPCResult DocAccessibleChild::RecvReplaceText(
-    const uint64_t& aID, const nsString& aText) {
+    const uint64_t& aID, const nsAString& aText) {
   HyperTextAccessible* acc = IdToHyperTextAccessible(aID);
   if (acc && acc->IsTextRole()) {
     acc->ReplaceText(aText);
@@ -521,7 +521,7 @@ mozilla::ipc::IPCResult DocAccessibleChild::RecvReplaceText(
 }
 
 mozilla::ipc::IPCResult DocAccessibleChild::RecvInsertText(
-    const uint64_t& aID, const nsString& aText, const int32_t& aPosition,
+    const uint64_t& aID, const nsAString& aText, const int32_t& aPosition,
     bool* aValid) {
   HyperTextAccessible* acc = IdToHyperTextAccessible(aID);
   if (acc && acc->IsTextRole()) {
@@ -1343,20 +1343,6 @@ mozilla::ipc::IPCResult DocAccessibleChild::RecvAccessKey(
   LocalAccessible* acc = IdToAccessible(aID);
   if (acc) {
     KeyBinding kb = acc->AccessKey();
-    *aKey = kb.Key();
-    *aModifierMask = kb.ModifierMask();
-  }
-
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult DocAccessibleChild::RecvKeyboardShortcut(
-    const uint64_t& aID, uint32_t* aKey, uint32_t* aModifierMask) {
-  *aKey = 0;
-  *aModifierMask = 0;
-  LocalAccessible* acc = IdToAccessible(aID);
-  if (acc) {
-    KeyBinding kb = acc->KeyboardShortcut();
     *aKey = kb.Key();
     *aModifierMask = kb.ModifierMask();
   }

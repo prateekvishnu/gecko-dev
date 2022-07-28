@@ -171,7 +171,17 @@ class nsWindow final : public nsBaseWidget {
   LayoutDeviceIntRect GetScreenBounds() override;
   LayoutDeviceIntRect GetClientBounds() override;
   LayoutDeviceIntSize GetClientSize() override;
-  LayoutDeviceIntPoint GetClientOffset() override;
+  LayoutDeviceIntPoint GetClientOffset() override { return mClientOffset; }
+
+  // Recomputes the client offset according to our current window position.
+  // If aNotify is true, NotifyWindowMoved will be called on client offset
+  // changes.
+  //
+  // NOTE(emilio): It seems that as long any change here update either the size
+  // or the position of the window, we should be doing fine without notifying,
+  // but this is done to preserve existing behavior.
+  void RecomputeClientOffset(bool aNotify);
+
   void SetCursor(const Cursor&) override;
   void Invalidate(const LayoutDeviceIntRect& aRect) override;
   void* GetNativeData(uint32_t aDataType) override;
@@ -424,9 +434,6 @@ class nsWindow final : public nsBaseWidget {
     COMPOSITOR_ENABLED,
     // WebRender compositor is paused after window creation.
     COMPOSITOR_PAUSED_INITIALLY,
-    // WebRender compositor is paused because GtkWindow is hidden,
-    // we can't draw into GL context.
-    COMPOSITOR_PAUSED_MISSING_WINDOW,
     // WebRender compositor is paused as we're repainting whole window and
     // we're waiting for content process to update page content.
     COMPOSITOR_PAUSED_FLICKERING
@@ -445,6 +452,7 @@ class nsWindow final : public nsBaseWidget {
   void DispatchActivateEvent(void);
   void DispatchDeactivateEvent(void);
   void MaybeDispatchResized();
+  void DispatchPanGesture(mozilla::PanGestureInput& aPanInput);
 
   void RegisterTouchWindow() override;
   bool CompositorInitiallyPaused() override {
@@ -467,18 +475,11 @@ class nsWindow final : public nsBaseWidget {
   void GrabPointer(guint32 aTime);
   void ReleaseGrabs(void);
 
-  void UpdateClientOffsetFromFrameExtents();
-  void UpdateClientOffsetFromCSDWindow();
-
   void DispatchContextMenuEventFromMouseEvent(uint16_t domButton,
                                               GdkEventButton* aEvent);
 
   void TryToShowNativeWindowMenu(GdkEventButton* aEvent);
 
-  void EnableRenderingToWindow();
-  void DisableRenderingToWindow();
-  void ResumeCompositorHiddenWindow();
-  void PauseCompositorHiddenWindow();
   void WaylandStartVsync();
   void WaylandStopVsync();
   void DestroyChildWindows();
@@ -524,26 +525,43 @@ class nsWindow final : public nsBaseWidget {
   GdkWindow* mGdkWindow = nullptr;
   PlatformCompositorWidgetDelegate* mCompositorWidgetDelegate = nullptr;
   mozilla::Atomic<WindowCompositorState, mozilla::Relaxed> mCompositorState{
-      COMPOSITOR_ENABLED};
+      COMPOSITOR_PAUSED_INITIALLY};
   // This is used in COMPOSITOR_PAUSED_FLICKERING mode only to resume compositor
   // in some reasonable time when page content is not updated.
   int mCompositorPauseTimeoutID = 0;
 
+  // The actual size mode that's in effect.
   nsSizeMode mSizeMode = nsSizeMode_Normal;
-  nsSizeMode mSizeState = nsSizeMode_Normal;
+  nsSizeMode mLastSizeModeBeforeFullscreen = nsSizeMode_Normal;
+
   float mAspectRatio = 0.0f;
   float mAspectRatioSaved = 0.0f;
+
   // The size requested, which might not be reflected in mBounds.  Used in
   // WaylandPopupSetDirectPosition() to remember intended size for popup
   // positioning, in LockAspect() to remember the intended aspect ratio, and
   // to remember a size requested while waiting for moved-to-rect when
   // OnSizeAllocate() might change mBounds.Size().
   LayoutDeviceIntSize mLastSizeRequest;
-  nsIntPoint mClientOffset;
+  LayoutDeviceIntPoint mClientOffset;
 
   // This field omits duplicate scroll events caused by GNOME bug 726878.
   guint32 mLastScrollEventTime = GDK_CURRENT_TIME;
   mozilla::ScreenCoord mLastPinchEventSpan;
+
+  struct TouchpadPinchGestureState {
+    // Focus point of the PHASE_BEGIN event
+    ScreenPoint mBeginFocus;
+
+    // Focus point of the most recent PHASE_UPDATE event
+    ScreenPoint mCurrentFocus;
+  };
+
+  // Used for handling touchpad pinch gestures
+  ScreenPoint mCurrentTouchpadFocus;
+
+  // Used for synthesizing touchpad pinch gestures
+  TouchpadPinchGestureState mCurrentSynthesizedTouchpadPinch;
 
   // for touch event handling
   nsRefPtrHashtable<nsPtrHashKey<GdkEventSequence>, mozilla::dom::Touch>
@@ -741,10 +759,6 @@ class nsWindow final : public nsBaseWidget {
 
   InputRegion mInputRegion;
 
-  // Remember the last sizemode so that we can restore it when
-  // leaving fullscreen
-  nsSizeMode mLastSizeMode = nsSizeMode_Normal;
-
   static bool DragInProgress(void);
 
   void DispatchMissedButtonReleases(GdkEventCrossing* aGdkEvent);
@@ -760,8 +774,6 @@ class nsWindow final : public nsBaseWidget {
   void DidGetNonBlankPaint() override;
 
   void SetCompositorWidgetDelegate(CompositorWidgetDelegate* delegate) override;
-
-  void CleanLayerManagerRecursive();
 
   int32_t RoundsWidgetCoordinatesTo() override;
 
@@ -784,9 +796,9 @@ class nsWindow final : public nsBaseWidget {
   bool WaylandPopupIsPermanent();
   bool IsWidgetOverflowWindow();
   void RemovePopupFromHierarchyList();
-  void ShowWaylandWindow();
-  void HideWaylandWindow();
+  void ShowWaylandPopupWindow();
   void HideWaylandPopupWindow(bool aTemporaryHidden, bool aRemoveFromPopupList);
+  void ShowWaylandToplevelWindow();
   void HideWaylandToplevelWindow();
   void WaylandPopupHideTooltips();
   void AppendPopupToHierarchyList(nsWindow* aToplevelWindow);

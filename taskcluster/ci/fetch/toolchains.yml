@@ -108,13 +108,6 @@ go-1.14.4:
         sha256: aed845e4185a0b2a3c3d5e1d0a35491702c55889192bb9c30e67a3de6849c067
         size: 123711003
 
-iris-2.0:
-    description: Iris_Firefox source code
-    fetch:
-        type: git
-        repo: https://github.com/mozilla/iris_firefox
-        revision: a91a1cb88a16b0ee4d30f0dfc165d2cacf48b10c
-
 isl-0.16.1:
     description: ISL 0.16.1 source code
     fetch:
@@ -235,9 +228,9 @@ wine:
     description: wine source code
     fetch:
         type: static-url
-        url: https://dl.winehq.org/wine/source/6.0/wine-6.0.2.tar.xz
-        sha256: dfe3c58ac785c07220e28f15b62299d76c24d256a67ad9bffd8aefa67b3dbb70
-        size: 24217772
+        url: https://dl.winehq.org/wine/source/7.0/wine-7.0.tar.xz
+        sha256: 5b43e27d5c085cb18f97394e46180310d5eef7c1d91c6895432a3889b2de086b
+        size: 27120912
         gpg-signature:
             sig-url: "{url}.sign"
             key-path: build/unix/build-gcc/DA23579A74D4AD9AF9D3F945CEFAC8EAAF17519D.key
@@ -245,12 +238,12 @@ wine:
         strip-components: 1
         add-prefix: wine-source/
 
-cbindgen-0.24.2:
+cbindgen-0.24.3:
     description: cbindgen source code
     fetch:
         type: git
         repo: https://github.com/eqrion/cbindgen
-        revision: 3d06ae1fc4984b82ada2d84ce74c7af06ffd499d
+        revision: f43ccfc047a1a160267f32355c5e5e7154a2665a
 
 cctools-port:
     description: cctools-port source code
@@ -354,11 +347,11 @@ clang-5.0:
         revision: 6a075b6de4cafebec9ca1ff9eec7229a617c93f6
 
 clang-14:
-    description: clang 14.0.4 source code
+    description: clang 14.0.5 source code
     fetch:
         type: git
         repo: https://github.com/llvm/llvm-project
-        revision: 29f1039a7285a5c3a9c353d054140bf2556d4c4d
+        revision: 4bc1d0b51c8e488d78ab69c8b19cfbcd1f7db6a4
 
 clang-trunk:
     description: clang main branch source code
@@ -369,29 +362,23 @@ clang-trunk:
         repo: https://github.com/llvm/llvm-project
         branch: main
 
-# This revision currently corresponds to rust nightly-2022-04-05,
-# which is the first nightly with the version 1.62.0,
-# so it should be as close as possible to the behaviour of
-# stable-1.61.0.
-#
-# We use this to build from source, so the resulting non-official
-# artifacts will report their version as "1.62.0-dev", but will otherwise
-# behave like a nightly build. This means they will allow you to use
-# unstable features like -Zbuild-std and sanitizers.
-rust-1.62.0-dev:
-    description: Rust 1.62.0-dev source code
+# We build stable rust from source so the resulting compiler acts as a nightly
+# rust compiler, allowing to use unstable features like -Zbuild-std and
+# sanitizers.
+rust-1.62.0:
+    description: Rust 1.62.0 source code
     fetch:
         type: git
         include-dot-git: true
         repo: https://github.com/rust-lang/rust/
-        revision: 60e50fc1cfe0bb693a5f4f93eb83ef70854531e3
+        revision: a8314ef7d0ec7b75c336af2c9857bfaf43002bfc
 
 wasi-sdk:
-    description: wasi-sdk-15 source code + LLVM-15 fix
+    description: wasi-sdk-16 source code
     fetch:
         type: git
         repo: https://github.com/WebAssembly/wasi-sdk
-        revision: 37ae6af88201884c8b98a65adcd6d8cd1284f95e
+        revision: 7b7b8a974a31f527d71467499b0d5be3b12f2fa9
 
 ninja:
     description: ninja 1.9.0
@@ -480,17 +467,6 @@ makecab:
         repo: https://github.com/glandium/rust-makecab/
         revision: 73a4605b97123bf7221533c671f27f234d974b02
 
-nodejs-10-linux64:
-    description: nodejs 10 for x64 linux
-    fetch:
-        type: static-url
-        url: https://nodejs.org/dist/v10.23.1/node-v10.23.1-linux-x64.tar.xz
-        sha256: 207e5ec77ca655ba6fcde922d6b329acbb09898b0bd793ccfcce6c27a36fdff0
-        size: 13139076
-        artifact-name: nodejs.tar.zst
-        strip-components: 1
-        add-prefix: node/
-
 nodejs-12-linux64:
     description: nodejs 12 for x64 linux
     fetch:
@@ -509,17 +485,6 @@ nodejs-16-linux64:
         url: https://nodejs.org/dist/v16.0.0/node-v16.0.0-linux-x64.tar.xz
         sha256: 1736446bb102e19942addce29f6a12b157ca71f38b9159d0446f51ba69618b8d
         size: 22206588
-        artifact-name: nodejs.tar.zst
-        strip-components: 1
-        add-prefix: node/
-
-nodejs-10-macosx64:
-    description: nodejs 10 for x64 macOS
-    fetch:
-        type: static-url
-        url: https://nodejs.org/dist/v10.23.1/node-v10.23.1-darwin-x64.tar.xz
-        sha256: febfdabd98ab5b8f8fdff32ab8c111d834083805bf042ab65c923cc22609c99d
-        size: 12233276
         artifact-name: nodejs.tar.zst
         strip-components: 1
         add-prefix: node/
@@ -557,17 +522,6 @@ nodejs-16-macosx64-arm64:
         strip-components: 1
         add-prefix: node/
 
-nodejs-10-win32:
-    description: nodejs 10 for x86 Windows
-    fetch:
-        type: static-url
-        url: https://nodejs.org/dist/v10.23.1/node-v10.23.1-win-x86.zip
-        sha256: c3be0fd50c218cc52e85377c9e22d7d2110d72de95bdbc9447145b246330f818
-        size: 16806899
-        artifact-name: nodejs.tar.zst
-        strip-components: 1
-        add-prefix: node/
-
 nodejs-12-win32:
     description: nodejs 12 for x86 Windows
     fetch:
@@ -586,17 +540,6 @@ nodejs-16-win32:
         url: https://nodejs.org/dist/v16.0.0/node-v16.0.0-win-x86.zip
         sha256: 0600dffb5331b6f49e6ff4fa97770811746e0e2ecaf53de6deaafff277a644b4
         size: 25092862
-        artifact-name: nodejs.tar.zst
-        strip-components: 1
-        add-prefix: node/
-
-nodejs-10-win64:
-    description: nodejs 10 for x64 Windows
-    fetch:
-        type: static-url
-        url: https://nodejs.org/dist/v10.23.1/node-v10.23.1-win-x64.zip
-        sha256: 497996aa1037b6f7f492c1d275bb90140269223939525286b4e95babad16f0de
-        size: 18307638
         artifact-name: nodejs.tar.zst
         strip-components: 1
         add-prefix: node/
@@ -664,4 +607,11 @@ cargo-vet:
     fetch:
         type: git
         repo: https://github.com/mozilla/cargo-vet
-        revision: 97cdbfdab0ed3008160cf5bee534fb534fce08c5
+        revision: 16e5c986f3204889910720b647a2ef25dd417f13
+
+symbol-scrapers:
+    description: Linux distribution symbol scraper source
+    fetch:
+        type: git
+        repo: http://github.com/mozilla/symbol-scrapers
+        revision: f7d35432086ad34d7457e1f5803cc44164eac85d

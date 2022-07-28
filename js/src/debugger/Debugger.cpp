@@ -48,7 +48,6 @@
 #include "gc/HashUtil.h"                  // for DependentAddPtr
 #include "gc/Marking.h"                   // for IsAboutToBeFinalized
 #include "gc/PublicIterators.h"           // for RealmsIter, CompartmentsIter
-#include "gc/Rooting.h"                   // for RootedNativeObject
 #include "gc/Statistics.h"                // for Statistics::SliceData
 #include "gc/Tracer.h"                    // for TraceEdge
 #include "gc/Zone.h"                      // for Zone
@@ -101,7 +100,6 @@
 #include "vm/SavedStacks.h"           // for SavedStacks
 #include "vm/Scope.h"                 // for Scope
 #include "vm/StringType.h"            // for JSString, PropertyName
-#include "vm/TraceLogging.h"          // for TraceLoggerForCurrentThread
 #include "vm/WrapperObject.h"         // for CrossCompartmentWrapperObject
 #include "wasm/WasmDebug.h"           // for DebugState
 #include "wasm/WasmInstance.h"        // for Instance
@@ -327,7 +325,7 @@ bool js::ValueToStableChars(JSContext* cx, const char* fnname,
                               InformalValueTypeName(value));
     return false;
   }
-  RootedLinearString linear(cx, value.toString()->ensureLinear(cx));
+  Rooted<JSLinearString*> linear(cx, value.toString()->ensureLinear(cx));
   if (!linear) {
     return false;
   }
@@ -536,26 +534,8 @@ Debugger::Debugger(JSContext* cx, NativeObject* dbg)
       objects(cx),
       environments(cx),
       wasmInstanceScripts(cx),
-      wasmInstanceSources(cx),
-#ifdef NIGHTLY_BUILD
-      traceLoggerLastDrainedSize(0),
-      traceLoggerLastDrainedIteration(0),
-#endif
-      traceLoggerScriptedCallsLastDrainedSize(0),
-      traceLoggerScriptedCallsLastDrainedIteration(0) {
+      wasmInstanceSources(cx) {
   cx->check(dbg);
-
-#ifdef JS_TRACE_LOGGING
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
-  if (logger) {
-#  ifdef NIGHTLY_BUILD
-    logger->getIterationAndSize(&traceLoggerLastDrainedIteration,
-                                &traceLoggerLastDrainedSize);
-#  endif
-    logger->getIterationAndSize(&traceLoggerScriptedCallsLastDrainedIteration,
-                                &traceLoggerScriptedCallsLastDrainedSize);
-  }
-#endif
 
   cx->runtime()->debuggerList().insertBack(this);
 }
@@ -625,7 +605,7 @@ bool Debugger::getFrame(JSContext* cx, const FrameIter& iter,
 bool Debugger::getFrame(JSContext* cx, MutableHandle<DebuggerFrame*> result) {
   RootedObject proto(
       cx, &object->getReservedSlot(JSSLOT_DEBUG_FRAME_PROTO).toObject());
-  RootedNativeObject debugger(cx, object);
+  Rooted<NativeObject*> debugger(cx, object);
 
   // Since there is no frame/generator data to associate with this frame, this
   // will create a new, "terminated" Debugger.Frame object.
@@ -679,7 +659,7 @@ bool Debugger::getFrame(JSContext* cx, const FrameIter& iter,
     // Create and populate the Debugger.Frame object.
     RootedObject proto(
         cx, &object->getReservedSlot(JSSLOT_DEBUG_FRAME_PROTO).toObject());
-    RootedNativeObject debugger(cx, object);
+    Rooted<NativeObject*> debugger(cx, object);
 
     Rooted<DebuggerFrame*> frame(
         cx, DebuggerFrame::create(cx, proto, debugger, &iter, genObj));
@@ -734,7 +714,7 @@ bool Debugger::getFrame(JSContext* cx, Handle<AbstractGeneratorObject*> genObj,
   // Create a new Debugger.Frame.
   RootedObject proto(
       cx, &object->getReservedSlot(JSSLOT_DEBUG_FRAME_PROTO).toObject());
-  RootedNativeObject debugger(cx, object);
+  Rooted<NativeObject*> debugger(cx, object);
 
   result.set(DebuggerFrame::create(cx, proto, debugger, nullptr, genObj));
   if (!result) {
@@ -985,13 +965,19 @@ NativeResumeMode DebugAPI::slowPathOnNativeCall(JSContext* cx,
   // The onNativeCall hook is fired when self hosted functions are called,
   // and any other self hosted function or C++ native that is directly called
   // by the self hosted function is considered to be part of the same
-  // native call.
+  // native call, except for the following 2 cases:
+  //
+  //  * callContentFunction and constructContentFunction,
+  //    which uses CallReason::CallContent
+  //  * Function.prototype.call and Function.prototype.apply,
+  //    which uses CallReason::FunCall
   //
   // We check this only after checking that debuggerList has items in order
   // to avoid unnecessary calls to cx->currentScript(), which can be expensive
   // when the top frame is in jitcode.
   JSScript* script = cx->currentScript();
-  if (script && script->selfHosted()) {
+  if (script && script->selfHosted() && reason != CallReason::CallContent &&
+      reason != CallReason::FunCall) {
     return NativeResumeMode::Continue;
   }
 
@@ -1393,7 +1379,7 @@ bool Debugger::wrapEnvironment(JSContext* cx, Handle<Env*> env,
     // Create a new Debugger.Environment for env.
     RootedObject proto(
         cx, &object->getReservedSlot(JSSLOT_DEBUG_ENV_PROTO).toObject());
-    RootedNativeObject debugger(cx, object);
+    Rooted<NativeObject*> debugger(cx, object);
 
     Rooted<DebuggerEnvironment*> envobj(
         cx, DebuggerEnvironment::create(cx, proto, env, debugger));
@@ -1427,7 +1413,7 @@ bool Debugger::wrapDebuggeeValue(JSContext* cx, MutableHandleValue vp) {
 
     vp.setObject(*dobj);
   } else if (vp.isMagic()) {
-    RootedPlainObject optObj(cx, NewPlainObject(cx));
+    Rooted<PlainObject*> optObj(cx, NewPlainObject(cx));
     if (!optObj) {
       return false;
     }
@@ -1485,7 +1471,7 @@ bool Debugger::wrapDebuggeeObject(JSContext* cx, HandleObject obj,
     result.set(&p->value()->as<DebuggerObject>());
   } else {
     // Create a new Debugger.Object for obj.
-    RootedNativeObject debugger(cx, object);
+    Rooted<NativeObject*> debugger(cx, object);
     RootedObject proto(
         cx, &object->getReservedSlot(JSSLOT_DEBUG_OBJECT_PROTO).toObject());
     Rooted<DebuggerObject*> dobj(
@@ -1617,9 +1603,9 @@ bool Debugger::unwrapPropertyDescriptor(
 /*** Debuggee resumption values and debugger error handling *****************/
 
 static bool GetResumptionProperty(JSContext* cx, HandleObject obj,
-                                  HandlePropertyName name, ResumeMode namedMode,
-                                  ResumeMode& resumeMode, MutableHandleValue vp,
-                                  int* hits) {
+                                  Handle<PropertyName*> name,
+                                  ResumeMode namedMode, ResumeMode& resumeMode,
+                                  MutableHandleValue vp, int* hits) {
   bool found;
   if (!HasProperty(cx, obj, name, &found)) {
     return false;
@@ -2036,7 +2022,7 @@ struct MOZ_STACK_CLASS Completion::BuildValueMatcher {
   }
 
   bool operator()(const Completion::Return& ret) {
-    RootedNativeObject obj(cx, newObject());
+    Rooted<NativeObject*> obj(cx, newObject());
     RootedValue retval(cx, ret.value);
     if (!obj || !wrap(&retval) || !add(obj, cx->names().return_, retval)) {
       return false;
@@ -2046,7 +2032,7 @@ struct MOZ_STACK_CLASS Completion::BuildValueMatcher {
   }
 
   bool operator()(const Completion::Throw& thr) {
-    RootedNativeObject obj(cx, newObject());
+    Rooted<NativeObject*> obj(cx, newObject());
     RootedValue exc(cx, thr.exception);
     if (!obj || !wrap(&exc) || !add(obj, cx->names().throw_, exc)) {
       return false;
@@ -2067,7 +2053,7 @@ struct MOZ_STACK_CLASS Completion::BuildValueMatcher {
   }
 
   bool operator()(const Completion::InitialYield& initialYield) {
-    RootedNativeObject obj(cx, newObject());
+    Rooted<NativeObject*> obj(cx, newObject());
     RootedValue gen(cx, ObjectValue(*initialYield.generatorObject));
     if (!obj || !wrap(&gen) || !add(obj, cx->names().return_, gen) ||
         !add(obj, cx->names().yield, TrueHandleValue) ||
@@ -2079,7 +2065,7 @@ struct MOZ_STACK_CLASS Completion::BuildValueMatcher {
   }
 
   bool operator()(const Completion::Yield& yield) {
-    RootedNativeObject obj(cx, newObject());
+    Rooted<NativeObject*> obj(cx, newObject());
     RootedValue iteratorResult(cx, yield.iteratorResult);
     if (!obj || !wrap(&iteratorResult) ||
         !add(obj, cx->names().return_, iteratorResult) ||
@@ -2091,7 +2077,7 @@ struct MOZ_STACK_CLASS Completion::BuildValueMatcher {
   }
 
   bool operator()(const Completion::Await& await) {
-    RootedNativeObject obj(cx, newObject());
+    Rooted<NativeObject*> obj(cx, newObject());
     RootedValue awaitee(cx, await.awaitee);
     if (!obj || !wrap(&awaitee) || !add(obj, cx->names().return_, awaitee) ||
         !add(obj, cx->names().await, TrueHandleValue)) {
@@ -2104,7 +2090,7 @@ struct MOZ_STACK_CLASS Completion::BuildValueMatcher {
  private:
   NativeObject* newObject() const { return NewPlainObject(cx); }
 
-  bool add(HandleNativeObject obj, PropertyName* name,
+  bool add(Handle<NativeObject*> obj, PropertyName* name,
            HandleValue value) const {
     return NativeDefineDataProperty(cx, obj, name, value, JSPROP_ENUMERATE);
   }
@@ -2318,6 +2304,12 @@ bool Debugger::fireNativeCall(JSContext* cx, const CallArgs& args,
   JSAtom* reasonAtom = nullptr;
   switch (reason) {
     case CallReason::Call:
+      reasonAtom = cx->names().call;
+      break;
+    case CallReason::CallContent:
+      reasonAtom = cx->names().call;
+      break;
+    case CallReason::FunCall:
       reasonAtom = cx->names().call;
       break;
     case CallReason::Getter:
@@ -3117,11 +3109,8 @@ bool Debugger::updateExecutionObservabilityOfFrames(
     IsObserving observing) {
   AutoSuppressProfilerSampling suppressProfilerSampling(cx);
 
-  {
-    jit::JitContext jctx(cx, nullptr);
-    if (!jit::RecompileOnStackBaselineScriptsForDebugMode(cx, obs, observing)) {
-      return false;
-    }
+  if (!jit::RecompileOnStackBaselineScriptsForDebugMode(cx, obs, observing)) {
+    return false;
   }
 
   AbstractFramePtr oldestEnabledFrame;
@@ -4137,6 +4126,8 @@ struct MOZ_STACK_CLASS Debugger::CallData {
   bool adoptDebuggeeValue();
   bool adoptFrame();
   bool adoptSource();
+  bool enableAsyncStack();
+  bool disableAsyncStack();
 
   using Method = bool (CallData::*)();
 
@@ -4590,7 +4581,7 @@ bool Debugger::CallData::getDebuggees() {
     }
   }
 
-  RootedArrayObject arrobj(cx, NewDenseFullyAllocatedArray(cx, count));
+  Rooted<ArrayObject*> arrobj(cx, NewDenseFullyAllocatedArray(cx, count));
   if (!arrobj) {
     return false;
   }
@@ -4665,7 +4656,7 @@ bool Debugger::construct(JSContext* cx, unsigned argc, Value* vp) {
   if (!GetProperty(cx, callee, callee, cx->names().prototype, &v)) {
     return false;
   }
-  RootedNativeObject proto(cx, &v.toObject().as<NativeObject>());
+  Rooted<NativeObject*> proto(cx, &v.toObject().as<NativeObject>());
   MOZ_ASSERT(proto->is<DebuggerInstanceObject>());
 
   // Make the new Debugger object. Each one has a reference to
@@ -4682,7 +4673,7 @@ bool Debugger::construct(JSContext* cx, unsigned argc, Value* vp) {
   }
   obj->setReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE, NullValue());
 
-  RootedNativeObject livenessLink(
+  Rooted<NativeObject*> livenessLink(
       cx, NewObjectWithGivenProto<DebuggerDebuggeeLink>(cx, nullptr));
   if (!livenessLink) {
     return false;
@@ -5362,7 +5353,7 @@ class MOZ_STACK_CLASS Debugger::ScriptQuery : public Debugger::QueryBase {
 
   /* If this is a string, matching scripts' sources have displayURLs equal to
    * it. */
-  RootedLinearString displayURLString;
+  Rooted<JSLinearString*> displayURLString;
 
   /*
    * If this is a source referent, matching scripts will have sources equal
@@ -5613,7 +5604,8 @@ bool Debugger::CallData::findScripts() {
   Handle<WasmInstanceObjectVector> wasmInstances(query.foundWasmInstances());
 
   size_t resultLength = scripts.length() + wasmInstances.length();
-  RootedArrayObject result(cx, NewDenseFullyAllocatedArray(cx, resultLength));
+  Rooted<ArrayObject*> result(cx,
+                              NewDenseFullyAllocatedArray(cx, resultLength));
   if (!result) {
     return false;
   }
@@ -5741,7 +5733,8 @@ bool Debugger::CallData::findSources() {
   Handle<SourceQuery::SourceSet> sources(query.foundSources());
 
   size_t resultLength = sources.count();
-  RootedArrayObject result(cx, NewDenseFullyAllocatedArray(cx, resultLength));
+  Rooted<ArrayObject*> result(cx,
+                              NewDenseFullyAllocatedArray(cx, resultLength));
   if (!result) {
     return false;
   }
@@ -5962,7 +5955,7 @@ bool Debugger::CallData::findObjects() {
   }
 
   size_t length = query.objects.length();
-  RootedArrayObject result(cx, NewDenseFullyAllocatedArray(cx, length));
+  Rooted<ArrayObject*> result(cx, NewDenseFullyAllocatedArray(cx, length));
   if (!result) {
     return false;
   }
@@ -6125,9 +6118,10 @@ bool Debugger::isCompilableUnit(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
+  MainThreadErrorContext ec(cx);
   JS::AutoSuppressWarningReporter suppressWarnings(cx);
   frontend::Parser<frontend::FullParseHandler, char16_t> parser(
-      cx, options, chars.twoByteChars(), length,
+      cx, &ec, options, chars.twoByteChars(), length,
       /* foldConstants = */ true, compilationState,
       /* syntaxParser = */ nullptr);
   if (!parser.checkOptions() || !parser.parse()) {
@@ -6185,7 +6179,7 @@ class DebuggerAdoptSourceMatcher {
 
   using ReturnType = DebuggerSource*;
 
-  ReturnType match(HandleScriptSourceObject source) {
+  ReturnType match(Handle<ScriptSourceObject*> source) {
     if (source->compartment() == cx_->compartment()) {
       JS_ReportErrorASCII(cx_,
                           "Source is in the same compartment as this debugger");
@@ -6289,6 +6283,36 @@ bool Debugger::CallData::adoptSource() {
   return true;
 }
 
+bool Debugger::CallData::enableAsyncStack() {
+  if (!args.requireAtLeast(cx, "Debugger.enableAsyncStack", 1)) {
+    return false;
+  }
+  Rooted<GlobalObject*> global(cx, dbg->unwrapDebuggeeArgument(cx, args[0]));
+  if (!global) {
+    return false;
+  }
+
+  global->realm()->isAsyncStackCapturingEnabled = true;
+
+  args.rval().setUndefined();
+  return true;
+}
+
+bool Debugger::CallData::disableAsyncStack() {
+  if (!args.requireAtLeast(cx, "Debugger.disableAsyncStack", 1)) {
+    return false;
+  }
+  Rooted<GlobalObject*> global(cx, dbg->unwrapDebuggeeArgument(cx, args[0]));
+  if (!global) {
+    return false;
+  }
+
+  global->realm()->isAsyncStackCapturingEnabled = false;
+
+  args.rval().setUndefined();
+  return true;
+}
+
 const JSPropertySpec Debugger::properties[] = {
     JS_DEBUG_PSGS("onDebuggerStatement", getOnDebuggerStatement,
                   setOnDebuggerStatement),
@@ -6331,6 +6355,8 @@ const JSFunctionSpec Debugger::methods[] = {
     JS_DEBUG_FN("adoptDebuggeeValue", adoptDebuggeeValue, 1),
     JS_DEBUG_FN("adoptFrame", adoptFrame, 1),
     JS_DEBUG_FN("adoptSource", adoptSource, 1),
+    JS_DEBUG_FN("enableAsyncStack", enableAsyncStack, 1),
+    JS_DEBUG_FN("disableAsyncStack", disableAsyncStack, 1),
     JS_FS_END};
 
 const JSFunctionSpec Debugger::static_methods[]{
@@ -6343,7 +6369,7 @@ DebuggerScript* Debugger::newDebuggerScript(
   RootedObject proto(
       cx, &object->getReservedSlot(JSSLOT_DEBUG_SCRIPT_PROTO).toObject());
   MOZ_ASSERT(proto);
-  RootedNativeObject debugger(cx, object);
+  Rooted<NativeObject*> debugger(cx, object);
 
   return DebuggerScript::create(cx, proto, referent, debugger);
 }
@@ -6406,7 +6432,7 @@ DebuggerSource* Debugger::newDebuggerSource(
   RootedObject proto(
       cx, &object->getReservedSlot(JSSLOT_DEBUG_SOURCE_PROTO).toObject());
   MOZ_ASSERT(proto);
-  RootedNativeObject debugger(cx, object);
+  Rooted<NativeObject*> debugger(cx, object);
   return DebuggerSource::create(cx, proto, referent, debugger);
 }
 
@@ -6424,7 +6450,7 @@ DebuggerSource* Debugger::wrapVariantReferent(
 }
 
 DebuggerSource* Debugger::wrapSource(JSContext* cx,
-                                     HandleScriptSourceObject source) {
+                                     Handle<ScriptSourceObject*> source) {
   Rooted<DebuggerSourceReferent> referent(cx, source.get());
   return wrapVariantReferent(cx, referent);
 }
@@ -6719,7 +6745,7 @@ bool Builder::Object::defineProperty(JSContext* cx, const char* name,
 Builder::Object Builder::newObject(JSContext* cx) {
   AutoRealm ar(cx, debuggerObject);
 
-  RootedPlainObject obj(cx, NewPlainObject(cx));
+  Rooted<PlainObject*> obj(cx, NewPlainObject(cx));
 
   // If the allocation failed, this will return a false Object, as the spec
   // promises.
@@ -6739,7 +6765,7 @@ AutoEntryMonitor::~AutoEntryMonitor() { cx_->entryMonitor = savedMonitor_; }
 
 extern JS_PUBLIC_API bool JS_DefineDebuggerObject(JSContext* cx,
                                                   HandleObject obj) {
-  RootedNativeObject debugCtor(cx), debugProto(cx), frameProto(cx),
+  Rooted<NativeObject*> debugCtor(cx), debugProto(cx), frameProto(cx),
       scriptProto(cx), sourceProto(cx), objectProto(cx), envProto(cx),
       memoryProto(cx);
   RootedObject debuggeeWouldRunProto(cx);
@@ -6937,7 +6963,7 @@ JSObject* GarbageCollectionEvent::toJSObject(JSContext* cx) const {
     return nullptr;
   }
 
-  RootedArrayObject slicesArray(cx, NewDenseEmptyArray(cx));
+  Rooted<ArrayObject*> slicesArray(cx, NewDenseEmptyArray(cx));
   if (!slicesArray) {
     return nullptr;
   }
@@ -6946,7 +6972,7 @@ JSObject* GarbageCollectionEvent::toJSObject(JSContext* cx) const {
 
   size_t idx = 0;
   for (auto range = collections.all(); !range.empty(); range.popFront()) {
-    RootedPlainObject collectionObj(cx, NewPlainObject(cx));
+    Rooted<PlainObject*> collectionObj(cx, NewPlainObject(cx));
     if (!collectionObj) {
       return nullptr;
     }

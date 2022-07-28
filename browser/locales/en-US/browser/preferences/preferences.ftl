@@ -633,10 +633,8 @@ home-restore-defaults =
     .label = Restore Defaults
     .accesskey = R
 
-# "Firefox" should be treated as a brand and kept in English,
-# while "Home" and "(Default)" can be localized.
-home-mode-choice-default =
-    .label = Firefox Home (Default)
+home-mode-choice-default-fx =
+    .label = { -firefox-home-brand-name } (Default)
 
 home-mode-choice-custom =
     .label = Custom URLs…
@@ -665,8 +663,8 @@ choose-bookmark =
 
 ## Home Section - Firefox Home Content Customization
 
-home-prefs-content-header = Firefox Home Content
-home-prefs-content-description = Choose what content you want on your Firefox Home screen.
+home-prefs-content-header2 = { -firefox-home-brand-name } Content
+home-prefs-content-description2 = Choose what content you want on your { -firefox-home-brand-name } screen.
 
 home-prefs-search-header =
     .label = Web Search
@@ -688,6 +686,8 @@ home-prefs-recommended-by-description-new = Exceptional content curated by { $pr
 home-prefs-recommended-by-learn-more = How it works
 home-prefs-recommended-by-option-sponsored-stories =
     .label = Sponsored Stories
+home-prefs-recommended-by-option-recent-saves =
+    .label = Show Recent Saves
 
 home-prefs-highlights-option-visited-pages =
     .label = Visited Pages
@@ -1190,7 +1190,7 @@ content-blocking-etp-custom-desc = Choose which trackers and scripts to block.
 content-blocking-etp-blocking-desc = { -brand-short-name } blocks the following:
 
 content-blocking-private-windows = Tracking content in Private Windows
-content-blocking-cross-site-cookies-in-all-windows = Cross-site cookies in all windows (includes tracking cookies)
+content-blocking-cross-site-cookies-in-all-windows2 = Cross-site cookies in all windows
 content-blocking-cross-site-tracking-cookies = Cross-site tracking cookies
 content-blocking-all-cross-site-cookies-private-windows = Cross-site cookies in Private Windows
 content-blocking-cross-site-tracking-cookies-plus-isolate = Cross-site tracking cookies, and isolate remaining cookies
@@ -1211,6 +1211,8 @@ content-blocking-etp-standard-tcp-rollout-checkbox =
 # "Contains" here means "isolates", "limits".
 content-blocking-etp-standard-tcp-rollout-description = Total Cookie Protection contains cookies to the site you’re on, so trackers can’t use them to follow you between sites.
 content-blocking-etp-standard-tcp-rollout-learn-more = Learn more
+
+content-blocking-etp-standard-tcp-title = Includes Total Cookie Protection, our most powerful privacy feature ever
 
 content-blocking-warning-title = Heads up!
 content-blocking-and-isolating-etp-warning-description-2 = This setting may cause some websites to not display content or work correctly. If a site seems broken, you may want to turn off tracking protection for that site to load all content.

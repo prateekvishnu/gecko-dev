@@ -29,7 +29,7 @@ import {
   getSelectedSource,
   getActiveSearch,
   getSourcesForTabs,
-  getHasSiblingOfSameName,
+  isSourceBlackBoxed,
   getContext,
 } from "../../selectors";
 
@@ -43,7 +43,6 @@ class Tab extends PureComponent {
       closeTabs: PropTypes.func.isRequired,
       copyToClipboard: PropTypes.func.isRequired,
       cx: PropTypes.object.isRequired,
-      hasSiblingOfSameName: PropTypes.bool.isRequired,
       onDragEnd: PropTypes.func.isRequired,
       onDragOver: PropTypes.func.isRequired,
       onDragStart: PropTypes.func.isRequired,
@@ -74,6 +73,7 @@ class Tab extends PureComponent {
       togglePrettyPrint,
       selectedSource,
       source,
+      isBlackBoxed,
     } = this.props;
 
     const tabCount = tabSources.length;
@@ -147,7 +147,7 @@ class Tab extends PureComponent {
       {
         item: {
           ...tabMenuItems.toggleBlackBox,
-          label: source.isBlackBoxed
+          label: isBlackBoxed
             ? L10N.getStr("ignoreContextItem.unignore")
             : L10N.getStr("ignoreContextItem.ignore"),
           disabled: !shouldBlackbox(source),
@@ -182,7 +182,6 @@ class Tab extends PureComponent {
       closeTab,
       source,
       tabSources,
-      hasSiblingOfSameName,
       onDragOver,
       onDragStart,
       onDragEnd,
@@ -212,7 +211,7 @@ class Tab extends PureComponent {
     });
 
     const path = getDisplayPath(source, tabSources);
-    const query = hasSiblingOfSameName ? getSourceQueryString(source) : "";
+    const query = getSourceQueryString(source);
 
     return (
       <div
@@ -254,8 +253,8 @@ const mapStateToProps = (state, { source }) => {
     cx: getContext(state),
     tabSources: getSourcesForTabs(state),
     selectedSource,
+    isBlackBoxed: isSourceBlackBoxed(state, source),
     activeSearch: getActiveSearch(state),
-    hasSiblingOfSameName: getHasSiblingOfSameName(state, source),
   };
 };
 

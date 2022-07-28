@@ -14,15 +14,14 @@ var EXPORTED_SYMBOLS = ["FormAutofillPrompter"];
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { FormAutofill } = ChromeUtils.import(
   "resource://autofill/FormAutofill.jsm"
 );
 const { FormAutofillUtils } = ChromeUtils.import(
   "resource://autofill/FormAutofillUtils.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -31,7 +30,9 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   CreditCard: "resource://gre/modules/CreditCard.jsm",
 });
 
-FormAutofill.defineLazyLogGetter(lazy, EXPORTED_SYMBOLS[0]);
+XPCOMUtils.defineLazyGetter(lazy, "log", () =>
+  FormAutofill.defineLogGetter(lazy, EXPORTED_SYMBOLS[0])
+);
 
 const GetStringFromName = FormAutofillUtils.stringBundle.GetStringFromName;
 const formatStringFromName =

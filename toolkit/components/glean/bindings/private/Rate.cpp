@@ -6,9 +6,11 @@
 
 #include "mozilla/glean/bindings/Rate.h"
 
+#include "jsapi.h"
 #include "nsString.h"
 #include "mozilla/Components.h"
 #include "mozilla/ResultVariant.h"
+#include "mozilla/glean/bindings/Common.h"
 #include "mozilla/glean/bindings/ScalarGIFFTMap.h"
 #include "mozilla/glean/fog_ffi_generated.h"
 #include "nsIClassInfoImpl.h"
@@ -67,7 +69,7 @@ GleanRate::AddToDenominator(int32_t aAmount) {
 
 NS_IMETHODIMP
 GleanRate::TestGetValue(const nsACString& aPingName, JSContext* aCx,
-                        JS::MutableHandleValue aResult) {
+                        JS::MutableHandle<JS::Value> aResult) {
   auto result = mRate.TestGetValue(aPingName);
   if (result.isErr()) {
     aResult.set(JS::UndefinedValue());
@@ -80,7 +82,7 @@ GleanRate::TestGetValue(const nsACString& aPingName, JSContext* aCx,
     aResult.set(JS::UndefinedValue());
   } else {
     // Build return value of the form: { numerator: n, denominator: d }
-    JS::RootedObject root(aCx, JS_NewPlainObject(aCx));
+    JS::Rooted<JSObject*> root(aCx, JS_NewPlainObject(aCx));
     if (!root) {
       return NS_ERROR_FAILURE;
     }

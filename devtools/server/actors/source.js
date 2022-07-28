@@ -10,7 +10,6 @@ const {
 const { ActorClassWithSpec, Actor } = require("devtools/shared/protocol");
 const { sourceSpec } = require("devtools/shared/specs/source");
 const {
-  resolveSourceURL,
   getSourcemapBaseURL,
 } = require("devtools/server/actors/utils/source-map-utils");
 const {
@@ -40,7 +39,25 @@ loader.lazyRequireGetter(this, "Services");
 
 const windowsDrive = /^([a-zA-Z]:)/;
 
-function getSourceURL(source, window) {
+function resolveSourceURL(sourceURL, targetActor) {
+  if (sourceURL) {
+    try {
+      let baseURL;
+      if (targetActor.window) {
+        baseURL = targetActor.window.location?.href;
+      }
+      // For worker, we don't have easy access to location,
+      // so pull extra information directly from the target actor.
+      if (targetActor.workerUrl) {
+        baseURL = targetActor.workerUrl;
+      }
+      return new URL(sourceURL, baseURL || undefined).href;
+    } catch (err) {}
+  }
+
+  return null;
+}
+function getSourceURL(source, targetActor) {
   // Some eval sources have URLs, but we want to explicitly ignore those because
   // they are generally useless strings like "eval" or "debugger eval code".
   let resourceURL = getDebuggerSourceURL(source) || "";
@@ -60,9 +77,9 @@ function getSourceURL(source, window) {
   // full URL, so that is what we want to use as the base if it is present.
   // If this is not an absolute URL, this will mean the maps in the file
   // will not have a valid base URL, but that is up to tooling that
-  let result = resolveSourceURL(source.displayURL, window);
+  let result = resolveSourceURL(source.displayURL, targetActor);
   if (!result) {
-    result = resolveSourceURL(resourceURL, window) || resourceURL;
+    result = resolveSourceURL(resourceURL, targetActor) || resourceURL;
 
     // In XPCShell tests, the source URL isn't actually a URL, it's a file path.
     // That causes issues because "C:/folder/file.js" is parsed as a URL with
@@ -109,9 +126,12 @@ const SourceActor = ActorClassWithSpec(sourceSpec, {
     if (this.__isInlineSource === undefined) {
       // If the source has a usable displayURL, the source is treated as not
       // inlined because it has its own URL.
+      // Also consider sources loaded from <iframe srcdoc> as independant sources,
+      // because we can't easily fetch the full html content of the srcdoc attribute.
       this.__isInlineSource =
         source.introductionType === "inlineScript" &&
-        !resolveSourceURL(source.displayURL, this.threadActor._parent.window);
+        !resolveSourceURL(source.displayURL, this.threadActor._parent) &&
+        !this.url.startsWith("about:srcdoc");
     }
     return this.__isInlineSource;
   },
@@ -130,7 +150,7 @@ const SourceActor = ActorClassWithSpec(sourceSpec, {
   },
   get url() {
     if (this._url === undefined) {
-      this._url = getSourceURL(this._source, this.threadActor._parent.window);
+      this._url = getSourceURL(this._source, this.threadActor._parent);
     }
     return this._url;
   },
@@ -141,14 +161,12 @@ const SourceActor = ActorClassWithSpec(sourceSpec, {
 
       // Cu is not available for workers and so we are not able to get a
       // WebExtensionPolicy object
-      if (!isWorker && this.url) {
+      if (!isWorker && this.url?.startsWith("moz-extension:")) {
         try {
           const extURI = Services.io.newURI(this.url);
-          if (extURI) {
-            const policy = WebExtensionPolicy.getByURI(extURI);
-            if (policy) {
-              this._extensionName = policy.name;
-            }
+          const policy = WebExtensionPolicy.getByURI(extURI);
+          if (policy) {
+            this._extensionName = policy.name;
           }
         } catch (e) {
           console.warn(`Failed to find extension name for ${this.url} : ${e}`);
@@ -223,6 +241,16 @@ const SourceActor = ActorClassWithSpec(sourceSpec, {
     // It will be "no source" if the Debugger API wasn't able to load
     // the source because sources were discarded
     // (javascript.options.discardSystemSource == true).
+    //
+    // For inline source, we do something special and ignore individual source content.
+    // Instead, each inline source will return the full HTML page content where
+    // the inline source is (i.e. `<script> js source </script>`).
+    //
+    // When using srcdoc attribute on iframes:
+    //   <iframe srcdoc="<script> js source </script>"></iframe>
+    // The whole iframe source is going to be considered as an inline source because displayURL is null
+    // and introductionType is inlineScript. But Debugger.Source.text is the only way
+    // to retrieve the source content.
     if (this._source.text !== "[no source]" && !this._isInlineSource) {
       return {
         content: this.actualText(),

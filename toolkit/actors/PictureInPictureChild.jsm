@@ -17,7 +17,6 @@ ChromeUtils.defineModuleGetter(
   "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 ChromeUtils.defineModuleGetter(
   lazy,
   "KEYBOARD_CONTROLS",
@@ -48,8 +47,8 @@ const { WebVTT } = ChromeUtils.import("resource://gre/modules/vtt.jsm");
 const { setTimeout, clearTimeout } = ChromeUtils.import(
   "resource://gre/modules/Timer.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
@@ -1332,9 +1331,6 @@ class PictureInPictureChild extends JSWindowActorChild {
         }
         break;
       }
-      case TEXT_TRACK_FONT_SIZE:
-        this.setTextTrackFontSize();
-        break;
     }
   }
 
@@ -1389,6 +1385,15 @@ class PictureInPictureChild extends JSWindowActorChild {
 
     const cues = this._currentWebVTTTrack.activeCues;
     this.updateWebVTTTextTracksDisplay(cues);
+  }
+
+  /**
+   * Toggle the visibility of the subtitles in the PiP window
+   */
+  toggleTextTracks() {
+    let textTracks = this.document.getElementById("texttracks");
+    textTracks.style.display =
+      textTracks.style.display === "none" ? "" : "none";
   }
 
   /**
@@ -1484,6 +1489,7 @@ class PictureInPictureChild extends JSWindowActorChild {
 
     if (!this.isSubtitlesEnabled) {
       this.isSubtitlesEnabled = true;
+      this.sendAsyncMessage("PictureInPicture:ShowSubtitlesButton");
     }
 
     let allCuesArray = [...textTrackCues];
@@ -1658,6 +1664,7 @@ class PictureInPictureChild extends JSWindowActorChild {
         break;
       }
       case "emptied": {
+        this.isSubtitlesEnabled = false;
         if (this.emptiedTimeout) {
           clearTimeout(this.emptiedTimeout);
           this.emptiedTimeout = null;
@@ -1795,6 +1802,14 @@ class PictureInPictureChild extends JSWindowActorChild {
         }
         break;
       }
+      case "PictureInPicture:ToggleTextTracks": {
+        this.toggleTextTracks();
+        break;
+      }
+      case "PictureInPicture:ChangeFontSizeTextTracks": {
+        this.setTextTrackFontSize();
+        break;
+      }
     }
   }
 
@@ -1816,6 +1831,10 @@ class PictureInPictureChild extends JSWindowActorChild {
     }
   }
 
+  /**
+   * Set the font size on the PiP window using the current font size value from
+   * the "media.videocontrols.picture-in-picture.display-text-tracks.size" pref
+   */
   setTextTrackFontSize() {
     const fontSize = Services.prefs.getStringPref(
       TEXT_TRACK_FONT_SIZE,
@@ -1844,8 +1863,6 @@ class PictureInPictureChild extends JSWindowActorChild {
       "media.videocontrols.picture-in-picture.display-text-tracks.enabled",
       this.observerFunction
     );
-
-    Services.prefs.addObserver(TEXT_TRACK_FONT_SIZE, this.observerFunction);
 
     let originatingWindow = originatingVideo.ownerGlobal;
     if (originatingWindow) {
@@ -2276,6 +2293,8 @@ class PictureInPictureChild extends JSWindowActorChild {
             ?.length).toString(),
         }
       );
+    } else {
+      this.sendAsyncMessage("PictureInPicture:HideSubtitlesButton");
     }
     this.#subtitlesEnabled = val;
   }
@@ -2446,6 +2465,9 @@ class PictureInPictureChildVideoWrapper {
   updatePiPTextTracks(text) {
     if (!this.#PictureInPictureChild.isSubtitlesEnabled && text) {
       this.#PictureInPictureChild.isSubtitlesEnabled = true;
+      this.#PictureInPictureChild.sendAsyncMessage(
+        "PictureInPicture:ShowSubtitlesButton"
+      );
     }
     let pipWindowTracksContainer = this.#PictureInPictureChild.document.getElementById(
       "texttracks"

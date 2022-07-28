@@ -2,12 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/remote-page */
 
-import "chrome://global/content/certviewer/pvutils_bundle.js";
-import "chrome://global/content/certviewer/asn1js_bundle.js";
-import "chrome://global/content/certviewer/pkijs_bundle.js";
-import "chrome://global/content/certviewer/certDecoder.js";
+import "chrome://global/content/certviewer/pvutils_bundle.jsm";
+import "chrome://global/content/certviewer/asn1js_bundle.jsm";
+import "chrome://global/content/certviewer/pkijs_bundle.jsm";
+import "chrome://global/content/certviewer/certDecoder.jsm";
 
 const { Integer, fromBER } = globalThis.asn1js.asn1js;
 const { Certificate } = globalThis.pkijs.pkijs;
@@ -313,6 +313,10 @@ function initPage() {
   if (ld) {
     // eslint-disable-next-line no-unsanitized/property
     ld.innerHTML = errDesc.innerHTML;
+  }
+
+  if (err == "dnsNotFound") {
+    RPMCheckAlternateHostAvailable();
   }
 
   if (err == "sslv3Used") {
@@ -772,7 +776,7 @@ function setCertErrorDetails(event) {
         desc,
         "cert-error-symantec-distrust-description",
         {
-          HOST_NAME,
+          hostname: HOST_NAME,
         }
       );
 
@@ -1176,7 +1180,7 @@ function setFocus(selector, position = "afterbegin") {
     // be focused. We use a requestAnimationFrame to queue up the focus to occur
     // once the button has its frame.
     requestAnimationFrame(() => {
-      button.focus({ preventFocusRing: true });
+      button.focus({ focusVisible: false });
     });
   }
 }

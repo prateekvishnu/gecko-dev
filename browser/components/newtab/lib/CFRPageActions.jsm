@@ -3,14 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const lazy = {};
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
@@ -558,14 +555,16 @@ class PageAction {
     let panelTitle;
 
     headerLabel.value = await this.getStrings(content.heading_text);
-    headerLink.setAttribute(
-      "href",
-      SUMO_BASE_URL + content.info_icon.sumo_path
-    );
-    headerImage.setAttribute(
-      "tooltiptext",
-      await this.getStrings(content.info_icon.label, "tooltiptext")
-    );
+    if (content.info_icon) {
+      headerLink.setAttribute(
+        "href",
+        SUMO_BASE_URL + content.info_icon.sumo_path
+      );
+      headerImage.setAttribute(
+        "tooltiptext",
+        await this.getStrings(content.info_icon.label, "tooltiptext")
+      );
+    }
     headerLink.onclick = () =>
       this._sendTelemetry({
         message_id: id,
@@ -881,7 +880,7 @@ const CFRPageActions = {
   async _fetchLatestAddonVersion(id) {
     let url = null;
     try {
-      const response = await lazy.fetch(`${ADDONS_API_URL}/${id}/`, {
+      const response = await fetch(`${ADDONS_API_URL}/${id}/`, {
         credentials: "omit",
       });
       if (response.status !== 204 && response.ok) {

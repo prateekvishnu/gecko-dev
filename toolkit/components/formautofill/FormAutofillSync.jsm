@@ -12,7 +12,6 @@ var EXPORTED_SYMBOLS = [
   "AutofillRecord",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { Changeset, Store, SyncEngine, Tracker } = ChromeUtils.import(
   "resource://services-sync/engines.js"
 );
@@ -23,15 +22,16 @@ const { Utils } = ChromeUtils.import("resource://services-sync/util.js");
 const { SCORE_INCREMENT_XLARGE } = ChromeUtils.import(
   "resource://services-sync/constants.js"
 );
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
 
 const lazy = {};
 
-ChromeUtils.defineModuleGetter(lazy, "Log", "resource://gre/modules/Log.jsm");
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "formAutofillStorage",
-  "resource://autofill/FormAutofillStorage.jsm"
-);
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  formAutofillStorage: "resource://autofill/FormAutofillStorage.jsm",
+  Log: "resource://gre/modules/Log.jsm",
+});
 
 // A helper to sanitize address and creditcard records suitable for logging.
 function sanitizeStorageObject(ob) {

@@ -13,11 +13,6 @@ For snippets, you should add the action type in `button_action` and any addition
 }
 ```
 
-## How to update
-
-Make a pull request against [mozilla/nimbus-shared](https://github.com/mozilla/nimbus-shared/) repo with your changes.
-Build and copy over resulting schema from `nimbus-shared/schemas/messaging/` to `toolkit/components/messaging-system/schemas/SpecialMessageActionSchemas.json`.
-
 ## Available Actions
 
 ### `OPEN_APPLICATIONS_MENU`
@@ -260,3 +255,58 @@ additional privacy section in about:preferences.
 ### `SHOW_SPOTLIGHT`
 
 Action for opening a spotlight tab or window modal using the content passed to the dialog.
+
+### `BLOCK_MESSAGE`
+
+Disable a message by adding to an indexedDb list of blocked messages
+
+* args: `string` id of the message
+
+### `SET_PREF`
+
+Action for setting various browser prefs
+
+Prefs that can be changed with this action are:
+
+- `browser.privacySegmentation.enabled`
+- `browser.privacySegmentation.windowSeparation.enabled`
+- `browser.startup.homepage`
+
+* args:
+```ts
+{
+  pref: {
+    name: string;
+    value: string | boolean | number;
+  }
+}
+```
+
+### `MULTI_ACTION`
+
+Action for running multiple actions. Actions should be included in an array of actions.
+
+* args:
+```ts
+{
+  actions: Array<UserAction>
+}
+```
+
+* example:
+```json
+{
+  "button_action": "MULTI_ACTION",
+  "button_action_args": {
+    "actions": [
+      {
+        "type": "OPEN_URL",
+        "args": "https://www.example.com"
+      },
+      {
+        "type": "OPEN_AWESOME_BAR"
+      }
+    ]
+  }
+}
+```

@@ -6,15 +6,11 @@ const { GeckoViewActorChild } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewActorChild.jsm"
 );
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const lazy = {};
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["URL"]);
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   ManifestObtainer: "resource://gre/modules/ManifestObtainer.jsm",
@@ -83,7 +79,7 @@ class ContentDelegateChild extends GeckoViewActorChild {
         let elementSrc = (isImage || isMedia) && (node.currentSrc || node.src);
         if (elementSrc) {
           const isBlob = elementSrc.startsWith("blob:");
-          if (isBlob && !lazy.URL.isValidURL(elementSrc)) {
+          if (isBlob && !URL.isValidURL(elementSrc)) {
             elementSrc = null;
           }
         }

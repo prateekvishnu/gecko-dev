@@ -5,13 +5,11 @@
 
 const EXPORTED_SYMBOLS = ["Screenshots"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 ChromeUtils.defineModuleGetter(
   lazy,
@@ -28,7 +26,6 @@ ChromeUtils.defineModuleGetter(
   "PrivateBrowsingUtils",
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const GREY_10 = "#F9F9FA";
 
@@ -63,7 +60,7 @@ const Screenshots = {
       // Blob URIs for the screenshots.
       const imgPath = lazy.PageThumbs.getThumbnailPath(url);
 
-      const filePathResponse = await lazy.fetch(`file://${imgPath}`);
+      const filePathResponse = await fetch(`file://${imgPath}`);
       const fileContents = await filePathResponse.blob();
 
       // Check if the file is empty, which indicates there isn't actually a

@@ -105,19 +105,19 @@ def get_taskgraph_generator(root, parameters):
 
 
 def format_taskgraph(options, parameters, logfile=None):
-    import gecko_taskgraph
+    import taskgraph
     from taskgraph.parameters import parameters_loader
 
     if logfile:
-        oldhandler = logging.root.handlers[-1]
-        logging.root.removeHandler(oldhandler)
-
         handler = logging.FileHandler(logfile, mode="w")
-        handler.setFormatter(oldhandler.formatter)
+        if logging.root.handlers:
+            oldhandler = logging.root.handlers[-1]
+            logging.root.removeHandler(oldhandler)
+            handler.setFormatter(oldhandler.formatter)
         logging.root.addHandler(handler)
 
     if options["fast"]:
-        gecko_taskgraph.fast = True
+        taskgraph.fast = True
 
     if isinstance(parameters, str):
         parameters = parameters_loader(

@@ -51,6 +51,7 @@ nsresult GfxInfo::Init() {
   mIsXWayland = false;
   mHasMultipleGPUs = false;
   mGlxTestError = false;
+  mIsVAAPISupported = false;
   return GfxInfoBase::Init();
 }
 
@@ -162,6 +163,7 @@ void GfxInfo::GetData() {
   nsCString adapterRam;
 
   nsCString drmRenderDevice;
+  nsCString isVAAPISupported;
 
   nsCString ddxDriver;
 
@@ -207,6 +209,8 @@ void GfxInfo::GetData() {
       stringToFill = pciDevices.AppendElement();
     } else if (!strcmp(line, "DRM_RENDERDEVICE")) {
       stringToFill = &drmRenderDevice;
+    } else if (!strcmp(line, "VAAPI_SUPPORTED")) {
+      stringToFill = &isVAAPISupported;
     } else if (!strcmp(line, "TEST_TYPE")) {
       stringToFill = &testType;
     } else if (!strcmp(line, "WARNING")) {
@@ -268,6 +272,7 @@ void GfxInfo::GetData() {
   }
 
   mDrmRenderDevice = std::move(drmRenderDevice);
+  mIsVAAPISupported = isVAAPISupported.Equals("TRUE");
   mTestType = std::move(testType);
 
   // Mesa always exposes itself in the GL_VERSION string, but not always the
@@ -822,29 +827,60 @@ const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
         V(495, 44, 0, 0), "FEATURE_FAILURE_NO_GBM", "495.44.0");
 
     ////////////////////////////////////
-    // FEATURE_VAAPI
+    // FEATURE_DMABUF_SURFACE_EXPORT
+    // Disabled due to:
+    // https://gitlab.freedesktop.org/mesa/mesa/-/issues/6666
+    // https://gitlab.freedesktop.org/mesa/mesa/-/issues/6796
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
         OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
         DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
-        DeviceFamily::All, nsIGfxInfo::FEATURE_VAAPI,
+        DeviceFamily::AtiAll, nsIGfxInfo::FEATURE_DMABUF_SURFACE_EXPORT,
+        nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
+        V(0, 0, 0, 0), "FEATURE_FAILURE_BROKEN_DRIVER", "");
+
+    // Disabled due to:
+    // https://gitlab.freedesktop.org/mesa/mesa/-/issues/6688
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
+        DeviceFamily::IntelAll, nsIGfxInfo::FEATURE_DMABUF_SURFACE_EXPORT,
+        nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
+        V(0, 0, 0, 0), "FEATURE_FAILURE_BROKEN_DRIVER", "");
+
+    ////////////////////////////////////
+    // FEATURE_HARDWARE_VIDEO_DECODING
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
+        DeviceFamily::All, nsIGfxInfo::FEATURE_HARDWARE_VIDEO_DECODING,
         nsIGfxInfo::FEATURE_BLOCKED_DRIVER_VERSION, DRIVER_LESS_THAN,
-        V(21, 0, 0, 0), "FEATURE_ROLLOUT_VAAPI_MESA", "Mesa 21.0.0.0");
+        V(21, 0, 0, 0), "FEATURE_HARDWARE_VIDEO_DECODING_MESA",
+        "Mesa 21.0.0.0");
 
     // Disable on all NVIDIA hardware
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
         OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
         DesktopEnvironment::All, WindowProtocol::All, DriverVendor::All,
-        DeviceFamily::NvidiaAll, nsIGfxInfo::FEATURE_VAAPI,
+        DeviceFamily::NvidiaAll, nsIGfxInfo::FEATURE_HARDWARE_VIDEO_DECODING,
         nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
-        V(0, 0, 0, 0), "FEATURE_FAILURE_VAAPI_NO_LINUX_NVIDIA", "");
+        V(0, 0, 0, 0), "FEATURE_HARDWARE_VIDEO_DECODING_NO_LINUX_NVIDIA", "");
 
     // Disable on all AMD devices not using Mesa.
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
         OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
         DesktopEnvironment::All, WindowProtocol::All, DriverVendor::NonMesaAll,
-        DeviceFamily::AtiAll, nsIGfxInfo::FEATURE_VAAPI,
+        DeviceFamily::AtiAll, nsIGfxInfo::FEATURE_HARDWARE_VIDEO_DECODING,
         nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
-        V(0, 0, 0, 0), "FEATURE_FAILURE_VAAPI_NO_LINUX_AMD", "");
+        V(0, 0, 0, 0), "FEATURE_HARDWARE_VIDEO_DECODING_NO_LINUX_AMD", "");
+
+    // Disable on Release/late Beta
+#if !defined(EARLY_BETA_OR_EARLIER)
+    APPEND_TO_DRIVER_BLOCKLIST(OperatingSystem::Linux, DeviceFamily::All,
+                               nsIGfxInfo::FEATURE_HARDWARE_VIDEO_DECODING,
+                               nsIGfxInfo::FEATURE_BLOCKED_DEVICE,
+                               DRIVER_COMPARISON_IGNORED, V(0, 0, 0, 0),
+                               "FEATURE_HARDWARE_VIDEO_DECODING_DISABLE", "");
+#endif
 
     ////////////////////////////////////
     // FEATURE_WEBRENDER_PARTIAL_PRESENT
@@ -973,6 +1009,13 @@ nsresult GfxInfo::GetFeatureStatusImpl(
         return NS_OK;
       }
     }
+  }
+
+  if (aFeature == nsIGfxInfo::FEATURE_HARDWARE_VIDEO_DECODING &&
+      !mIsVAAPISupported) {
+    *aStatus = nsIGfxInfo::FEATURE_BLOCKED_PLATFORM_TEST;
+    aFailureId = "FEATURE_FAILURE_VIDEO_DECODING_TEST_FAILED";
+    return NS_OK;
   }
 
   return GfxInfoBase::GetFeatureStatusImpl(

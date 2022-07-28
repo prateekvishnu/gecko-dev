@@ -4,12 +4,14 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { LogManager } = ChromeUtils.import(
   "resource://normandy/lib/LogManager.jsm"
+);
+const { PromiseUtils } = ChromeUtils.import(
+  "resource://gre/modules/PromiseUtils.jsm"
 );
 
 const lazy = {};
@@ -37,7 +39,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   RemoteSettingsClient: "resource://services-settings/RemoteSettingsClient.jsm",
   clearTimeout: "resource://gre/modules/Timer.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
 });
 
 var EXPORTED_SYMBOLS = ["RecipeRunner"];
@@ -88,7 +89,7 @@ function cacheProxy(target) {
 }
 
 var RecipeRunner = {
-  initializedPromise: lazy.PromiseUtils.defer(),
+  initializedPromise: PromiseUtils.defer(),
 
   async init() {
     this.running = false;
@@ -331,7 +332,10 @@ var RecipeRunner = {
       // Fetch recipes before execution in case we fail and exit early.
       let recipesAndSignatures;
       try {
-        recipesAndSignatures = await lazy.gRemoteSettingsClient.get();
+        recipesAndSignatures = await lazy.gRemoteSettingsClient.get({
+          // Do not return an empty list if an error occurs.
+          emptyListFallback: false,
+        });
       } catch (e) {
         await lazy.Uptake.reportRunner(lazy.Uptake.RUNNER_SERVER_ERROR);
         return;

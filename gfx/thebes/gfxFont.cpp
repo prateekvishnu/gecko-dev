@@ -231,9 +231,9 @@ bool gfxFontCache::HashEntry::KeyEquals(const KeyTypePointer aKey) const {
            aKey->mUnicodeRangeMap->Equals(fontUnicodeRangeMap)));
 }
 
-gfxFont* gfxFontCache::Lookup(const gfxFontEntry* aFontEntry,
-                              const gfxFontStyle* aStyle,
-                              const gfxCharacterMap* aUnicodeRangeMap) {
+already_AddRefed<gfxFont> gfxFontCache::Lookup(
+    const gfxFontEntry* aFontEntry, const gfxFontStyle* aStyle,
+    const gfxCharacterMap* aUnicodeRangeMap) {
   MutexAutoLock lock(mMutex);
 
   Key key(aFontEntry, aStyle, aUnicodeRangeMap);
@@ -241,11 +241,19 @@ gfxFont* gfxFontCache::Lookup(const gfxFontEntry* aFontEntry,
 
   Telemetry::Accumulate(Telemetry::FONT_CACHE_HIT, entry != nullptr);
 
-  return entry ? entry->mFont : nullptr;
+  if (!entry) {
+    return nullptr;
+  }
+
+  RefPtr<gfxFont> font = entry->mFont;
+  if (font->GetExpirationState()->IsTracked()) {
+    RemoveObjectLocked(font, lock);
+  }
+  return font.forget();
 }
 
 void gfxFontCache::AddNew(gfxFont* aFont) {
-  gfxFont* oldFont;
+  nsTArray<gfxFont*> discard;
   {
     MutexAutoLock lock(mMutex);
 
@@ -255,28 +263,53 @@ void gfxFontCache::AddNew(gfxFont* aFont) {
     if (!entry) {
       return;
     }
-    oldFont = entry->mFont;
+    gfxFont* oldFont = entry->mFont;
     entry->mFont = aFont;
     // Assert that we can find the entry we just put in (this fails if the key
     // has a NaN float value in it, e.g. 'sizeAdjust').
     MOZ_ASSERT(entry == mFonts.GetEntry(key));
-  }
 
-  // If someone's asked us to replace an existing font entry, then that's a
-  // bit weird, but let it happen, and expire the old font if it's not used.
-  if (oldFont && oldFont->GetExpirationState()->IsTracked()) {
-    // if oldFont == aFont, recount should be > 0,
-    // so we shouldn't be here.
-    NS_ASSERTION(aFont != oldFont, "new font is tracked for expiry!");
-    NotifyExpired(oldFont);
+    // If someone's asked us to replace an existing font entry, then that's a
+    // bit weird, but let it happen, and expire the old font if it's not used.
+    if (oldFont && oldFont->GetExpirationState()->IsTracked()) {
+      // if oldFont == aFont, recount should be > 0,
+      // so we shouldn't be here.
+      NS_ASSERTION(aFont != oldFont, "new font is tracked for expiry!");
+      NotifyExpiredLocked(oldFont, lock);
+      discard = std::move(mTrackerDiscard);
+    }
   }
+  DestroyDiscard(discard);
 }
 
 void gfxFontCache::NotifyReleased(gfxFont* aFont) {
-  if (NS_FAILED(AddObject(aFont))) {
+  nsTArray<gfxFont*> discard;
+  {
+    MutexAutoLock lock(mMutex);
+
+    // Ensure nothing pulled a strong reference out of the cache during the last
+    // release. The only raw reference remaining should be in this cache, so
+    // if it remains zero while we hold the lock, we know it is safe to add it
+    // to the tracker.
+    //
+    // We may also be racing to reinsert the font into the cache, given another
+    // thread could have not only done the lookup, but also released it before
+    // we were able to process the first zero count release. If it is already
+    // tracked, then we have nothing to do.
+    if (aFont->GetRefCount() > 0 || aFont->GetExpirationState()->IsTracked()) {
+      return;
+    }
+
+    if (NS_SUCCEEDED(AddObjectLocked(aFont, lock))) {
+      return;
+    }
+
     // We couldn't track it for some reason. Kill it now.
-    DestroyFont(aFont);
+    DestroyFontLocked(aFont);
+    discard = std::move(mTrackerDiscard);
   }
+
+  DestroyDiscard(discard);
   // Note that we might have fonts that aren't in the hashtable, perhaps because
   // of OOM adding to the hashtable or because someone did an AddNew where
   // we already had a font. These fonts are added to the expiration tracker
@@ -285,15 +318,17 @@ void gfxFontCache::NotifyReleased(gfxFont* aFont) {
 }
 
 void gfxFontCache::NotifyExpiredLocked(gfxFont* aFont, const AutoLock& aLock) {
-  aFont->ClearCachedWords();
   RemoveObjectLocked(aFont, aLock);
   DestroyFontLocked(aFont);
 }
 
-void gfxFontCache::NotifyExpired(gfxFont* aFont) {
-  aFont->ClearCachedWords();
-  RemoveObject(aFont);
-  DestroyFont(aFont);
+void gfxFontCache::NotifyHandlerEnd() {
+  nsTArray<gfxFont*> discard;
+  {
+    MutexAutoLock lock(mMutex);
+    discard = std::move(mTrackerDiscard);
+  }
+  DestroyDiscard(discard);
 }
 
 void gfxFontCache::DestroyFontLocked(gfxFont* aFont) {
@@ -305,23 +340,38 @@ void gfxFontCache::DestroyFontLocked(gfxFont* aFont) {
   }
   NS_ASSERTION(aFont->GetRefCount() == 0,
                "Destroying with non-zero ref count!");
-  MutexAutoUnlock unlock(mMutex);
-  delete aFont;
+  mTrackerDiscard.AppendElement(aFont);
 }
 
-void gfxFontCache::DestroyFont(gfxFont* aFont) {
+void gfxFontCache::DestroyDiscard(nsTArray<gfxFont*>& aDiscard) {
+  for (auto* font : aDiscard) {
+    NS_ASSERTION(font->GetRefCount() == 0,
+                 "Destroying with non-zero ref count!");
+    font->ClearCachedWords();
+    delete font;
+  }
+  aDiscard.Clear();
+}
+
+void gfxFontCache::Flush() {
+  nsTArray<gfxFont*> discard;
   {
     MutexAutoLock lock(mMutex);
-    Key key(aFont->GetFontEntry(), aFont->GetStyle(),
-            aFont->GetUnicodeRangeMap());
-    HashEntry* entry = mFonts.GetEntry(key);
-    if (entry && entry->mFont == aFont) {
-      mFonts.RemoveEntry(entry);
-    }
+    mFonts.Clear();
+    AgeAllGenerationsLocked(lock);
+    discard = std::move(mTrackerDiscard);
   }
-  NS_ASSERTION(aFont->GetRefCount() == 0,
-               "Destroying with non-zero ref count!");
-  delete aFont;
+  DestroyDiscard(discard);
+}
+
+void gfxFontCache::AgeAllGenerations() {
+  nsTArray<gfxFont*> discard;
+  {
+    MutexAutoLock lock(mMutex);
+    AgeAllGenerationsLocked(lock);
+    discard = std::move(mTrackerDiscard);
+  }
+  DestroyDiscard(discard);
 }
 
 /*static*/
@@ -811,7 +861,7 @@ void gfxShapedText::AdjustAdvancesForSyntheticBold(float aSynBoldOffset,
 float gfxFont::AngleForSyntheticOblique() const {
   // If the style doesn't call for italic/oblique, or if the face already
   // provides it, no synthetic style should be added.
-  if (mStyle.style == FontSlantStyle::Normal() || !mStyle.allowSyntheticStyle ||
+  if (mStyle.style == FontSlantStyle::NORMAL || !mStyle.allowSyntheticStyle ||
       !mFontEntry->IsUpright()) {
     return 0.0f;
   }
@@ -819,7 +869,9 @@ float gfxFont::AngleForSyntheticOblique() const {
   // If style calls for italic, and face doesn't support it, use default
   // oblique angle as a simulation.
   if (mStyle.style.IsItalic()) {
-    return mFontEntry->SupportsItalic() ? 0.0f : FontSlantStyle::kDefaultAngle;
+    return mFontEntry->SupportsItalic()
+               ? 0.0f
+               : FontSlantStyle::DEFAULT_OBLIQUE_DEGREES;
   }
 
   // Default or custom oblique angle
@@ -830,12 +882,12 @@ float gfxFont::SkewForSyntheticOblique() const {
   // Precomputed value of tan(kDefaultAngle), the default italic/oblique slant;
   // avoids calling tan() at runtime except for custom oblique values.
   static const float kTanDefaultAngle =
-      tan(FontSlantStyle::kDefaultAngle * (M_PI / 180.0));
+      tan(FontSlantStyle::DEFAULT_OBLIQUE_DEGREES * (M_PI / 180.0));
 
   float angle = AngleForSyntheticOblique();
   if (angle == 0.0f) {
     return 0.0f;
-  } else if (angle == FontSlantStyle::kDefaultAngle) {
+  } else if (angle == FontSlantStyle::DEFAULT_OBLIQUE_DEGREES) {
     return kTanDefaultAngle;
   } else {
     return tan(angle * (M_PI / 180.0));
@@ -982,9 +1034,17 @@ gfxFloat gfxFont::GetGlyphAdvance(uint16_t aGID, bool aVertical) {
   NS_ASSERTION(mFUnitsConvFactor >= 0.0f,
                "missing font unit conversion factor");
   if (gfxHarfBuzzShaper* shaper = GetHarfBuzzShaper()) {
-    return (aVertical ? shaper->GetGlyphVAdvance(aGID)
-                      : shaper->GetGlyphHAdvance(aGID)) /
-           65536.0;
+    if (aVertical) {
+      // Note that GetGlyphVAdvance may return -1 to indicate it was unable
+      // to retrieve vertical metrics; in that case we fall back to the
+      // aveCharWidth value as a default advance.
+      int32_t advance = shaper->GetGlyphVAdvance(aGID);
+      if (advance < 0) {
+        return GetMetrics(nsFontMetrics::eVertical).aveCharWidth;
+      }
+      return advance / 65536.0;
+    }
+    return shaper->GetGlyphHAdvance(aGID) / 65536.0;
   }
   return 0.0;
 }
@@ -3571,7 +3631,7 @@ bool gfxFont::InitFakeSmallCapsRun(
                               aSyntheticUpper);
 }
 
-gfxFont* gfxFont::GetSmallCapsFont() const {
+already_AddRefed<gfxFont> gfxFont::GetSmallCapsFont() const {
   gfxFontStyle style(*GetStyle());
   style.size *= SMALL_CAPS_SCALE_FACTOR;
   style.variantCaps = NS_FONT_VARIANT_CAPS_NORMAL;
@@ -3579,7 +3639,8 @@ gfxFont* gfxFont::GetSmallCapsFont() const {
   return fe->FindOrMakeFont(&style, mUnicodeRangeMap);
 }
 
-gfxFont* gfxFont::GetSubSuperscriptFont(int32_t aAppUnitsPerDevPixel) const {
+already_AddRefed<gfxFont> gfxFont::GetSubSuperscriptFont(
+    int32_t aAppUnitsPerDevPixel) const {
   gfxFontStyle style(*GetStyle());
   style.AdjustForSubSuperscript(aAppUnitsPerDevPixel);
   gfxFontEntry* fe = GetFontEntry();
@@ -3946,6 +4007,7 @@ void gfxFont::CreateVerticalMetrics() {
   if (mFUnitsConvFactor < 0.0) {
     uint16_t upem = GetFontEntry()->UnitsPerEm();
     if (upem != gfxFontEntry::kInvalidUPEM) {
+      AutoWriteLock lock(mLock);
       mFUnitsConvFactor = GetAdjustedSize() / upem;
     }
   }
@@ -4014,7 +4076,17 @@ void gfxFont::CreateVerticalMetrics() {
         metrics->maxDescent = halfExtent;
         SET_SIGNED(externalLeading, vhea->lineGap);
       }
-      metrics->ideographicWidth = GetCharAdvance(kWaterIdeograph, true);
+      // Call gfxHarfBuzzShaper::GetGlyphVAdvance directly, as GetCharAdvance
+      // would potentially recurse if no v-advance is available and it attempts
+      // to fall back to a value from mVerticalMetrics.
+      if (gfxHarfBuzzShaper* shaper = GetHarfBuzzShaper()) {
+        uint32_t gid = ProvidesGetGlyph()
+                           ? GetGlyph(kWaterIdeograph, 0)
+                           : shaper->GetNominalGlyph(kWaterIdeograph);
+        int32_t advance = shaper->GetGlyphVAdvance(gid);
+        metrics->ideographicWidth =
+            advance < 0 ? metrics->aveCharWidth : mFUnitsConvFactor * advance;
+      }
     }
   }
 
@@ -4159,9 +4231,9 @@ gfxFontStyle::gfxFontStyle()
       baselineOffset(0.0f),
       languageOverride(NO_FONT_LANGUAGE_OVERRIDE),
       fontSmoothingBackgroundColor(NS_RGBA(0, 0, 0, 0)),
-      weight(FontWeight::Normal()),
-      stretch(FontStretch::Normal()),
-      style(FontSlantStyle::Normal()),
+      weight(FontWeight::NORMAL),
+      stretch(FontStretch::NORMAL),
+      style(FontSlantStyle::NORMAL),
       variantCaps(NS_FONT_VARIANT_CAPS_NORMAL),
       variantSubSuper(NS_FONT_VARIANT_POSITION_NORMAL),
       sizeAdjustBasis(uint8_t(FontSizeAdjust::Tag::None)),
@@ -4226,11 +4298,11 @@ gfxFontStyle::gfxFontStyle(FontSlantStyle aStyle, FontWeight aWeight,
   MOZ_ASSERT(FontSizeAdjust::Tag(sizeAdjustBasis) == aSizeAdjust.tag,
              "gfxFontStyle.sizeAdjustBasis too small?");
 
-  if (weight > FontWeight(1000)) {
-    weight = FontWeight(1000);
+  if (weight > FontWeight::FromInt(1000)) {
+    weight = FontWeight::FromInt(1000);
   }
-  if (weight < FontWeight(1)) {
-    weight = FontWeight(1);
+  if (weight < FontWeight::FromInt(1)) {
+    weight = FontWeight::FromInt(1);
   }
 
   if (size >= FONT_MAX_SIZE) {
@@ -4249,9 +4321,8 @@ PLDHashNumber gfxFontStyle::Hash() const {
                       : mozilla::HashBytes(variationSettings.Elements(),
                                            variationSettings.Length() *
                                                sizeof(gfxFontVariation));
-  return mozilla::AddToHash(hash, systemFont, style.ForHash(),
-                            stretch.ForHash(), weight.ForHash(), size,
-                            int32_t(sizeAdjust * 1000.0f));
+  return mozilla::AddToHash(hash, systemFont, style.Raw(), stretch.Raw(),
+                            weight.Raw(), size, int32_t(sizeAdjust * 1000.0f));
 }
 
 void gfxFontStyle::AdjustForSubSuperscript(int32_t aAppUnitsPerDevPixel) {

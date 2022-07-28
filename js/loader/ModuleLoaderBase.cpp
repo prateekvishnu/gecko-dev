@@ -24,6 +24,7 @@
 #include "mozilla/dom/ScriptLoadContext.h"
 #include "mozilla/CycleCollectedJSContext.h"  // nsAutoMicroTask
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "nsContentUtils.h"
 #include "nsICacheInfoChannel.h"  // nsICacheInfoChannel
 #include "nsNetUtil.h"            // NS_NewURI
@@ -599,14 +600,13 @@ nsresult ModuleLoaderBase::HandleResolveFailure(
 
 ResolveResult ModuleLoaderBase::ResolveModuleSpecifier(
     LoadedScript* aScript, const nsAString& aSpecifier) {
-  bool importMapsEnabled = Preferences::GetBool("dom.importMaps.enabled");
   // If import map is enabled, forward to the updated 'Resolve a module
   // specifier' algorithm defined in Import maps spec.
   //
   // Once import map is enabled by default,
   // ModuleLoaderBase::ResolveModuleSpecifier should be replaced by
   // ImportMap::ResolveModuleSpecifier.
-  if (importMapsEnabled) {
+  if (mozilla::StaticPrefs::dom_importMaps_enabled()) {
     return ImportMap::ResolveModuleSpecifier(mImportMap.get(), mLoader, aScript,
                                              aSpecifier);
   }
@@ -624,13 +624,13 @@ ResolveResult ModuleLoaderBase::ResolveModuleSpecifier(
   }
 
   if (rv != NS_ERROR_MALFORMED_URI) {
-    return Err(ResolveError::ModuleResolveFailure);
+    return Err(ResolveError::Failure);
   }
 
   if (!StringBeginsWith(aSpecifier, u"/"_ns) &&
       !StringBeginsWith(aSpecifier, u"./"_ns) &&
       !StringBeginsWith(aSpecifier, u"../"_ns)) {
-    return Err(ResolveError::ModuleResolveFailure);
+    return Err(ResolveError::FailureMayBeBare);
   }
 
   // Get the document's base URL if we don't have a referencing script here.
@@ -646,7 +646,7 @@ ResolveResult ModuleLoaderBase::ResolveModuleSpecifier(
     return WrapNotNull(uri);
   }
 
-  return Err(ResolveError::ModuleResolveFailure);
+  return Err(ResolveError::Failure);
 }
 
 nsresult ModuleLoaderBase::ResolveRequestedModules(
@@ -891,6 +891,11 @@ ModuleLoaderBase::~ModuleLoaderBase() {
 
 void ModuleLoaderBase::Shutdown() {
   MOZ_ASSERT(mFetchingModules.IsEmpty());
+
+  for (const auto& entry : mFetchedModules) {
+    entry.GetData()->Shutdown();
+  }
+
   mFetchedModules.Clear();
   mGlobalObject = nullptr;
   mEventTarget = nullptr;
@@ -980,7 +985,7 @@ bool ModuleLoaderBase::InstantiateModuleGraph(ModuleLoadRequest* aRequest) {
     return true;
   }
 
-  if (!JS::ModuleInstantiate(jsapi.cx(), module)) {
+  if (!JS::ModuleLink(jsapi.cx(), module)) {
     LOG(("ScriptLoadRequest (%p): Instantiate failed", aRequest));
     MOZ_ASSERT(jsapi.HasException());
     JS::RootedValue exception(jsapi.cx());

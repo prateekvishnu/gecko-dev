@@ -199,7 +199,7 @@ function waitForSelectedSource(dbg, sourceOrUrl) {
   const {
     getSelectedSource,
     getSelectedSourceTextContent,
-    hasSymbols,
+    getSymbols,
     getBreakableLines,
   } = dbg.selectors;
 
@@ -216,7 +216,7 @@ function waitForSelectedSource(dbg, sourceOrUrl) {
         // Second argument is either a source URL (string)
         // or a Source object.
         if (typeof sourceOrUrl == "string") {
-          if (!source.url.includes(sourceOrUrl)) {
+          if (!source.url.includes(encodeURI(sourceOrUrl))) {
             return false;
           }
         } else if (source.id != sourceOrUrl.id) {
@@ -224,7 +224,7 @@ function waitForSelectedSource(dbg, sourceOrUrl) {
         }
       }
 
-      return hasSymbols(source) && getBreakableLines(source.id);
+      return getSymbols(source) && getBreakableLines(source.id);
     },
     "selected source"
   );
@@ -1066,10 +1066,47 @@ async function assertScopes(dbg, items) {
   is(getScopeLabel(dbg, items.length + 1), "Window");
 }
 
+function findSourceTreeThreadByName(dbg, name) {
+  return [...findAllElements(dbg, "sourceTreeThreads")].find(el => {
+    return el.textContent.includes(name);
+  });
+}
+
 function findSourceNodeWithText(dbg, text) {
   return [...findAllElements(dbg, "sourceNodes")].find(el => {
     return el.textContent.includes(text);
   });
+}
+
+/**
+ * Assert the icon type used in the SourceTree for a given source
+ *
+ * @param {Object} dbg
+ * @param {String} sourceName
+ *        Name of the source displayed in the source tree
+ * @param {String} icon
+ *        Expected icon CSS classname
+ */
+function assertSourceIcon(dbg, sourceName, icon) {
+  const sourceItem = findSourceNodeWithText(dbg, sourceName);
+  ok(sourceItem, `Found the source item for ${sourceName}`);
+  is(
+    sourceItem.querySelector(".source-icon").className,
+    `img source-icon ${icon}`,
+    `The icon for ${sourceName} is correct`
+  );
+}
+
+async function expandSourceTree(dbg) {
+  // Click on expand all context menu for all top level "expandable items".
+  // If there is no project root, it will be thread items.
+  // But when there is a project root, it can be directory or group items.
+  // Select only expandable in order to ignore source items.
+  for (const rootNode of dbg.win.document.querySelectorAll(
+    ".sources-list > .managed-tree > .tree > .tree-node[data-expandable=true]"
+  )) {
+    await expandAllSourceNodes(dbg, rootNode);
+  }
 }
 
 async function expandAllSourceNodes(dbg, treeNode) {
@@ -1993,15 +2030,6 @@ async function waitForBreakableLine(dbg, source, lineNumber) {
     },
     `waiting for breakable line ${lineNumber}`
   );
-}
-
-async function expandSourceTree(dbg) {
-  const rootNodes = dbg.win.document.querySelectorAll(
-    selectors.sourceTreeThreadsNodes
-  );
-  for (const rootNode of rootNodes) {
-    await expandAllSourceNodes(dbg, rootNode);
-  }
 }
 
 async function waitForSourceTreeThreadsCount(dbg, i) {

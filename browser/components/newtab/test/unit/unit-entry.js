@@ -3,6 +3,8 @@ import Adapter from "enzyme-adapter-react-16";
 import { chaiAssertions } from "test/schemas/pings";
 import chaiJsonSchema from "chai-json-schema";
 import enzyme from "enzyme";
+import FxMSCommonSchema from "../../content-src/asrouter/schemas/FxMSCommon.schema.json";
+
 enzyme.configure({ adapter: new Adapter() });
 
 // Cause React warnings to make tests that trigger them fail
@@ -29,6 +31,7 @@ sinon.assert.expose(assert, { prefix: "" });
 
 chai.use(chaiAssertions);
 chai.use(chaiJsonSchema);
+chai.tv4.addSchema("file:///FxMSCommon.schema.json", FxMSCommonSchema);
 
 const overrider = new GlobalOverrider();
 
@@ -74,6 +77,14 @@ class Logger {
   warn() {}
 }
 
+function ConsoleAPI() {}
+ConsoleAPI.prototype.debug = () => {};
+ConsoleAPI.prototype.trace = () => {};
+// Comment out the above prototype assignments and uncomment the ones below to get more
+// ASRouter logging in tests:
+//ConsoleAPI.prototype.debug = console.debug;
+//ConsoleAPI.prototype.trace = console.trace;
+
 // Detect plain object passed to lazy getter APIs, and set its prototype to
 // global object, and return the global object for further modification.
 // Returns the object if it's not plain object.
@@ -117,6 +128,9 @@ const TEST_GLOBAL = {
     },
     platform: "win",
   },
+  ASRouterPreferences: {
+    console: new ConsoleAPI(),
+  },
   UpdateUtils: { getUpdateChannel() {} },
   BasePromiseWorker: class {
     constructor() {
@@ -132,6 +146,9 @@ const TEST_GLOBAL = {
       return {};
     },
     import() {
+      return global;
+    },
+    importESModule() {
       return global;
     },
   },
@@ -154,6 +171,7 @@ const TEST_GLOBAL = {
     },
     isSuccessCode: () => true,
   },
+  ConsoleAPI,
   // NB: These are functions/constructors
   // eslint-disable-next-line object-shorthand
   ContentSearchUIController: function() {},
@@ -516,15 +534,16 @@ const TEST_GLOBAL = {
     off: () => {},
   },
   NimbusFeatures: {
+    glean: {
+      getVariable() {},
+    },
     newtab: {
-      isEnabled() {},
       getVariable() {},
       getAllVariables() {},
       onUpdate() {},
       off() {},
     },
     pocketNewtab: {
-      isEnabled() {},
       getVariable() {},
       getAllVariables() {},
       onUpdate() {},
@@ -568,6 +587,36 @@ const TEST_GLOBAL = {
   },
   Logger,
   getFxAccountsSingleton() {},
+  AboutNewTab: {},
+  Glean: {
+    newtab: {
+      opened: {
+        record() {},
+      },
+      closed: {
+        record() {},
+      },
+      locale: {
+        set() {},
+      },
+    },
+    topsites: {
+      impression: {
+        record() {},
+      },
+      click: {
+        record() {},
+      },
+    },
+  },
+  GleanPings: {
+    newtab: {
+      submit() {},
+    },
+  },
+  Utils: {
+    SERVER_URL: "bogus://foo",
+  },
 };
 overrider.set(TEST_GLOBAL);
 

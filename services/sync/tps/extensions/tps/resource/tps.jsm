@@ -23,15 +23,21 @@ var EXPORTED_SYMBOLS = [
   "Windows",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
+const { PromiseUtils } = ChromeUtils.import(
+  "resource://gre/modules/PromiseUtils.jsm"
+);
 
 const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   Authentication: "resource://tps/auth/fxaccounts.jsm",
@@ -45,8 +51,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   Log: "resource://gre/modules/Log.jsm",
   Logger: "resource://tps/logger.jsm",
   OS: "resource://gre/modules/osfile.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
   SessionStore: "resource:///modules/sessionstore/SessionStore.jsm",
   Svc: "resource://services-sync/util.js",
   SyncTelemetry: "resource://services-sync/telemetry.js",
@@ -64,7 +68,7 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   BookmarkFolder: "resource://tps/modules/bookmarks.jsm",
   Livemark: "resource://tps/modules/bookmarks.jsm",
   Separator: "resource://tps/modules/bookmarks.jsm",
-  BookmarkValidator: "resource://services-sync/bookmark_validator.js",
+  BookmarkValidator: "resource://tps/modules/bookmarkValidator.jsm",
 
   Address: "resource://tps/modules/formautofill.jsm",
   DumpAddresses: "resource://tps/modules/formautofill.jsm",
@@ -166,7 +170,7 @@ var TPS = {
   shouldValidateBookmarks: false,
   shouldValidatePasswords: false,
   shouldValidateForms: false,
-  _placesInitDeferred: lazy.PromiseUtils.defer(),
+  _placesInitDeferred: PromiseUtils.defer(),
 
   _init: function TPS__init() {
     this.delayAutoSync();

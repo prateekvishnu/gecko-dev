@@ -6,8 +6,8 @@
 
 var EXPORTED_SYMBOLS = ["getModuleClass"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const modules = {
@@ -20,6 +20,7 @@ XPCOMUtils.defineLazyModuleGetters(modules.root, {
   browsingContext:
     "chrome://remote/content/webdriver-bidi/modules/root/browsingContext.jsm",
   log: "chrome://remote/content/webdriver-bidi/modules/root/log.jsm",
+  script: "chrome://remote/content/webdriver-bidi/modules/root/script.jsm",
   session: "chrome://remote/content/webdriver-bidi/modules/root/session.jsm",
 });
 
@@ -32,6 +33,8 @@ XPCOMUtils.defineLazyModuleGetters(modules.windowglobal, {
   browsingContext:
     "chrome://remote/content/webdriver-bidi/modules/windowglobal/browsingContext.jsm",
   log: "chrome://remote/content/webdriver-bidi/modules/windowglobal/log.jsm",
+  script:
+    "chrome://remote/content/webdriver-bidi/modules/windowglobal/script.jsm",
 });
 
 /**

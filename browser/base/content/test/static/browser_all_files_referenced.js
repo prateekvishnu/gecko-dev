@@ -33,7 +33,6 @@ var gExceptionPaths = [
   "chrome://browser/content/assets/moz-vpn.svg",
   "chrome://browser/content/assets/vpn-logo.svg",
   "chrome://browser/content/assets/focus-promo.png",
-  "chrome://browser/content/preferences/more-from-mozilla-qr-code-advanced.svg",
   "chrome://browser/content/assets/klar-qr-code.svg",
 
   // toolkit/components/pdfjs/content/build/pdf.js
@@ -78,6 +77,7 @@ if (AppConstants.platform == "macosx") {
 if (AppConstants.MOZ_BACKGROUNDTASKS) {
   // These preferences are active only when we're in background task mode.
   gExceptionPaths.push("resource://gre/defaults/backgroundtasks/");
+  gExceptionPaths.push("resource://app/defaults/backgroundtasks/");
   // `BackgroundTask_id.jsm` is loaded at runtime by `app --backgroundtask id ...`.
   gExceptionPaths.push("resource://gre/modules/backgroundtasks/");
 }
@@ -219,10 +219,11 @@ var whitelist = [
     platforms: ["linux", "macosx"],
   },
   // Bug 1344267
-  { file: "chrome://remote/content/marionette/test.xhtml" },
   { file: "chrome://remote/content/marionette/test_dialog.properties" },
   { file: "chrome://remote/content/marionette/test_dialog.xhtml" },
   { file: "chrome://remote/content/marionette/test_menupopup.xhtml" },
+  { file: "chrome://remote/content/marionette/test_no_xul.xhtml" },
+  { file: "chrome://remote/content/marionette/test.xhtml" },
   // Bug 1348559
   { file: "chrome://pippki/content/resetpassword.xhtml" },
   // Bug 1337345
@@ -254,15 +255,6 @@ var whitelist = [
   // Referenced by the webcompat system addon for localization
   { file: "resource://gre/localization/en-US/toolkit/about/aboutCompat.ftl" },
 
-  // Bug 1559554
-  { file: "chrome://browser/content/aboutlogins/aboutLoginsUtils.js" },
-
-  // Bug 1559554
-  {
-    file:
-      "chrome://browser/content/aboutlogins/components/import-details-row.js",
-  },
-
   // dom/media/mediacontrol/MediaControlService.cpp
   { file: "resource://gre/localization/en-US/dom/media.ftl" },
 
@@ -281,10 +273,14 @@ var whitelist = [
   // find the references)
   { file: "chrome://browser/content/screenshots/copied-notification.svg" },
 
-  { file: "resource://app/modules/SnapshotSelector.jsm" },
+  { file: "resource://app/modules/SnapshotSelector.sys.mjs" },
 
   // toolkit/xre/MacRunFromDmgUtils.mm
   { file: "resource://gre/localization/en-US/toolkit/global/run-from-dmg.ftl" },
+
+  // References to esm generated from jsm programatically
+  { file: "resource://gre/modules/LangPackMatcher.sys.mjs" },
+  { file: "resource://gre/modules/PluralForm.sys.mjs" },
 ];
 
 if (AppConstants.NIGHTLY_BUILD && AppConstants.platform != "win") {
@@ -300,13 +296,6 @@ if (AppConstants.platform == "android") {
   // Referenced by aboutGlean.html
   whitelist.push({
     file: "resource://gre/localization/en-US/toolkit/about/aboutGlean.ftl",
-  });
-}
-
-if (AppConstants.MOZ_BACKGROUNDTASKS && !AppConstants.MOZ_UPDATE_AGENT) {
-  // These utilities are for background tasks, not regular headed browsing.
-  whitelist.push({
-    file: "resource://gre/modules/BackgroundTasksUtils.jsm",
   });
 }
 
@@ -637,6 +626,18 @@ function parseCodeFile(fileUri) {
           addCodeReference(convertToCodeURI(url), fileUri);
         }
 
+        // This handles `import` lines which may be multi-line.
+        // We have an ESLint rule, `import/no-unassigned-import` which prevents
+        // using bare `import "foo.js"`, so we don't need to handle that case
+        // here.
+        match = line.match(/from\W*['"](.*?)['"]/);
+        if (match?.[1]) {
+          let url = match[1];
+          url = Services.io.newURI(url, null, baseUri || fileUri).spec;
+          url = convertToCodeURI(url);
+          addCodeReference(url, fileUri);
+        }
+
         if (isDevtools) {
           let rules = [
             ["devtools/client/locales", "chrome://devtools/locale"],
@@ -654,7 +655,7 @@ function parseCodeFile(fileUri) {
             for (let rule of rules) {
               if (path.startsWith(rule[0] + "/")) {
                 path = path.replace(rule[0], rule[1]);
-                if (!/\.(properties|js|jsm|json|css)$/.test(path)) {
+                if (!/\.(properties|js|jsm|mjs|json|css)$/.test(path)) {
                   path += ".js";
                 }
                 addCodeReference(path, fileUri);
@@ -668,7 +669,7 @@ function parseCodeFile(fileUri) {
             let url = match[1];
             url = Services.io.newURI(url, null, baseUri || fileUri).spec;
             url = convertToCodeURI(url);
-            if (!/\.(properties|js|jsm|json|css)$/.test(url)) {
+            if (!/\.(properties|js|jsm|mjs|json|css)$/.test(url)) {
               url += ".js";
             }
             if (url.startsWith("resource://")) {
@@ -707,7 +708,7 @@ function parseCodeFile(fileUri) {
         if (
           isDevtools &&
           line.includes("require(") &&
-          !/\.(properties|js|jsm|json|css)$/.test(url)
+          !/\.(properties|js|jsm|mjs|json|css)$/.test(url)
         ) {
           url += ".js";
         }
@@ -741,30 +742,13 @@ function convertToCodeURI(fileUri) {
   }
 }
 
-function chromeFileExists(aURI) {
-  let available = 0;
+async function chromeFileExists(aURI) {
   try {
-    let channel = NetUtil.newChannel({
-      uri: aURI,
-      loadUsingSystemPrincipal: true,
-      contentPolicyType: Ci.nsIContentPolicy.TYPE_FETCH,
-    });
-    let stream = channel.open();
-    let sstream = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(
-      Ci.nsIScriptableInputStream
-    );
-    sstream.init(stream);
-    available = sstream.available();
-    sstream.close();
+    return await PerfTestHelpers.checkURIExists(aURI);
   } catch (e) {
-    if (
-      e.result != Cr.NS_ERROR_FILE_NOT_FOUND &&
-      e.result != Cr.NS_ERROR_NOT_AVAILABLE
-    ) {
-      todo(false, "Failed to check if " + aURI + "exists: " + e);
-    }
+    todo(false, `Failed to check if ${aURI} exists: ${e}`);
+    return false;
   }
-  return available > 0;
 }
 
 function findChromeUrlsFromArray(array, prefix) {
@@ -824,9 +808,9 @@ add_task(async function checkAllTheFiles() {
   findChromeUrlsFromArray(uint16, "resource://");
 
   const kCodeExtensions = [
-    ".xul",
     ".xml",
     ".xsl",
+    ".mjs",
     ".js",
     ".jsm",
     ".json",
@@ -872,10 +856,13 @@ add_task(async function checkAllTheFiles() {
   });
 
   // Wait for all manifest to be parsed
-  await throttledMapPromises(manifestURIs, parseManifest);
+  await PerfTestHelpers.throttledMapPromises(manifestURIs, parseManifest);
 
   for (let jsm of Components.manager.getComponentJSMs()) {
     gReferencesFromCode.set(jsm, null);
+  }
+  for (let esModule of Components.manager.getComponentESModules()) {
+    gReferencesFromCode.set(esModule, null);
   }
 
   // manifest.json is a common name, it is used for WebExtension manifests
@@ -902,7 +889,9 @@ add_task(async function checkAllTheFiles() {
   }
 
   // Wait for all the files to have actually loaded:
-  await throttledMapPromises(allPromises, ([task, uri]) => task(uri));
+  await PerfTestHelpers.throttledMapPromises(allPromises, ([task, uri]) =>
+    task(uri)
+  );
 
   // Keep only chrome:// files, and filter out either the devtools paths or
   // the non-devtools paths:
@@ -1063,7 +1052,7 @@ add_task(async function checkAllTheFiles() {
 
     if (
       (file.startsWith("chrome://") || file.startsWith("resource://")) &&
-      !chromeFileExists(file)
+      !(await chromeFileExists(file))
     ) {
       // Ignore chrome prefixes that have been automatically expanded.
       let pathParts =

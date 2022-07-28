@@ -539,7 +539,7 @@ nsWindowWatcher::OpenWindowWithRemoteTab(nsIRemoteTab* aRemoteTab,
   // get various interfaces for aDocShellItem, used throughout this method
   CSSToDesktopScale cssToDesktopScale(1.0f);
   if (nsCOMPtr<nsIBaseWindow> win = do_QueryInterface(parentTreeOwner)) {
-    cssToDesktopScale = win->GetCSSToDesktopScale();
+    cssToDesktopScale = win->GetUnscaledCSSToDesktopScale();
   }
   SizeSpec sizeSpec = CalcSizeSpec(features, false, cssToDesktopScale);
   sizeSpec.ScaleBy(aOpenerFullZoom);
@@ -723,7 +723,7 @@ nsresult nsWindowWatcher::OpenWindowInternal(
 
   CSSToDesktopScale cssToDesktopScale(1.0);
   if (nsCOMPtr<nsIBaseWindow> win = do_QueryInterface(parentDocShell)) {
-    cssToDesktopScale = win->GetCSSToDesktopScale();
+    cssToDesktopScale = win->GetUnscaledCSSToDesktopScale();
   }
   SizeSpec sizeSpec =
       CalcSizeSpec(features, hasChromeParent, cssToDesktopScale);
@@ -841,6 +841,8 @@ nsresult nsWindowWatcher::OpenWindowInternal(
   }
 
   uint32_t activeDocsSandboxFlags = 0;
+  nsCOMPtr<nsIContentSecurityPolicy> cspToInheritForAboutBlank;
+  Maybe<nsILoadInfo::CrossOriginEmbedderPolicy> coepToInheritForAboutBlank;
   if (!newBC) {
     // We're going to either open up a new window ourselves or ask a
     // nsIWindowProvider for one.  In either case, we'll want to set the right
@@ -853,6 +855,12 @@ nsresult nsWindowWatcher::OpenWindowInternal(
       if (Document* doc = parentWindow->GetDoc()) {
         // Save sandbox flags for copying to new browsing context (docShell).
         activeDocsSandboxFlags = doc->GetSandboxFlags();
+
+        if (!aForceNoOpener) {
+          cspToInheritForAboutBlank = doc->GetCsp();
+          coepToInheritForAboutBlank = doc->GetEmbedderPolicy();
+        }
+
         // Check to see if this frame is allowed to navigate, but don't check if
         // we're printing, as that's not a real navigation.
         if (aPrintKind == PRINT_NONE &&
@@ -1159,16 +1167,9 @@ nsresult nsWindowWatcher::OpenWindowInternal(
     // this call already happened when the window was created, but
     // SetInitialPrincipalToSubject is safe to call multiple times.
     if (win) {
-      nsCOMPtr<nsIContentSecurityPolicy> cspToInheritForAboutBlank;
-      Maybe<nsILoadInfo::CrossOriginEmbedderPolicy> coepToInheritForAboutBlank;
-      nsCOMPtr<mozIDOMWindowProxy> targetOpener = win->GetSameProcessOpener();
-      nsCOMPtr<nsIDocShell> openerDocShell(do_GetInterface(targetOpener));
-      if (openerDocShell) {
-        RefPtr<Document> openerDoc =
-            static_cast<nsDocShell*>(openerDocShell.get())->GetDocument();
-        cspToInheritForAboutBlank = openerDoc ? openerDoc->GetCsp() : nullptr;
-        coepToInheritForAboutBlank = openerDoc->GetEmbedderPolicy();
-      }
+      MOZ_ASSERT(windowIsNew);
+      MOZ_ASSERT(!win->GetSameProcessOpener() ||
+                 win->GetSameProcessOpener() == aParent);
       win->SetInitialPrincipalToSubject(cspToInheritForAboutBlank,
                                         coepToInheritForAboutBlank);
 
@@ -2209,9 +2210,7 @@ static void SizeOpenedWindow(nsIDocShellTreeOwner* aTreeOwner,
     DesktopToLayoutDeviceScale devToDesktopScale =
         treeOwnerAsWin->DevicePixelsPerDesktopPixel();
 
-    LayoutDeviceIntRect devPxRect;
-    treeOwnerAsWin->GetPositionAndSize(&devPxRect.x, &devPxRect.y,
-                                       &devPxRect.width, &devPxRect.height);
+    LayoutDeviceIntRect devPxRect = treeOwnerAsWin->GetPositionAndSize();
     width = (LayoutDeviceCoord(devPxRect.width) / cssToDevScale).Rounded();
     height = (LayoutDeviceCoord(devPxRect.height) / cssToDevScale).Rounded();
     left = (LayoutDeviceCoord(devPxRect.x) / devToDesktopScale).Rounded();
@@ -2287,7 +2286,8 @@ static void SizeOpenedWindow(nsIDocShellTreeOwner* aTreeOwner,
       CSSIntCoord winWidth = width + extraWidth;
       CSSIntCoord winHeight = height + extraHeight;
 
-      const auto screenCssToDesktopScale = screen->GetCSSToDesktopScale();
+      auto screenCssToDesktopScale = screen->GetCSSToDesktopScale();
+
       const DesktopIntRect screenDesktopRect = screen->GetAvailRectDisplayPix();
       // Get screen dimensions (in CSS pixels)
       const CSSSize screenCssSize =

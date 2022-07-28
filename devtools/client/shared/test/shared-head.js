@@ -322,6 +322,7 @@ async function safeCloseBrowserConsole({ clearOutput = false } = {}) {
  * we listen to this message to cleanup the observer.
  */
 function highlighterTestActorBootstrap() {
+  /* eslint-env mozilla/process-script */
   const HIGHLIGHTER_TEST_ACTOR_URL =
     "chrome://mochitests/content/browser/devtools/client/shared/test/highlighter-test-actor.js";
 
@@ -1996,4 +1997,14 @@ async function closeRDM(tab, options) {
   const manager = ResponsiveUIManager;
   await manager.closeIfNeeded(tab.ownerGlobal, tab, options);
   info("Responsive design mode closed");
+}
+
+function getInputStream(data) {
+  const BufferStream = CC(
+    "@mozilla.org/io/arraybuffer-input-stream;1",
+    "nsIArrayBufferInputStream",
+    "setData"
+  );
+  const buffer = new TextEncoder().encode(data).buffer;
+  return new BufferStream(buffer, 0, buffer.byteLength);
 }

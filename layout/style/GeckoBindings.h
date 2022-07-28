@@ -17,7 +17,6 @@
 #include "mozilla/css/SheetLoadData.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/EffectCompositor.h"
-#include "mozilla/ComputedTimingFunction.h"
 #include "mozilla/PreferenceSheet.h"
 #include "nsStyleStruct.h"
 
@@ -40,6 +39,9 @@ struct Keyframe;
 
 namespace css {
 class LoaderReusableStyleSheets;
+}
+namespace dom {
+enum class CompositeOperationOrAuto : uint8_t;
 }
 }  // namespace mozilla
 
@@ -242,9 +244,8 @@ const RawServoAnimationValue* Gecko_ElementTransitions_EndValueAt(
 
 double Gecko_GetProgressFromComputedTiming(const mozilla::ComputedTiming*);
 
-double Gecko_GetPositionInSegment(
-    const mozilla::AnimationPropertySegment*, double aProgress,
-    mozilla::ComputedTimingFunction::BeforeFlag aBeforeFlag);
+double Gecko_GetPositionInSegment(const mozilla::AnimationPropertySegment*,
+                                  double aProgress, bool aBeforeFlag);
 
 // Get servo's AnimationValue for |aProperty| from the cached base style
 // |aBaseStyles|.
@@ -381,28 +382,33 @@ void Gecko_EnsureStyleTransitionArrayLength(void* array, size_t len);
 //                Must be a floating point number in the range [0.0, 1.0].
 // @param timingFunction  The timing function to match, or, if no suitable
 //                        Keyframe is found, to set on the created Keyframe.
+// @param composition  The composition to match, or, if no suitable Keyframe is
+//                     found, to set on the created Keyframe.
 //
 // @returns  The matching or created Keyframe.
 mozilla::Keyframe* Gecko_GetOrCreateKeyframeAtStart(
     nsTArray<mozilla::Keyframe>* keyframes, float offset,
-    const nsTimingFunction* timingFunction);
+    const mozilla::StyleComputedTimingFunction* timingFunction,
+    const mozilla::dom::CompositeOperationOrAuto composition);
 
 // As with Gecko_GetOrCreateKeyframeAtStart except that this method will search
 // from the beginning of |keyframes| for a Keyframe with matching timing
-// function and an offset of 0.0.
+// function, composition, and an offset of 0.0.
 // Furthermore, if a matching Keyframe is not found, a new Keyframe will be
 // inserted after the *last* Keyframe in |keyframes| with offset 0.0.
 mozilla::Keyframe* Gecko_GetOrCreateInitialKeyframe(
     nsTArray<mozilla::Keyframe>* keyframes,
-    const nsTimingFunction* timingFunction);
+    const mozilla::StyleComputedTimingFunction* timingFunction,
+    const mozilla::dom::CompositeOperationOrAuto composition);
 
 // As with Gecko_GetOrCreateKeyframeAtStart except that this method will search
-// from the *end* of |keyframes| for a Keyframe with matching timing function
-// and an offset of 1.0. If a matching Keyframe is not found, a new Keyframe
-// will be appended to the end of |keyframes|.
+// from the *end* of |keyframes| for a Keyframe with matching timing function,
+// composition, and an offset of 1.0. If a matching Keyframe is not found, a new
+// Keyframe will be appended to the end of |keyframes|.
 mozilla::Keyframe* Gecko_GetOrCreateFinalKeyframe(
     nsTArray<mozilla::Keyframe>* keyframes,
-    const nsTimingFunction* timingFunction);
+    const mozilla::StyleComputedTimingFunction* timingFunction,
+    const mozilla::dom::CompositeOperationOrAuto composition);
 
 // Appends and returns a new PropertyValuePair to |aProperties| initialized with
 // its mProperty member set to |aProperty| and all other members initialized to
@@ -443,26 +449,7 @@ NS_DECL_THREADSAFE_FFI_REFCOUNTING(nsIReferrerInfo, nsIReferrerInfo);
 
 void Gecko_FillAllImageLayers(nsStyleImageLayers* layers, uint32_t max_len);
 
-float Gecko_FontStretch_ToFloat(mozilla::FontStretch aStretch);
-
-void Gecko_FontStretch_SetFloat(mozilla::FontStretch* aStretch,
-                                float aFloatValue);
-
 void Gecko_LoadData_Drop(mozilla::StyleLoadData*);
-
-float Gecko_FontSlantStyle_ToFloat(mozilla::FontSlantStyle aStyle);
-void Gecko_FontSlantStyle_SetNormal(mozilla::FontSlantStyle*);
-void Gecko_FontSlantStyle_SetItalic(mozilla::FontSlantStyle*);
-
-void Gecko_FontSlantStyle_SetOblique(mozilla::FontSlantStyle*,
-                                     float angle_degrees);
-
-void Gecko_FontSlantStyle_Get(mozilla::FontSlantStyle, bool* normal,
-                              bool* italic, float* oblique_angle);
-
-float Gecko_FontWeight_ToFloat(mozilla::FontWeight aWeight);
-
-void Gecko_FontWeight_SetFloat(mozilla::FontWeight* aWeight, float aFloatValue);
 
 void Gecko_nsStyleFont_SetLang(nsStyleFont* font, nsAtom* atom);
 

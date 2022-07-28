@@ -1155,8 +1155,12 @@ nsresult DnsAndConnectSocket::TransportSetup::SetupStreams(
 
   Unused << socketTransport->SetIsPrivate(ci->GetPrivate());
 
-  if (ci->GetLessThanTls13()) {
+  if (dnsAndSock->mCaps & NS_HTTP_DISALLOW_ECH) {
     tmpFlags |= nsISocketTransport::DONT_TRY_ECH;
+  }
+
+  if (dnsAndSock->mCaps & NS_HTTP_IS_RETRY) {
+    tmpFlags |= nsISocketTransport::IS_RETRY;
   }
 
   if (((dnsAndSock->mCaps & NS_HTTP_BE_CONSERVATIVE) ||

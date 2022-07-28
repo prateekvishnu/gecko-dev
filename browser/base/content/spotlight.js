@@ -99,7 +99,7 @@ async function renderSpotlight(ready) {
     // If we just call focus() at some random time, it'll cause a flush,
     // which slows things down unnecessarily, so instead we use rAF...
     requestAnimationFrame(() => {
-      primaryBtn.focus({ preventFocusRing: true });
+      primaryBtn.focus({ focusVisible: false });
     });
   }
   if (secondaryBtn) {
@@ -140,6 +140,7 @@ function renderMultistage(ready) {
   window.AWFinish = () => {
     window.close();
   };
+  window.AWWaitForMigrationClose = receive("WAIT_FOR_MIGRATION_CLOSE");
 
   // Update styling to be compatible with about:welcome.
   addStylesheet(
@@ -151,8 +152,10 @@ function renderMultistage(ready) {
 
   // The content handles styling including its own modal shadowing.
   const { classList } = browser.closest(".dialogBox");
-  classList.add("noShadow");
-  addEventListener("pagehide", () => classList.remove("noShadow"));
+  classList.add("noShadow", "fullScreen");
+  addEventListener("pagehide", () =>
+    classList.remove("noShadow", "fullScreen")
+  );
 
   // Load the bundle to render the content as configured.
   document.head.appendChild(document.createElement("script")).src =

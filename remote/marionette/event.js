@@ -7,9 +7,8 @@
 
 const EXPORTED_SYMBOLS = ["event"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -102,60 +101,70 @@ event.DoubleClickTracker = {
   },
 };
 
-/**
- * Get shifted key character for a given key character.
- *
- * For characters unaffected by the shift key, this returns the input.
- *
- * @param {string} rawKey Key for which to get shifted key.
- * @returns {string} Key string to use when the shift modifier is set.
- */
-event.getShiftedKey = function(rawKey) {
-  return lazy.keyData.getShiftedKey(rawKey);
-};
-
-/**
- * Get key event data for a given key character.
- *
- * @param {string} key
- *     Key for which to get data. This can either be the key codepoint
- *     itself or one of the codepoints in the range U+E000-U+E05D that
- *     WebDriver uses to represent keys not corresponding directly to
- *     a codepoint.
- * @returns {Object} Key event data object.
- */
-event.getKeyData = function(rawKey) {
-  return lazy.keyData.getData(rawKey);
-};
-
 // Only used by legacyactions.js
 event.parseModifiers_ = function(modifiers, win) {
   return _getEventUtils(win)._parseModifiers(modifiers);
 };
 
 /**
- * Synthesise a mouse event on a target.
+ * Synthesise a mouse event at a point.
  *
- * The actual client point is determined by taking the aTarget's client
- * box and offseting it by offsetX and offsetY.  This allows mouse clicks
- * to be simulated by calling this method.
- *
- * If the type is specified, an mouse event of that type is
- * fired. Otherwise, a mousedown followed by a mouse up is performed.
+ * If the type is specified in opts, an mouse event of that type is
+ * fired. Otherwise, a mousedown followed by a mouseup is performed.
  *
  * @param {number} left
- *     Horizontal offset to click from the target's bounding box.
+ *     Offset from viewport left, in CSS pixels
  * @param {number} top
- *     Vertical offset to click from the target's bounding box.
- * @param {Object.<string, ?>} opts
+ *     Offset from viewport top, in CSS pixels
+ * @param {Object} opts
  *     Object which may contain the properties "shiftKey", "ctrlKey",
  *     "altKey", "metaKey", "accessKey", "clickCount", "button", and
  *     "type".
  * @param {Window} win
  *     Window object.
+ *
+ * @return {boolean} defaultPrevented
  */
 event.synthesizeMouseAtPoint = function(left, top, opts, win) {
   return _getEventUtils(win).synthesizeMouseAtPoint(left, top, opts, win);
+};
+
+/**
+ * Synthesise a touch event at a point.
+ *
+ * If the type is specified in opts, a touch event of that type is
+ * fired. Otherwise, a touchstart followed by a touchend is performed.
+ *
+ * @param {number} left
+ *     Offset from viewport left, in CSS pixels
+ * @param {number} top
+ *     Offset from viewport top, in CSS pixels
+ * @param {Object} opts
+ *     Object which may contain the properties "id", "rx", "ry", "angle",
+ *     "force", "shiftKey", "ctrlKey", "altKey", "metaKey", "accessKey",
+ *     "type".
+ * @param {Window} win
+ *     Window object.
+ *
+ * @return {boolean} defaultPrevented
+ */
+event.synthesizeTouchAtPoint = function(left, top, opts, win) {
+  return _getEventUtils(win).synthesizeTouchAtPoint(left, top, opts, win);
+};
+
+event.synthesizeMultiTouch = function(opts, win) {
+  const modifiers = _getEventUtils(win)._parseModifiers(opts);
+  win.windowUtils.sendTouchEvent(
+    opts.type,
+    opts.id,
+    opts.x,
+    opts.y,
+    opts.rx,
+    opts.ry,
+    opts.angle,
+    opts.force,
+    modifiers
+  );
 };
 
 /**

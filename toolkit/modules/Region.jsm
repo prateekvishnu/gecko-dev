@@ -6,10 +6,9 @@
 
 const EXPORTED_SYMBOLS = ["Region"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -24,8 +23,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   LocationHelper: "resource://gre/modules/LocationHelper.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
@@ -747,10 +744,7 @@ class RegionDetector {
   async _fetchTimeout(url, opts, timeout) {
     let controller = new AbortController();
     opts.signal = controller.signal;
-    return Promise.race([
-      lazy.fetch(url, opts),
-      this._timeout(timeout, controller),
-    ]);
+    return Promise.race([fetch(url, opts), this._timeout(timeout, controller)]);
   }
 
   /**

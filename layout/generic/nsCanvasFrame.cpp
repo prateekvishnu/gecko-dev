@@ -461,11 +461,13 @@ void nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     ComputedStyle* bg = nullptr;
     nsIFrame* dependentFrame = nullptr;
     bool isThemed = IsThemed();
-    if (!isThemed &&
-        nsCSSRendering::FindBackgroundFrame(this, &dependentFrame)) {
-      bg = dependentFrame->Style();
-      if (dependentFrame == this) {
-        dependentFrame = nullptr;
+    if (!isThemed) {
+      dependentFrame = nsCSSRendering::FindBackgroundFrame(this);
+      if (dependentFrame) {
+        bg = dependentFrame->Style();
+        if (dependentFrame == this) {
+          dependentFrame = nullptr;
+        }
       }
     }
 
@@ -886,10 +888,9 @@ void nsCanvasFrame::Reflow(nsPresContext* aPresContext,
                                  aStatus);
 
   NS_FRAME_TRACE_REFLOW_OUT("nsCanvasFrame::Reflow", aStatus);
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
-nsresult nsCanvasFrame::GetContentForEvent(WidgetEvent* aEvent,
+nsresult nsCanvasFrame::GetContentForEvent(const WidgetEvent* aEvent,
                                            nsIContent** aContent) {
   NS_ENSURE_ARG_POINTER(aContent);
   nsresult rv = nsIFrame::GetContentForEvent(aEvent, aContent);

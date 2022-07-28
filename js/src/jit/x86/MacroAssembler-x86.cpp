@@ -509,7 +509,8 @@ void MacroAssemblerX86::finish() {
   }
 }
 
-void MacroAssemblerX86::handleFailureWithHandlerTail(Label* profilerExitTail) {
+void MacroAssemblerX86::handleFailureWithHandlerTail(Label* profilerExitTail,
+                                                     Label* bailoutTail) {
   // Reserve space for exception information.
   subl(Imm32(sizeof(ResumeFromException)), esp);
   movl(esp, eax);
@@ -551,10 +552,11 @@ void MacroAssemblerX86::handleFailureWithHandlerTail(Label* profilerExitTail) {
 
   breakpoint();  // Invalid kind.
 
-  // No exception handler. Load the error value, load the new stack pointer
-  // and return from the entry frame.
+  // No exception handler. Load the error value, restore state and return from
+  // the entry frame.
   bind(&entryFrame);
   asMasm().moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
+  loadPtr(Address(esp, ResumeFromException::offsetOfFramePointer()), ebp);
   loadPtr(Address(esp, ResumeFromException::offsetOfStackPointer()), esp);
   ret();
 
@@ -588,15 +590,14 @@ void MacroAssemblerX86::handleFailureWithHandlerTail(Label* profilerExitTail) {
   loadPtr(Address(esp, ResumeFromException::offsetOfStackPointer()), esp);
   loadValue(Address(ebp, BaselineFrame::reverseOffsetOfReturnValue()),
             JSReturnOperand);
-  movl(ebp, esp);
-  pop(ebp);
   jump(&profilingInstrumentation);
 
   // Return the given value to the caller.
   bind(&returnIon);
   loadValue(Address(esp, ResumeFromException::offsetOfException()),
             JSReturnOperand);
-  loadPtr(Address(esp, ResumeFromException::offsetOfFramePointer()), esp);
+  loadPtr(Address(esp, ResumeFromException::offsetOfFramePointer()), ebp);
+  loadPtr(Address(esp, ResumeFromException::offsetOfStackPointer()), esp);
 
   // If profiling is enabled, then update the lastProfilingFrame to refer to
   // caller frame before returning. This code is shared by ForcedReturnIon
@@ -606,21 +607,24 @@ void MacroAssemblerX86::handleFailureWithHandlerTail(Label* profilerExitTail) {
     Label skipProfilingInstrumentation;
     // Test if profiler enabled.
     AbsoluteAddress addressOfEnabled(
-        GetJitContext()->runtime->geckoProfiler().addressOfEnabled());
+        asMasm().runtime()->geckoProfiler().addressOfEnabled());
     asMasm().branch32(Assembler::Equal, addressOfEnabled, Imm32(0),
                       &skipProfilingInstrumentation);
     jump(profilerExitTail);
     bind(&skipProfilingInstrumentation);
   }
 
+  movl(ebp, esp);
+  pop(ebp);
   ret();
 
   // If we are bailing out to baseline to handle an exception, jump to the
   // bailout tail stub. Load 1 (true) in ReturnReg to indicate success.
   bind(&bailout);
   loadPtr(Address(esp, ResumeFromException::offsetOfBailoutInfo()), ecx);
+  loadPtr(Address(esp, ResumeFromException::offsetOfStackPointer()), esp);
   move32(Imm32(1), ReturnReg);
-  jmp(Operand(esp, ResumeFromException::offsetOfTarget()));
+  jump(bailoutTail);
 
   // If we are throwing and the innermost frame was a wasm frame, reset SP and
   // FP; SP is pointing to the unwound return address to the wasm entry, so
@@ -649,7 +653,7 @@ void MacroAssemblerX86::profilerEnterFrame(Register framePtr,
 }
 
 void MacroAssemblerX86::profilerExitFrame() {
-  jump(GetJitContext()->runtime->jitRuntime()->getProfilerExitFrameTail());
+  jump(asMasm().runtime()->jitRuntime()->getProfilerExitFrameTail());
 }
 
 Assembler::Condition MacroAssemblerX86::testStringTruthy(

@@ -11,8 +11,11 @@
 
 var EXPORTED_SYMBOLS = ["TelemetryEventPing", "Policy"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { TelemetryUtils } = ChromeUtils.import(
+  "resource://gre/modules/TelemetryUtils.jsm"
+);
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -33,14 +36,8 @@ ChromeUtils.defineModuleGetter(
   "clearTimeout",
   "resource://gre/modules/Timer.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "TelemetryUtils",
-  "resource://gre/modules/TelemetryUtils.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-const Utils = lazy.TelemetryUtils;
+const Utils = TelemetryUtils;
 
 const MS_IN_A_MINUTE = 60 * 1000;
 
@@ -90,7 +87,7 @@ var TelemetryEventPing = {
     // Calculate process creation once.
     this._processStartTimestamp =
       Math.round(
-        (Date.now() - lazy.TelemetryUtils.monotonicNow()) / MS_IN_A_MINUTE
+        (Date.now() - TelemetryUtils.monotonicNow()) / MS_IN_A_MINUTE
       ) * MS_IN_A_MINUTE;
 
     Services.obs.addObserver(this, EVENT_LIMIT_REACHED_TOPIC);

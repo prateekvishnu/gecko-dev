@@ -23,6 +23,7 @@
 #include "mozilla/EnumeratedArray.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 #include "nsICanvasRenderingContextInternal.h"
@@ -91,11 +92,13 @@ class VRLayerChild;
 namespace gl {
 class GLScreenBuffer;
 class MozFramebuffer;
+class SharedSurface;
 class Texture;
 }  // namespace gl
 
 namespace layers {
 class CompositableHost;
+class RemoteTextureOwnerClient;
 class SurfaceDescriptor;
 }  // namespace layers
 
@@ -251,30 +254,30 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   class LruPosition final {
     std::list<WebGLContext*>::iterator mItr;
 
-    void reset();
+    LruPosition(const LruPosition&) = delete;
+    LruPosition(LruPosition&&) = delete;
+    LruPosition& operator=(const LruPosition&) = delete;
+    LruPosition& operator=(LruPosition&&) = delete;
 
    public:
+    void AssignLocked(WebGLContext& aContext,
+                      const StaticMutexAutoLock& aProofOfLock);
+
+    void Reset();
+    void ResetLocked(const StaticMutexAutoLock& aProofOfLock);
+
     LruPosition();
     explicit LruPosition(WebGLContext&);
 
-    LruPosition& operator=(LruPosition&& rhs) {
-      reset();
-      std::swap(mItr, rhs.mItr);
-      rhs.reset();
-      return *this;
-    }
-
-    ~LruPosition() { reset(); }
+    ~LruPosition() { Reset(); }
   };
 
-  mutable LruPosition mLruPosition;
+  mutable LruPosition mLruPosition GUARDED_BY(sLruMutex);
+
+  void BumpLruLocked(const StaticMutexAutoLock& aProofOfLock);
 
  public:
-  void BumpLru() {
-    LruPosition next{*this};
-    mLruPosition = std::move(next);
-  }
-
+  void BumpLru();
   void LoseLruContextIfLimitExceeded();
 
   // -
@@ -489,7 +492,9 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // the back buffer may be invalidated by this swap with the front buffer,
   // unless overriden by explicitly setting the preserveDrawingBuffer option,
   // which may incur a further copy to preserve the back buffer.
-  void Present(WebGLFramebuffer*, layers::TextureType, const bool webvr);
+  void Present(
+      WebGLFramebuffer*, layers::TextureType, const bool webvr,
+      const webgl::SwapChainOptions& options = webgl::SwapChainOptions());
   // CopyToSwapChain forces a copy from the supplied framebuffer into the back
   // buffer before swapping the front and back buffers of the swap chain for
   // compositing. The formats of the framebuffer and the swap chain buffers
@@ -508,7 +513,13 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // appropriately.
   void EndOfFrame();
   RefPtr<gfx::DataSourceSurface> GetFrontBufferSnapshot();
-  Maybe<uvec2> FrontBufferSnapshotInto(Maybe<Range<uint8_t>>);
+  Maybe<uvec2> FrontBufferSnapshotInto(const Maybe<Range<uint8_t>>);
+  Maybe<uvec2> FrontBufferSnapshotInto(
+      const std::shared_ptr<gl::SharedSurface>& front,
+      const Maybe<Range<uint8_t>>);
+  Maybe<uvec2> SnapshotInto(GLuint srcFb, const gfx::IntSize& size,
+                            const Range<uint8_t>& dest);
+  gl::SwapChain* GetSwapChain(WebGLFramebuffer*, const bool webvr);
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(WebGLFramebuffer*,
                                                   const bool webvr);
 
@@ -728,6 +739,9 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   bool IsEnabled(GLenum cap);
 
  private:
+  static StaticMutex sLruMutex;
+  static std::list<WebGLContext*> sLru GUARDED_BY(sLruMutex);
+
   // State tracking slots
   bool mDitherEnabled = true;
   bool mRasterizerDiscardEnabled = false;
@@ -1100,6 +1114,10 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   ////
 
+ private:
+  void LoseContextLruLocked(webgl::ContextLossReason reason,
+                            const StaticMutexAutoLock& aProofOfLock);
+
  public:
   void LoseContext(
       webgl::ContextLossReason reason = webgl::ContextLossReason::None);
@@ -1219,6 +1237,12 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   gl::SwapChain mSwapChain;
   gl::SwapChain mWebVRSwapChain;
+
+  RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;
+
+  bool PushRemoteTexture(WebGLFramebuffer*, gl::SwapChain&,
+                         std::shared_ptr<gl::SharedSurface>,
+                         const webgl::SwapChainOptions& options);
 
   // --
 

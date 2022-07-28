@@ -9,6 +9,8 @@
 /* import-globals-from head_channels.js */
 /* import-globals-from head_servers.js */
 
+const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+
 function makeChan(uri) {
   let chan = NetUtil.newChannel({
     uri,
@@ -17,6 +19,34 @@ function makeChan(uri) {
   chan.loadFlags = Ci.nsIChannel.LOAD_INITIAL_DOCUMENT_URI;
   return chan;
 }
+
+function channelOpenPromise(chan, flags, observer) {
+  return new Promise(resolve => {
+    function finish(req, buffer) {
+      resolve([req, buffer]);
+    }
+    chan.asyncOpen(new ChannelListener(finish, null, flags));
+  });
+}
+
+add_task(async function test_dual_stack() {
+  let httpserv = new HttpServer();
+  let content = "ok";
+  httpserv.registerPathHandler("/", function handler(metadata, response) {
+    response.setHeader("Content-Length", `${content.length}`);
+    response.bodyOutputStream.write(content, content.length);
+  });
+  httpserv.start_dualStack(-1);
+
+  let chan = makeChan(`http://127.0.0.1:${httpserv.identity.primaryPort}/`);
+  let [, response] = await channelOpenPromise(chan);
+  Assert.equal(response, content);
+
+  chan = makeChan(`http://[::1]:${httpserv.identity.primaryPort}/`);
+  [, response] = await channelOpenPromise(chan);
+  Assert.equal(response, content);
+  await new Promise(resolve => httpserv.stop(resolve));
+});
 
 add_task(async function test_http() {
   let server = new NodeHTTPServer();
@@ -195,10 +225,6 @@ add_task(async function test_https_proxy() {
       equal(req.status, Cr.NS_OK);
       equal(req.QueryInterface(Ci.nsIHttpChannel).responseStatus, 200);
       equal(buff, server.constructor.name);
-      equal(
-        req.QueryInterface(Ci.nsIHttpChannel).protocolVersion,
-        server.constructor.name == "NodeHTTP2Server" ? "h2" : "http/1.1"
-      );
     }
   );
 });
@@ -245,10 +271,6 @@ add_task(async function test_http2_proxy() {
       equal(req.status, Cr.NS_OK);
       equal(req.QueryInterface(Ci.nsIHttpChannel).responseStatus, 200);
       equal(buff, server.constructor.name);
-      equal(
-        req.QueryInterface(Ci.nsIHttpChannel).protocolVersion,
-        server.constructor.name == "NodeHTTP2Server" ? "h2" : "http/1.1"
-      );
     }
   );
 });

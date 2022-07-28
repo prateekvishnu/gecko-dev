@@ -10,48 +10,19 @@
 
 const EXPORTED_SYMBOLS = ["LoginAutoComplete", "LoginAutoCompleteResult"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const lazy = {};
 
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "AutoCompleteChild",
-  "resource://gre/actors/AutoCompleteChild.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "BrowserUtils",
-  "resource://gre/modules/BrowserUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "InsecurePasswordUtils",
-  "resource://gre/modules/InsecurePasswordUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "LoginFormFactory",
-  "resource://gre/modules/LoginFormFactory.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "LoginHelper",
-  "resource://gre/modules/LoginHelper.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "LoginManagerChild",
-  "resource://gre/modules/LoginManagerChild.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "NewPasswordModel",
-  "resource://gre/modules/NewPasswordModel.jsm"
-);
+XPCOMUtils.defineLazyModuleGetters(lazy, {
+  InsecurePasswordUtils: "resource://gre/modules/InsecurePasswordUtils.jsm",
+  LoginFormFactory: "resource://gre/modules/LoginFormFactory.jsm",
+  LoginHelper: "resource://gre/modules/LoginHelper.jsm",
+  LoginManagerChild: "resource://gre/modules/LoginManagerChild.jsm",
+  NewPasswordModel: "resource://gre/modules/NewPasswordModel.jsm",
+});
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "formFillController",
@@ -359,8 +330,8 @@ class LoginAutoCompleteResult {
 
     this.searchString = aSearchString;
 
-    // Insecure field warning comes first if it applies and is enabled.
-    if (!isSecure && lazy.LoginHelper.showInsecureFieldWarning) {
+    // Insecure field warning comes first.
+    if (!isSecure) {
       this.#rows.push(new InsecureLoginFormAutocompleteItem());
     }
 
@@ -578,7 +549,7 @@ class LoginAutoComplete {
       // N.B. This check must occur after the `await` above for it to be
       // effective.
       if (this.#autoCompleteLookupPromise !== autoCompleteLookupPromise) {
-        lazy.log.debug("ignoring result from previous search");
+        lazy.log.debug("Ignoring result from previous search.");
         return;
       }
 
@@ -685,13 +656,12 @@ class LoginAutoComplete {
         this.isProbablyANewPasswordField(inputElement);
     }
 
-    let messageData = {
+    const messageData = {
       actionOrigin,
       searchString,
       previousResult,
       forcePasswordGeneration,
       hasBeenTypePassword,
-      isSecure: lazy.InsecurePasswordUtils.isFormSecure(form),
       isProbablyANewPasswordField,
     };
 
@@ -701,7 +671,6 @@ class LoginAutoComplete {
 
     lazy.log.debug("LoginAutoComplete search:", {
       forcePasswordGeneration,
-      isSecure: messageData.isSecure,
       hasBeenTypePassword,
       isProbablyANewPasswordField,
       searchStringLength: searchString.length,

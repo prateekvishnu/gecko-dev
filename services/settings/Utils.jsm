@@ -4,9 +4,8 @@
 
 var EXPORTED_SYMBOLS = ["Utils"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { ServiceRequest } = ChromeUtils.import(
   "resource://gre/modules/ServiceRequest.jsm"
@@ -34,11 +33,9 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsINetworkLinkService"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
-
 // Create a new instance of the ConsoleAPI so we can control the maxLogLevel with a pref.
 // See LOG_LEVELS in Console.jsm. Common examples: "all", "debug", "info", "warn", "error".
-XPCOMUtils.defineLazyGetter(lazy, "log", () => {
+const log = (() => {
   const { ConsoleAPI } = ChromeUtils.import(
     "resource://gre/modules/Console.jsm"
   );
@@ -47,7 +44,7 @@ XPCOMUtils.defineLazyGetter(lazy, "log", () => {
     maxLogLevelPref: "services.settings.loglevel",
     prefix: "services.settings",
   });
-});
+})();
 
 XPCOMUtils.defineLazyGetter(lazy, "isRunningTests", () => {
   const env = Cc["@mozilla.org/process/environment;1"].getService(
@@ -115,7 +112,7 @@ var Utils = {
   /**
    * Logger instance.
    */
-  log: lazy.log,
+  log,
 
   get CERT_CHAIN_ROOT_IDENTIFIER() {
     if (this.SERVER_URL == AppConstants.REMOTE_SETTINGS_SERVER_URL) {
@@ -204,7 +201,7 @@ var Utils = {
         !lazy.gNetworkLinkService.isLinkUp
       );
     } catch (ex) {
-      lazy.log.warn("Could not determine network status.", ex);
+      log.warn("Could not determine network status.", ex);
     }
     return false;
   },
@@ -303,7 +300,7 @@ var Utils = {
    */
   async hasLocalDump(bucket, collection) {
     try {
-      await lazy.fetch(
+      await fetch(
         `resource://app/defaults/settings/${bucket}/${collection}.json`,
         {
           method: "HEAD",
@@ -327,12 +324,12 @@ var Utils = {
       if (!this._dumpStatsInitPromise) {
         this._dumpStatsInitPromise = (async () => {
           try {
-            let res = await lazy.fetch(
+            let res = await fetch(
               "resource://app/defaults/settings/last_modified.json"
             );
             this._dumpStats = await res.json();
           } catch (e) {
-            lazy.log.warn(`Failed to load last_modified.json: ${e}`);
+            log.warn(`Failed to load last_modified.json: ${e}`);
             this._dumpStats = {};
           }
           delete this._dumpStatsInitPromise;

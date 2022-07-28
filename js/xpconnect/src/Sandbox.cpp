@@ -270,7 +270,7 @@ static bool SandboxImport(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-static bool SandboxCreateCrypto(JSContext* cx, JS::HandleObject obj) {
+bool xpc::SandboxCreateCrypto(JSContext* cx, JS::Handle<JSObject*> obj) {
   MOZ_ASSERT(JS_IsGlobalObject(obj));
 
   nsIGlobalObject* native = xpc::NativeGlobal(obj);
@@ -359,7 +359,7 @@ static bool SandboxFetchPromise(JSContext* cx, unsigned argc, Value* vp) {
   return ConvertExceptionToPromise(cx, args.rval());
 }
 
-static bool SandboxCreateFetch(JSContext* cx, HandleObject obj) {
+bool xpc::SandboxCreateFetch(JSContext* cx, JS::Handle<JSObject*> obj) {
   MOZ_ASSERT(JS_IsGlobalObject(obj));
 
   return JS_DefineFunction(cx, obj, "fetch", SandboxFetchPromise, 2, 0) &&
@@ -412,7 +412,7 @@ static bool SandboxStructuredClone(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-static bool SandboxCreateStructuredClone(JSContext* cx, HandleObject obj) {
+bool xpc::SandboxCreateStructuredClone(JSContext* cx, HandleObject obj) {
   MOZ_ASSERT(JS_IsGlobalObject(obj));
 
   return JS_DefineFunction(cx, obj, "structuredClone", SandboxStructuredClone,
@@ -1443,9 +1443,15 @@ nsresult xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp,
     }
 
     bool allowComponents = principal->IsSystemPrincipal();
-    if (options.wantComponents && allowComponents &&
-        !ObjectScope(sandbox)->AttachComponentsObject(cx))
-      return NS_ERROR_XPC_UNEXPECTED;
+    if (options.wantComponents && allowComponents) {
+      if (!ObjectScope(sandbox)->AttachComponentsObject(cx)) {
+        return NS_ERROR_XPC_UNEXPECTED;
+      }
+
+      if (!ObjectScope(sandbox)->AttachJSServices(cx)) {
+        return NS_ERROR_XPC_UNEXPECTED;
+      }
+    }
 
     if (!XPCNativeWrapper::AttachNewConstructorObject(cx, sandbox)) {
       return NS_ERROR_XPC_UNEXPECTED;

@@ -15,8 +15,10 @@
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/PathSkia.h"
 #include "mozilla/gfx/Swizzle.h"
+#include "mozilla/layers/ImageDataSerializer.h"
 
 #include "ClientWebGLContext.h"
+#include "WebGLChild.h"
 
 #include "gfxPlatform.h"
 
@@ -214,6 +216,16 @@ void DrawTargetWebgl::ClearSnapshot(bool aCopyOnWrite, bool aNeedHandle) {
 DrawTargetWebgl::~DrawTargetWebgl() {
   ClearSnapshot(false);
   if (mSharedContext) {
+    if (mShmem.IsWritable()) {
+      // Force any Skia snapshots to copy the shmem before it deallocs.
+      mSkia->DetachAllSnapshots();
+      // Ensure we're done using the shmem before dealloc.
+      mSharedContext->WaitForShmem();
+      auto* child = mSharedContext->mWebgl->GetChild();
+      if (child && child->CanSend()) {
+        child->DeallocShmem(mShmem);
+      }
+    }
     if (mFramebuffer) {
       mSharedContext->mWebgl->DeleteFramebuffer(mFramebuffer);
     }
@@ -349,8 +361,23 @@ bool DrawTargetWebgl::Init(const IntSize& size, const SurfaceFormat format) {
     return false;
   }
 
+  auto* child = mSharedContext->mWebgl->GetChild();
+  if (child && child->CanSend()) {
+    size_t byteSize = layers::ImageDataSerializer::ComputeRGBBufferSize(
+        mSize, SurfaceFormat::B8G8R8A8);
+    if (byteSize) {
+      (void)child->AllocUnsafeShmem(byteSize, &mShmem);
+    }
+  }
   mSkia = new DrawTargetSkia;
-  if (!mSkia->Init(size, SurfaceFormat::B8G8R8A8)) {
+  if (mShmem.IsWritable()) {
+    auto stride = layers::ImageDataSerializer::ComputeRGBStride(
+        SurfaceFormat::B8G8R8A8, size.width);
+    if (!mSkia->Init(mShmem.get<uint8_t>(), size, stride,
+                     SurfaceFormat::B8G8R8A8, true)) {
+      return false;
+    }
+  } else if (!mSkia->Init(size, SurfaceFormat::B8G8R8A8)) {
     return false;
   }
   SetPermitSubpixelAA(IsOpaque(format));
@@ -425,7 +452,7 @@ void DrawTargetWebgl::SharedContext::SetBlendState(
 
 // Ensure the WebGL framebuffer is set to the current target.
 bool DrawTargetWebgl::SharedContext::SetTarget(DrawTargetWebgl* aDT) {
-  if (mWebgl->IsContextLost()) {
+  if (!mWebgl || mWebgl->IsContextLost()) {
     return false;
   }
   if (aDT != mCurrentTarget) {
@@ -481,7 +508,7 @@ bool DrawTargetWebgl::PrepareContext(bool aClipped) {
 }
 
 bool DrawTargetWebgl::SharedContext::IsContextLost() const {
-  return mWebgl->IsContextLost();
+  return !mWebgl || mWebgl->IsContextLost();
 }
 
 // Signal to CanvasRenderingContext2D when the WebGL context is lost.
@@ -574,15 +601,20 @@ already_AddRefed<TextureHandle> DrawTargetWebgl::SharedContext::WrapSnapshot(
   return handle.forget();
 }
 
+void DrawTargetWebgl::SharedContext::SetTexFilter(WebGLTextureJS* aTex,
+                                                  bool aFilter) {
+  mWebgl->TexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
+                        aFilter ? LOCAL_GL_LINEAR : LOCAL_GL_NEAREST);
+  mWebgl->TexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
+                        aFilter ? LOCAL_GL_LINEAR : LOCAL_GL_NEAREST);
+}
+
 void DrawTargetWebgl::SharedContext::InitTexParameters(WebGLTextureJS* aTex) {
   mWebgl->TexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_S,
                         LOCAL_GL_CLAMP_TO_EDGE);
   mWebgl->TexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_T,
                         LOCAL_GL_CLAMP_TO_EDGE);
-  mWebgl->TexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
-                        LOCAL_GL_LINEAR);
-  mWebgl->TexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
-                        LOCAL_GL_LINEAR);
+  SetTexFilter(aTex, true);
 }
 
 // Copy the contents of the WebGL framebuffer into a WebGL texture.
@@ -618,27 +650,28 @@ already_AddRefed<TextureHandle> DrawTargetWebgl::CopySnapshot() {
   return mSharedContext->CopySnapshot();
 }
 
+// Borrow a snapshot that may be used by another thread for composition. Only
+// Skia snapshots are safe to pass around.
+already_AddRefed<SourceSurface> DrawTargetWebgl::GetDataSnapshot() {
+  if (!mSkiaValid) {
+    ReadIntoSkia();
+  } else if (mSkiaLayer) {
+    FlattenSkia();
+  }
+  return mSkia->Snapshot(mFormat);
+}
+
 already_AddRefed<SourceSurface> DrawTargetWebgl::Snapshot() {
   // If already using the Skia fallback, then just snapshot that.
   if (mSkiaValid) {
-    if (mSkiaLayer) {
-      FlattenSkia();
-    }
-    return mSkia->Snapshot(mFormat);
+    return GetDataSnapshot();
   }
 
   // There's no valid Skia snapshot, so we need to get one from the WebGL
   // context.
   if (!mSnapshot) {
-    // First just try to create a copy-on-write reference to this target.
-    RefPtr<SourceSurfaceWebgl> snapshot = new SourceSurfaceWebgl;
-    if (snapshot->Init(this)) {
-      mSnapshot = snapshot;
-    } else {
-      // Otherwse, we have to just read back the framebuffer contents. This may
-      // fail if the WebGL context is lost.
-      mSnapshot = ReadSnapshot();
-    }
+    // Create a copy-on-write reference to this target.
+    mSnapshot = new SourceSurfaceWebgl(this);
   }
   return do_AddRef(mSnapshot);
 }
@@ -669,8 +702,15 @@ bool DrawTargetWebgl::SharedContext::ReadInto(uint8_t* aDstData,
   desc.srcOffset = *ivec2::From(aBounds);
   desc.size = *uvec2::FromSize(aBounds);
   desc.packState.rowLength = aDstStride / 4;
-  Range<uint8_t> range = {aDstData, size_t(aDstStride) * aBounds.height};
-  bool success = mWebgl->DoReadPixels(desc, range);
+
+  bool success = false;
+  if (mCurrentTarget && mCurrentTarget->mShmem.IsWritable() &&
+      aDstData == mCurrentTarget->mShmem.get<uint8_t>()) {
+    success = mWebgl->DoReadPixels(desc, mCurrentTarget->mShmem);
+  } else {
+    Range<uint8_t> range = {aDstData, size_t(aDstStride) * aBounds.height};
+    success = mWebgl->DoReadPixels(desc, range);
+  }
 
   // Restore the actual framebuffer after reading is done.
   if (aHandle && mCurrentTarget) {
@@ -729,34 +769,6 @@ already_AddRefed<SourceSurface> DrawTargetWebgl::GetBackingSurface() {
   return Snapshot();
 }
 
-bool DrawTargetWebgl::CopySnapshotTo(DrawTarget* aDT) {
-  if (mSkiaValid ||
-      (mSnapshot &&
-       (mSnapshot->GetType() != SurfaceType::WEBGL ||
-        static_cast<SourceSurfaceWebgl*>(mSnapshot.get())->HasReadData()))) {
-    // There's already a snapshot that is mapped, so just use that.
-    return false;
-  }
-  // Otherwise, attempt to read the data directly into the DT pixels to avoid an
-  // intermediate copy.
-  if (!PrepareContext(false)) {
-    return false;
-  }
-  uint8_t* data = nullptr;
-  IntSize size;
-  int32_t stride = 0;
-  SurfaceFormat format = SurfaceFormat::UNKNOWN;
-  if (!aDT->LockBits(&data, &size, &stride, &format)) {
-    return false;
-  }
-  bool result =
-      mSharedContext->ReadInto(data, stride, format,
-                               {0, 0, std::min(size.width, mSize.width),
-                                std::min(size.height, mSize.height)});
-  aDT->ReleaseBits(data);
-  return result;
-}
-
 void DrawTargetWebgl::DetachAllSnapshots() {
   mSkia->DetachAllSnapshots();
   ClearSnapshot();
@@ -807,9 +819,8 @@ bool DrawTargetWebgl::SharedContext::CreateShaders() {
                                       1.0f, 1.0f, 0.0f, 1.0f};
     mWebgl->BindVertexArray(mVertexArray.get());
     mWebgl->BindBuffer(LOCAL_GL_ARRAY_BUFFER, mVertexBuffer.get());
-    mWebgl->RawBufferData(LOCAL_GL_ARRAY_BUFFER,
-                          {(const uint8_t*)rectData, sizeof(rectData)},
-                          LOCAL_GL_STATIC_DRAW);
+    mWebgl->RawBufferData(LOCAL_GL_ARRAY_BUFFER, (const uint8_t*)rectData,
+                          sizeof(rectData), LOCAL_GL_STATIC_DRAW);
     mWebgl->EnableVertexAttribArray(0);
     mWebgl->VertexAttribPointer(0, 2, LOCAL_GL_FLOAT, LOCAL_GL_FALSE, 0, 0);
   }
@@ -969,9 +980,13 @@ bool DrawTargetWebgl::SharedContext::CreateShaders() {
 }
 
 void DrawTargetWebgl::ClearRect(const Rect& aRect) {
+  // OP_SOURCE may not be bounded by a mask, so we ensure that a clip is pushed
+  // here to avoid a group being pushed for it.
+  PushClipRect(aRect);
   ColorPattern pattern(
       DeviceColor(0.0f, 0.0f, 0.0f, IsOpaque(mFormat) ? 1.0f : 0.0f));
   DrawRect(aRect, pattern, DrawOptions(1.0f, CompositionOp::OP_SOURCE));
+  PopClip();
 }
 
 // Attempts to create the framebuffer used for drawing and also any relevant
@@ -1134,8 +1149,8 @@ bool DrawTargetWebgl::DrawRect(const Rect& aRect, const Pattern& aPattern,
   // can be significantly expensive when repeated. So when a Skia layer is
   // active, if it is possible to continue drawing into the layer, then don't
   // accelerate the drawing request.
-  if (mWebglValid ||
-      (mSkiaLayer && (aAccelOnly || !SupportsLayering(aOptions)))) {
+  if (mWebglValid || (mSkiaLayer && !mLayerDepth &&
+                      (aAccelOnly || !SupportsLayering(aOptions)))) {
     // If we get here, either the WebGL context is being directly drawn to
     // or we are going to flush the Skia layer to it before doing so. The shared
     // context still needs to be claimed and prepared for drawing. If this
@@ -1250,19 +1265,30 @@ bool DrawTargetWebgl::SharedContext::UploadSurface(DataSourceSurface* aData,
     }
     int32_t stride = map.GetStride();
     int32_t bpp = BytesPerPixel(aFormat);
-    // Get the data pointer range considering the sampling rect offset and
-    // size.
-    Range<const uint8_t> range(
-        map.GetData() + aSrcRect.y * size_t(stride) + aSrcRect.x * bpp,
-        std::max(aSrcRect.height - 1, 0) * size_t(stride) +
-            aSrcRect.width * bpp);
-    texDesc.cpuData = Some(RawBuffer(range));
+    if (mCurrentTarget && mCurrentTarget->mShmem.IsWritable() &&
+        map.GetData() == mCurrentTarget->mShmem.get<uint8_t>()) {
+      texDesc.sd = Some(layers::SurfaceDescriptorBuffer(
+          layers::RGBDescriptor(mCurrentTarget->mSize, SurfaceFormat::R8G8B8A8),
+          mCurrentTarget->mShmem));
+      texDesc.structuredSrcSize =
+          uvec2::From(stride / bpp, mCurrentTarget->mSize.height);
+      texDesc.unpacking.skipPixels = aSrcRect.x;
+      texDesc.unpacking.skipRows = aSrcRect.y;
+      mWaitForShmem = true;
+    } else {
+      // Get the data pointer range considering the sampling rect offset and
+      // size.
+      Range<const uint8_t> range(
+          map.GetData() + aSrcRect.y * size_t(stride) + aSrcRect.x * bpp,
+          std::max(aSrcRect.height - 1, 0) * size_t(stride) +
+              aSrcRect.width * bpp);
+      texDesc.cpuData = Some(RawBuffer(range));
+    }
     // If the stride happens to be 4 byte aligned, assume that is the
     // desired alignment regardless of format (even A8). Otherwise, we
     // default to byte alignment.
     texDesc.unpacking.alignmentInTypeElems = stride % 4 ? 1 : 4;
     texDesc.unpacking.rowLength = stride / bpp;
-    texDesc.unpacking.imageHeight = aSrcRect.height;
   } else if (aZero) {
     // Create a PBO filled with zero data to initialize the texture data and
     // avoid slow initialization inside WebGL.
@@ -1273,10 +1299,10 @@ bool DrawTargetWebgl::SharedContext::UploadSurface(DataSourceSurface* aData,
       mZeroSize = aSrcRect.Size();
       mWebgl->BindBuffer(LOCAL_GL_PIXEL_UNPACK_BUFFER, mZeroBuffer);
       size_t size = 4 * mZeroSize.width * mZeroSize.height;
-      void* data = calloc(1, size);
-      mWebgl->RawBufferData(LOCAL_GL_PIXEL_UNPACK_BUFFER,
-                            {(const uint8_t*)data, size}, LOCAL_GL_STATIC_DRAW);
-      free(data);
+      // WebGL will zero initialize the empty buffer, so we don't send zero data
+      // explicitly.
+      mWebgl->RawBufferData(LOCAL_GL_PIXEL_UNPACK_BUFFER, nullptr, size,
+                            LOCAL_GL_STATIC_DRAW);
     } else {
       mWebgl->BindBuffer(LOCAL_GL_PIXEL_UNPACK_BUFFER, mZeroBuffer);
     }
@@ -1294,11 +1320,21 @@ bool DrawTargetWebgl::SharedContext::UploadSurface(DataSourceSurface* aData,
   // Do the (partial) upload for the shared or standalone texture.
   mWebgl->RawTexImage(0, aInit ? intFormat : 0,
                       {uint32_t(aDstOffset.x), uint32_t(aDstOffset.y), 0},
-                      texPI, texDesc);
+                      texPI, std::move(texDesc));
   if (!aData && aZero) {
     mWebgl->BindBuffer(LOCAL_GL_PIXEL_UNPACK_BUFFER, 0);
   }
   return true;
+}
+
+static inline SamplingFilter GetSamplingFilter(const Pattern& aPattern) {
+  return aPattern.GetType() == PatternType::SURFACE
+             ? static_cast<const SurfacePattern&>(aPattern).mSamplingFilter
+             : SamplingFilter::GOOD;
+}
+
+static inline bool UseNearestFilter(const Pattern& aPattern) {
+  return GetSamplingFilter(aPattern) == SamplingFilter::POINT;
 }
 
 // Common rectangle and pattern drawing function shared by many DrawTarget
@@ -1688,9 +1724,20 @@ bool DrawTargetWebgl::SharedContext::DrawRectAccel(
       mWebgl->UniformData(LOCAL_GL_FLOAT_VEC4, mImageProgramTexBounds, false,
                           {(const uint8_t*)texBounds, sizeof(texBounds)});
 
+      // Ensure we use nearest filtering when no antialiasing is requested.
+      if (UseNearestFilter(surfacePattern)) {
+        SetTexFilter(tex, false);
+      }
+
       // Finally draw the image rectangle.
       mWebgl->DrawArrays(
           aStrokeOptions ? LOCAL_GL_LINE_LOOP : LOCAL_GL_TRIANGLE_FAN, 0, 4);
+
+      // Restore the default linear filter if overridden.
+      if (UseNearestFilter(surfacePattern)) {
+        SetTexFilter(tex, true);
+      }
+
       success = true;
       break;
     }
@@ -2007,6 +2054,8 @@ bool DrawTargetWebgl::SharedContext::DrawPathAccel(
       shadowColor->a *= color->a;
     }
   }
+  SamplingFilter filter =
+      aShadow ? SamplingFilter::GOOD : GetSamplingFilter(aPattern);
   if (handle && handle->IsValid()) {
     // If the entry has a valid texture handle still, use it. However, the
     // entry texture is assumed to be located relative to its previous bounds.
@@ -2017,7 +2066,7 @@ bool DrawTargetWebgl::SharedContext::DrawPathAccel(
     Point offset =
         (bounds.TopLeft() - entry->GetOrigin()) + entry->GetBounds().TopLeft();
     SurfacePattern pathPattern(nullptr, ExtendMode::CLAMP,
-                               Matrix::Translation(offset));
+                               Matrix::Translation(offset), filter);
     if (DrawRectAccel(Rect(intBounds), pathPattern, aOptions, shadowColor,
                       &handle, false, true, true)) {
       return true;
@@ -2044,6 +2093,9 @@ bool DrawTargetWebgl::SharedContext::DrawPathAccel(
       static const ColorPattern maskPattern(
           DeviceColor(1.0f, 1.0f, 1.0f, 1.0f));
       const Pattern& cachePattern = color ? maskPattern : aPattern;
+      // If the source pattern is a DrawTargetWebgl snapshot, we may shift
+      // targets when drawing the path, so back up the old target.
+      DrawTargetWebgl* oldTarget = mCurrentTarget;
       if (aStrokeOptions) {
         pathDT->Stroke(aPath, cachePattern, *aStrokeOptions, drawOptions);
       } else {
@@ -2064,8 +2116,13 @@ bool DrawTargetWebgl::SharedContext::DrawPathAccel(
       }
       RefPtr<SourceSurface> pathSurface = pathDT->Snapshot();
       if (pathSurface) {
+        // If the target changed, try to restore it.
+        if (mCurrentTarget != oldTarget && !oldTarget->PrepareContext()) {
+          return false;
+        }
         SurfacePattern pathPattern(pathSurface, ExtendMode::CLAMP,
-                                   Matrix::Translation(intBounds.TopLeft()));
+                                   Matrix::Translation(intBounds.TopLeft()),
+                                   filter);
         // Try and upload the rasterized path to a texture. If there is a
         // valid texture handle after this, then link it to the entry.
         // Otherwise, we might have to fall back to software drawing the
@@ -2361,13 +2418,15 @@ void DrawTargetWebgl::StrokeGlyphs(ScaledFont* aFont,
 // Skia only supports subpixel positioning to the nearest 1/4 fraction. It
 // would be wasteful to attempt to cache text runs with positioning that is
 // anymore precise than this. To prevent this cache bloat, we quantize the
-// transformed glyph positions to the nearest 1/4.
+// transformed glyph positions to the nearest 1/4. The scaling factor for
+// the quantization is baked into the transform, so that if subpixel rounding
+// is used on a given axis, then the axis will be multiplied by 4 before
+// rounding. Since the quantized position is not used for rasterization, the
+// transform is safe to modify as such.
 static inline IntPoint QuantizePosition(const Matrix& aTransform,
                                         const IntPoint& aOffset,
                                         const Point& aPosition) {
-  IntPoint pos =
-      RoundedToInt(aTransform.TransformPoint(aPosition) * 4.0f) - aOffset * 4;
-  return IntPoint(pos.x & 3, pos.y & 3);
+  return RoundedToInt(aTransform.TransformPoint(aPosition)) - aOffset;
 }
 
 // Hashes a glyph buffer to a single hash value that can be used for quick
@@ -2539,6 +2598,34 @@ bool DrawTargetWebgl::SharedContext::FillGlyphsAccel(
   // as for color emoji.
   bool useBitmaps = aFont->MayUseBitmaps();
 
+  // Depending on whether we enable subpixel position for a given font, Skia may
+  // round transformed coordinates differently on each axis. By default, text is
+  // subpixel quantized horizontally and snapped to a whole integer vertical
+  // baseline. Axis-flip transforms instead snap to horizontal boundaries while
+  // subpixel quantizing along the vertical. For other types of transforms, Skia
+  // just applies subpixel quantization to both axes.
+  // We must duplicate the amount of quantization Skia applies carefully as a
+  // boundary value such as 0.49 may round to 0.5 with subpixel quantization,
+  // but if Skia actually snapped it to a whole integer instead, it would round
+  // down to 0. If a subsequent glyph with offset 0.51 came in, we might
+  // mistakenly round it down to 0.5, whereas Skia would round it up to 1. Thus
+  // we would alias 0.49 and 0.51 to the same cache entry, while Skia would
+  // actually snap the offset to 0 or 1, depending, resulting in mismatched
+  // hinting.
+  Matrix quantizeTransform = currentTransform;
+  if (aFont->UseSubpixelPosition()) {
+    if (currentTransform._12 == 0) {
+      // Glyphs are rendered subpixel horizontally, so snap vertically.
+      quantizeTransform.PostScale(4, 1);
+    } else if (currentTransform._11 == 0) {
+      // Glyphs are rendered subpixel vertically, so snap horizontally.
+      quantizeTransform.PostScale(1, 4);
+    } else {
+      // The transform isn't aligned, so don't snap.
+      quantizeTransform.PostScale(4, 4);
+    }
+  }
+
   // Look for an existing glyph cache on the font. If not there, create it.
   GlyphCache* cache =
       static_cast<GlyphCache*>(aFont->GetUserData(&mGlyphCacheKey));
@@ -2549,13 +2636,26 @@ bool DrawTargetWebgl::SharedContext::FillGlyphsAccel(
   }
   // Hash the incoming text run and looking for a matching entry.
   DeviceColor color = static_cast<const ColorPattern&>(aPattern).mColor;
+#ifdef XP_MACOSX
+  // On macOS, depending on whether the text is classified as light-on-dark or
+  // dark-on-light, we may end up with different amounts of dilation applied, so
+  // we can't use the same mask in the two circumstances, or the glyphs will be
+  // dilated incorrectly.
+  bool lightOnDark = !useBitmaps && color.r >= 0.33f && color.g >= 0.33f &&
+                     color.b >= 0.33f && color.r + color.g + color.b >= 2.0f;
+#else
+  // On other platforms, we assume no color-dependent dilation.
+  const bool lightOnDark = true;
+#endif
   // If the font has bitmaps, use the color directly. Otherwise, the texture
-  // will hold a grayscale mask, so encode the key's subpixel state in the
-  // color.
+  // will hold a grayscale mask, so encode the key's subpixel and light-or-dark
+  // state in the color.
   RefPtr<GlyphCacheEntry> entry = cache->FindOrInsertEntry(
       aBuffer,
-      useBitmaps ? color : DeviceColor::Mask(aUseSubpixelAA ? 1 : 0, 1),
-      currentTransform, intBounds);
+      useBitmaps
+          ? color
+          : DeviceColor::Mask(aUseSubpixelAA ? 1 : 0, lightOnDark ? 1 : 0),
+      quantizeTransform, intBounds);
   if (!entry) {
     return false;
   }
@@ -2580,9 +2680,17 @@ bool DrawTargetWebgl::SharedContext::FillGlyphsAccel(
     // If we get here, either there wasn't a cached texture handle or it
     // wasn't valid. Render the text run into a temporary target.
     RefPtr<DrawTargetSkia> textDT = new DrawTargetSkia;
-    if (textDT->Init(intBounds.Size(), !useBitmaps && !aUseSubpixelAA
-                                           ? SurfaceFormat::A8
-                                           : SurfaceFormat::B8G8R8A8)) {
+    if (textDT->Init(intBounds.Size(),
+                     lightOnDark && !useBitmaps && !aUseSubpixelAA
+                         ? SurfaceFormat::A8
+                         : SurfaceFormat::B8G8R8A8)) {
+      if (!lightOnDark) {
+        // If rendering dark-on-light text, we need to clear the background to
+        // white while using an opaque alpha value to allow this.
+        textDT->FillRect(Rect(IntRect(IntPoint(), intBounds.Size())),
+                         ColorPattern(DeviceColor(1, 1, 1, 1)),
+                         DrawOptions(1.0f, CompositionOp::OP_OVER));
+      }
       textDT->SetTransform(currentTransform *
                            Matrix::Translation(-intBounds.TopLeft()));
       textDT->SetPermitSubpixelAA(aUseSubpixelAA);
@@ -2591,11 +2699,39 @@ bool DrawTargetWebgl::SharedContext::FillGlyphsAccel(
       // If bitmaps might be used, then we have to supply the color, as color
       // emoji may ignore it while grayscale bitmaps may use it, with no way to
       // know ahead of time. Otherwise, assume the output will be a mask and
-      // just render it white to determine intensity.
+      // just render it white to determine intensity. Depending on whether the
+      // text is light or dark, we render white or black text respectively.
       textDT->FillGlyphs(
           aFont, aBuffer,
-          ColorPattern(useBitmaps ? color : DeviceColor(1, 1, 1, 1)),
+          ColorPattern(useBitmaps ? color
+                                  : DeviceColor::Mask(lightOnDark ? 1 : 0, 1)),
           drawOptions);
+      if (!lightOnDark) {
+        uint8_t* data = nullptr;
+        IntSize size;
+        int32_t stride = 0;
+        SurfaceFormat format = SurfaceFormat::UNKNOWN;
+        if (!textDT->LockBits(&data, &size, &stride, &format)) {
+          return false;
+        }
+        uint8_t* row = data;
+        for (int y = 0; y < size.height; ++y) {
+          uint8_t* px = row;
+          for (int x = 0; x < size.width; ++x) {
+            // If rendering dark-on-light text, we need to invert the final mask
+            // so that it is in the expected white text on transparent black
+            // format. The alpha will be initialized to the largest of the
+            // values.
+            px[0] = 255 - px[0];
+            px[1] = 255 - px[1];
+            px[2] = 255 - px[2];
+            px[3] = std::max(px[0], std::max(px[1], px[2]));
+            px += 4;
+          }
+          row += stride;
+        }
+        textDT->ReleaseBits(data);
+      }
       RefPtr<SourceSurface> textSurface = textDT->Snapshot();
       if (textSurface) {
         // If we don't expect the text surface to contain color glyphs
@@ -2660,8 +2796,19 @@ void DrawTargetWebgl::FillGlyphs(ScaledFont* aFont, const GlyphBuffer& aBuffer,
   mSkia->FillGlyphs(aFont, aBuffer, aPattern, aOptions);
 }
 
+void DrawTargetWebgl::SharedContext::WaitForShmem() {
+  if (mWaitForShmem) {
+    // GetError is a sync IPDL call that forces all dispatched commands to be
+    // flushed. Once it returns, we are certain that any commands processing
+    // the Shmem have finished.
+    (void)mWebgl->GetError();
+    mWaitForShmem = false;
+  }
+}
+
 void DrawTargetWebgl::MarkSkiaChanged(const DrawOptions& aOptions) {
   if (SupportsLayering(aOptions)) {
+    WaitForShmem();
     if (!mSkiaValid) {
       // If the Skia context needs initialization, clear it and enable layering.
       mSkiaValid = true;
@@ -2837,16 +2984,16 @@ Maybe<layers::SurfaceDescriptor> DrawTargetWebgl::GetFrontBuffer() {
   // Only try to present and retrieve the front buffer if there is a valid
   // WebGL framebuffer that can be sent to the compositor. Otherwise, return
   // nothing to try to reuse the Skia snapshot.
-  if (mSharedContext->mWebgl->GetTexTypeForSwapChain() ==
-      layers::TextureType::Unknown) {
-    return Nothing();
-  }
   if (mNeedsPresent) {
     mNeedsPresent = false;
     if (mWebglValid || FlushFromSkia()) {
       // Copy and swizzle the WebGL framebuffer to the swap chain front buffer.
       webgl::SwapChainOptions options;
       options.bgra = true;
+      // Allow async present to be toggled on for accelerated Canvas2D
+      // independent of WebGL via pref.
+      options.forceAsyncPresent =
+          StaticPrefs::gfx_canvas_accelerated_async_present();
       mSharedContext->mWebgl->CopyToSwapChain(mFramebuffer, options);
     }
   }
@@ -2917,6 +3064,33 @@ bool DrawTargetWebgl::Draw3DTransformedSurface(SourceSurface* aSurface,
                                                const Matrix4x4& aMatrix) {
   MarkSkiaChanged();
   return mSkia->Draw3DTransformedSurface(aSurface, aMatrix);
+}
+
+void DrawTargetWebgl::PushLayer(bool aOpaque, Float aOpacity,
+                                SourceSurface* aMask,
+                                const Matrix& aMaskTransform,
+                                const IntRect& aBounds, bool aCopyBackground) {
+  PushLayerWithBlend(aOpaque, aOpacity, aMask, aMaskTransform, aBounds,
+                     aCopyBackground, CompositionOp::OP_OVER);
+}
+
+void DrawTargetWebgl::PushLayerWithBlend(bool aOpaque, Float aOpacity,
+                                         SourceSurface* aMask,
+                                         const Matrix& aMaskTransform,
+                                         const IntRect& aBounds,
+                                         bool aCopyBackground,
+                                         CompositionOp aCompositionOp) {
+  MarkSkiaChanged(DrawOptions(aOpacity, aCompositionOp));
+  mSkia->PushLayerWithBlend(aOpaque, aOpacity, aMask, aMaskTransform, aBounds,
+                            aCopyBackground, aCompositionOp);
+  ++mLayerDepth;
+}
+
+void DrawTargetWebgl::PopLayer() {
+  MOZ_ASSERT(mSkiaValid);
+  MOZ_ASSERT(mLayerDepth > 0);
+  --mLayerDepth;
+  mSkia->PopLayer();
 }
 
 }  // namespace mozilla::gfx

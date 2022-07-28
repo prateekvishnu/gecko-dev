@@ -7,9 +7,8 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionContent", "ExtensionContentChild"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
@@ -48,8 +47,6 @@ const { ExtensionUtils } = ChromeUtils.import(
   "resource://gre/modules/ExtensionUtils.jsm"
 );
 
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["crypto"]);
-
 const {
   DefaultMap,
   DefaultWeakMap,
@@ -68,8 +65,6 @@ const {
 } = ExtensionCommon;
 
 const { BrowserExtensionContent, ChildAPIManager, Messenger } = ExtensionChild;
-
-XPCOMUtils.defineLazyGetter(lazy, "console", ExtensionCommon.getConsole);
 
 XPCOMUtils.defineLazyGetter(lazy, "isContentScriptProcess", () => {
   return (
@@ -357,6 +352,9 @@ class Script {
     this.scriptCache =
       extension[matcher.wantReturnValue ? "dynamicScripts" : "staticScripts"];
 
+    /** @type {WeakSet<Document>} A set of documents injected into. */
+    this.injectedInto = new WeakSet();
+
     if (matcher.wantReturnValue) {
       this.compileScripts();
       this.loadCSS();
@@ -373,7 +371,7 @@ class Script {
     }
 
     // Store the hash of the cssCode.
-    const buffer = await lazy.crypto.subtle.digest(
+    const buffer = await crypto.subtle.digest(
       "SHA-1",
       new TextEncoder().encode(cssCode)
     );
@@ -437,14 +435,18 @@ class Script {
     }
   }
 
-  matchesWindowGlobal(windowGlobal) {
-    return this.matcher.matchesWindowGlobal(windowGlobal);
+  matchesWindowGlobal(windowGlobal, ignorePermissions) {
+    return this.matcher.matchesWindowGlobal(windowGlobal, ignorePermissions);
   }
 
   async injectInto(window) {
-    if (!lazy.isContentScriptProcess) {
+    if (
+      !lazy.isContentScriptProcess ||
+      this.injectedInto.has(window.document)
+    ) {
       return;
     }
+    this.injectedInto.add(window.document);
 
     let context = this.extension.getContext(window);
     for (let script of this.matcher.jsPaths) {
@@ -667,8 +669,6 @@ class UserScript extends Script {
   }
 
   async inject(context) {
-    const { extension } = context;
-
     DocumentManager.lazyInit();
 
     let scripts = this.getCompiledScripts(context);
@@ -689,42 +689,29 @@ class UserScript extends Script {
       context.executeAPIScript(apiScript);
     }
 
-    // The evaluations below may throw, in which case the promise will be
-    // automatically rejected.
-    lazy.ExtensionTelemetry.userScriptInjection.stopwatchStart(
-      extension,
-      context
-    );
-    try {
-      let userScriptSandbox = this.sandboxes.get(context);
+    let userScriptSandbox = this.sandboxes.get(context);
 
-      context.callOnClose({
-        close: () => {
-          // Destroy the userScript sandbox when the related ContentScriptContextChild instance
-          // is being closed.
-          this.sandboxes.delete(context);
-          Cu.nukeSandbox(userScriptSandbox);
-        },
-      });
+    context.callOnClose({
+      close: () => {
+        // Destroy the userScript sandbox when the related ContentScriptContextChild instance
+        // is being closed.
+        this.sandboxes.delete(context);
+        Cu.nukeSandbox(userScriptSandbox);
+      },
+    });
 
-      // Notify listeners subscribed to the userScripts.onBeforeScript API event,
-      // to allow extension API script to provide its custom APIs to the userScript.
-      if (apiScript) {
-        context.userScriptsEvents.emit(
-          "on-before-script",
-          this.scriptMetadata,
-          userScriptSandbox
-        );
-      }
-
-      for (let script of sandboxScripts) {
-        script.executeInGlobal(userScriptSandbox);
-      }
-    } finally {
-      lazy.ExtensionTelemetry.userScriptInjection.stopwatchFinish(
-        extension,
-        context
+    // Notify listeners subscribed to the userScripts.onBeforeScript API event,
+    // to allow extension API script to provide its custom APIs to the userScript.
+    if (apiScript) {
+      context.userScriptsEvents.emit(
+        "on-before-script",
+        this.scriptMetadata,
+        userScriptSandbox
       );
+    }
+
+    for (let script of sandboxScripts) {
+      script.executeInGlobal(userScriptSandbox);
     }
   }
 
@@ -1165,6 +1152,45 @@ var ExtensionContent = {
     return result.language === "un" ? "und" : result.language;
   },
 
+  // Activate MV3 content scripts in all same-origin frames for this tab.
+  handleActivateScripts({ options, windows }) {
+    let policy = WebExtensionPolicy.getByID(options.id);
+
+    // Order content scripts by run_at timing.
+    let runAt = { document_start: [], document_end: [], document_idle: [] };
+    for (let matcher of policy.contentScripts) {
+      runAt[matcher.runAt].push(this.contentScripts.get(matcher));
+    }
+
+    // If we got here, checks in TabManagerBase.activateScripts assert:
+    // 1) this is a MV3 extension, with Origin Controls,
+    // 2) with a host permission (or content script) for the tab's top origin,
+    // 3) and that host permission hasn't been granted yet.
+
+    // We treat the action click as implicit user's choice to activate the
+    // extension on the current site, so we can safely run (matching) content
+    // scripts in all sameOriginWithTop frames while ignoring host permission.
+
+    let { browsingContext } = WindowGlobalChild.getByInnerWindowId(windows[0]);
+    for (let bc of browsingContext.getAllBrowsingContextsInSubtree()) {
+      let wgc = bc.currentWindowContext.windowGlobalChild;
+      if (wgc?.sameOriginWithTop) {
+        // This is TOCTOU safe: if a frame navigated after same-origin check,
+        // wgc.isClosed would be true and .matchesWindowGlobal() would fail.
+        const runScript = cs => {
+          if (cs.matchesWindowGlobal(wgc, /* ignorePermissions */ true)) {
+            return cs.injectInto(bc.window);
+          }
+        };
+
+        // Inject all matching content scripts in proper run_at order.
+        Promise.all(runAt.document_start.map(runScript))
+          .then(() => Promise.all(runAt.document_end.map(runScript)))
+          .then(() => Promise.all(runAt.document_idle.map(runScript)));
+      }
+    }
+  },
+
   // Used to executeScript, insertCSS and removeCSS.
   async handleActorExecute({ options, windows }) {
     let policy = WebExtensionPolicy.getByID(options.extensionId);
@@ -1250,6 +1276,8 @@ class ExtensionContentChild extends JSProcessActorChild {
         return ExtensionContent.handleDetectLanguage(data);
       case "Execute":
         return ExtensionContent.handleActorExecute(data);
+      case "ActivateScripts":
+        return ExtensionContent.handleActivateScripts(data);
     }
   }
 }

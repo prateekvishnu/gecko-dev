@@ -16,9 +16,12 @@
 
 var EXPORTED_SYMBOLS = ["AddonInternal", "XPIDatabase", "XPIDatabaseReconcile"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const { FileUtils } = ChromeUtils.import(
+  "resource://gre/modules/FileUtils.jsm"
 );
 
 const lazy = {};
@@ -35,7 +38,6 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   DeferredTask: "resource://gre/modules/DeferredTask.jsm",
   ExtensionData: "resource://gre/modules/Extension.jsm",
   ExtensionUtils: "resource://gre/modules/ExtensionUtils.jsm",
-  FileUtils: "resource://gre/modules/FileUtils.jsm",
   PermissionsUtils: "resource://gre/modules/PermissionsUtils.jsm",
 
   Blocklist: "resource://gre/modules/Blocklist.jsm",
@@ -46,17 +48,22 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   verifyBundleSignedState: "resource://gre/modules/addons/XPIInstall.jsm",
 });
 
-const { nsIBlocklistService } = Ci;
+// WARNING: BuiltInThemes.jsm may be provided by the host application (e.g.
+// Firefox), or it might not exist at all. Use with caution, as we don't
+// want things to completely fall if that module can't be loaded.
+XPCOMUtils.defineLazyGetter(lazy, "BuiltInThemes", () => {
+  try {
+    let { BuiltInThemes } = ChromeUtils.import(
+      "resource:///modules/BuiltInThemes.jsm"
+    );
+    return BuiltInThemes;
+  } catch (e) {
+    Cu.reportError(`Unable to load BuiltInThemes.jsm: ${e}`);
+  }
+  return undefined;
+});
 
-// These are injected from XPIProvider.jsm
-for (let sym of [
-  "BOOTSTRAP_REASONS",
-  "DB_SCHEMA",
-  "XPIStates",
-  "migrateAddonLoader",
-]) {
-  XPCOMUtils.defineLazyGetter(lazy, sym, () => lazy.XPIInternal[sym]);
-}
+const { nsIBlocklistService } = Ci;
 
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 const LOGGER_ID = "addons.xpi-utils";
@@ -1538,31 +1545,42 @@ const updatedAddonFluentIds = new Map([
       let addonIdPrefix = addon.id.replace("@mozilla.org", "");
       const colorwaySuffix = "colorway";
       if (addonIdPrefix.endsWith(colorwaySuffix)) {
+        // FIXME: Depending on BuiltInThemes here is sort of a hack. Bug 1733466
+        // would provide a more generalized way of doing this.
         if (aProp == "description") {
-          // Colorway themes do not have a description.
-          return null;
+          return lazy.BuiltInThemes?.getLocalizedColorwayDescription(addon.id);
         }
-        // Colorway themes combine an unlocalized color name with a localized
-        // variant name. Their ids have the format
-        // {colorName}-{variantName}-colorway@mozilla.org. The variant name may
-        // be omitted ({colorName}-colorway@mozilla.org), in which case the
-        // unlocalized name from the theme's manifest will be used.
-        let [colorName, variantName] = addonIdPrefix.split("-", 2);
-        if (variantName == colorwaySuffix) {
-          // This theme doesn't have a localized variant name.
-          return addon.defaultLocale.name;
+        // Colorway collections are usually divided into and presented as
+        // "groups". A group either contains closely related colorways, e.g.
+        // stemming from the same base color but with different intensities, or
+        // if the current collection doesn't have intensities, each colorway is
+        // their own group. Colorway names combine the group name with an
+        // intensity. Their ids have the format
+        // {colorwayGroup}-{intensity}-colorway@mozilla.org or
+        // {colorwayGroupName}-colorway@mozilla.org). L10n for colorway group
+        // names is optional and falls back on the unlocalized name from the
+        // theme's manifest. The intensity part, if present, must be localized.
+        let localizedColorwayGroupName = lazy.BuiltInThemes?.getLocalizedColorwayGroupName(
+          addon.id
+        );
+        let [colorwayGroupName, intensity] = addonIdPrefix.split("-", 2);
+        if (intensity == colorwaySuffix) {
+          // This theme doesn't have an intensity.
+          return localizedColorwayGroupName || addon.defaultLocale.name;
         }
         // We're not using toLocaleUpperCase because these color names are
         // always in English.
-        colorName = colorName[0].toUpperCase() + colorName.slice(1);
-        let defaultFluentId = `extension-colorways-${variantName}-name`;
+        colorwayGroupName =
+          localizedColorwayGroupName ||
+          colorwayGroupName[0].toUpperCase() + colorwayGroupName.slice(1);
+        let defaultFluentId = `extension-colorways-${intensity}-name`;
         let fluentId =
           updatedAddonFluentIds.get(defaultFluentId) || defaultFluentId;
         [formattedMessage] = l10n.formatMessagesSync([
           {
             id: fluentId,
             args: {
-              "colorway-name": colorName,
+              "colorway-name": colorwayGroupName,
             },
           },
         ]);
@@ -1659,7 +1677,7 @@ const XPIDatabase = {
   // true if the database connection has been opened
   initialized: false,
   // The database file
-  jsonFile: lazy.FileUtils.getFile(KEY_PROFILEDIR, [FILE_JSON_DB], true),
+  jsonFile: FileUtils.getFile(KEY_PROFILEDIR, [FILE_JSON_DB], true),
   rebuildingDatabase: false,
   syncLoadingDB: false,
   // Add-ons from the database in locations which are no longer
@@ -1695,9 +1713,9 @@ const XPIDatabase = {
         // successfully save the database.
         logger.debug(
           "XPI Database saved, setting schema version preference to " +
-            lazy.DB_SCHEMA
+            lazy.XPIInternal.DB_SCHEMA
         );
-        Services.prefs.setIntPref(PREF_DB_SCHEMA, lazy.DB_SCHEMA);
+        Services.prefs.setIntPref(PREF_DB_SCHEMA, lazy.XPIInternal.DB_SCHEMA);
         this._schemaVersionSet = true;
 
         // Reading the DB worked once, so we don't need the load error
@@ -1763,7 +1781,7 @@ const XPIDatabase = {
     }
 
     let toSave = {
-      schemaVersion: lazy.DB_SCHEMA,
+      schemaVersion: lazy.XPIInternal.DB_SCHEMA,
       addons: Array.from(this.addonDB.values()).filter(
         addon => !addon.location.isTemporary
       ),
@@ -1821,9 +1839,9 @@ const XPIDatabase = {
       if (aInputAddons.schemaVersion <= 27) {
         // Types were translated in bug 857456.
         for (let addon of aInputAddons.addons) {
-          lazy.migrateAddonLoader(addon);
+          lazy.XPIInternal.migrateAddonLoader(addon);
         }
-      } else if (aInputAddons.schemaVersion != lazy.DB_SCHEMA) {
+      } else if (aInputAddons.schemaVersion != lazy.XPIInternal.DB_SCHEMA) {
         // For now, we assume compatibility for JSON data with a
         // mismatched schema version, though we throw away any fields we
         // don't know about (bug 902956)
@@ -1831,7 +1849,7 @@ const XPIDatabase = {
           `schemaMismatch-${aInputAddons.schemaVersion}`
         );
         logger.debug(
-          `JSON schema mismatch: expected ${lazy.DB_SCHEMA}, actual ${aInputAddons.schemaVersion}`
+          `JSON schema mismatch: expected ${lazy.XPIInternal.DB_SCHEMA}, actual ${aInputAddons.schemaVersion}`
         );
       }
 
@@ -1853,7 +1871,9 @@ const XPIDatabase = {
             );
           }
         }
-        loadedAddon.location = lazy.XPIStates.getLocation(loadedAddon.location);
+        loadedAddon.location = lazy.XPIInternal.XPIStates.getLocation(
+          loadedAddon.location
+        );
 
         let newAddon = new AddonInternal(loadedAddon);
         if (loadedAddon.location) {
@@ -1959,7 +1979,7 @@ const XPIDatabase = {
     this.addonDB = new Map();
     this.initialized = true;
 
-    if (lazy.XPIStates.size == 0) {
+    if (lazy.XPIInternal.XPIStates.size == 0) {
       // No extensions installed, so we're done
       logger.debug("Rebuilding XPI database with no extensions");
       return;
@@ -2509,7 +2529,7 @@ const XPIDatabase = {
     let state = addon.location && addon.location.get(addon.id);
     if (state) {
       state.syncWithDB(addon);
-      lazy.XPIStates.save();
+      lazy.XPIInternal.XPIStates.save();
     }
   },
 
@@ -2787,7 +2807,9 @@ const XPIDatabase = {
         await bootstrap.disable();
         lazy.AddonManagerPrivate.callAddonListeners("onDisabled", wrapper);
       } else {
-        await bootstrap.startup(lazy.BOOTSTRAP_REASONS.ADDON_ENABLE);
+        await bootstrap.startup(
+          lazy.XPIInternal.BOOTSTRAP_REASONS.ADDON_ENABLE
+        );
         lazy.AddonManagerPrivate.callAddonListeners("onEnabled", wrapper);
       }
     }
@@ -2868,7 +2890,7 @@ const XPIDatabaseReconcile = {
   flattenByID(addonMap, hideLocation) {
     let map = new Map();
 
-    for (let loc of lazy.XPIStates.locations()) {
+    for (let loc of lazy.XPIInternal.XPIStates.locations()) {
       if (loc.name == hideLocation) {
         continue;
       }
@@ -3414,7 +3436,7 @@ const XPIDatabaseReconcile = {
     // present we re-use the add-on objects from the database and update their
     // details directly
     let addonStates = new Map();
-    for (let location of lazy.XPIStates.locations()) {
+    for (let location of lazy.XPIInternal.XPIStates.locations()) {
       let locationAddons = currentAddons.get(location.name);
 
       // Get all the on-disk XPI states for this location, and keep track of which
@@ -3474,7 +3496,7 @@ const XPIDatabaseReconcile = {
     // Validate the updated system add-ons
     let hideLocation;
     {
-      let systemAddonLocation = lazy.XPIStates.getLocation(
+      let systemAddonLocation = lazy.XPIInternal.XPIStates.getLocation(
         KEY_APP_SYSTEM_ADDONS
       );
       let addons = currentAddons.get(systemAddonLocation.name);
@@ -3536,11 +3558,11 @@ const XPIDatabaseReconcile = {
     // Finally update XPIStates to match everything
     for (let [locationName, locationAddons] of currentAddons) {
       for (let [id, addon] of locationAddons) {
-        let xpiState = lazy.XPIStates.getAddon(locationName, id);
+        let xpiState = lazy.XPIInternal.XPIStates.getAddon(locationName, id);
         xpiState.syncWithDB(addon);
       }
     }
-    lazy.XPIStates.save();
+    lazy.XPIInternal.XPIStates.save();
     XPIDatabase.saveChanges();
     XPIDatabase.rebuildingDatabase = false;
 

@@ -6,8 +6,8 @@
 
 const EXPORTED_SYMBOLS = ["browser", "Context", "WindowState"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -313,7 +313,7 @@ browser.Context = class {
     }
 
     // TODO(ato): Currently tied to curBrowser, but should be moved to
-    // WebElement when introduced by https://bugzil.la/1400256.
+    // WebReference when introduced by https://bugzil.la/1400256.
     this.eventObserver = new lazy.WebElementEventTarget(this.messageManager);
 
     return this.tab;

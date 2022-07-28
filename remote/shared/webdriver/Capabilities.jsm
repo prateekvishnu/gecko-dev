@@ -12,9 +12,8 @@ const EXPORTED_SYMBOLS = [
   "UnhandledPromptBehavior",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -436,7 +435,6 @@ class Capabilities extends Map {
       ["browserName", getWebDriverBrowserName()],
       ["browserVersion", lazy.AppInfo.version],
       ["platformName", getWebDriverPlatformName()],
-      ["platformVersion", Services.sysinfo.getProperty("version")],
       ["acceptInsecureCerts", false],
       ["pageLoadStrategy", PageLoadStrategy.Normal],
       ["proxy", new Proxy()],
@@ -460,6 +458,7 @@ class Capabilities extends Map {
         "moz:headless",
         Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo).isHeadless,
       ],
+      ["moz:platformVersion", Services.sysinfo.getProperty("version")],
       ["moz:processID", lazy.AppInfo.processID],
       ["moz:profile", maybeProfile()],
       [

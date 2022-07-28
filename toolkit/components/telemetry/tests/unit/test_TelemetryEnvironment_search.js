@@ -4,8 +4,8 @@
 const { TelemetryEnvironment } = ChromeUtils.import(
   "resource://gre/modules/TelemetryEnvironment.jsm"
 );
-const { SearchTestUtils } = ChromeUtils.import(
-  "resource://testing-common/SearchTestUtils.jsm"
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
 );
 const { TelemetryEnvironmentTesting } = ChromeUtils.import(
   "resource://testing-common/TelemetryEnvironmentTesting.jsm"
@@ -376,7 +376,7 @@ add_task(async function test_defaultSearchEngine_paramsChanged() {
     );
   });
 
-  engine.wrappedJSObject._updateFromManifest(
+  engine.wrappedJSObject.updateFromManifest(
     extension.id,
     extension.baseURI,
     SearchTestUtils.createEngineManifest({

@@ -9,10 +9,9 @@
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { LoginRecipesContent, LoginRecipesParent } = ChromeUtils.import(
   "resource://gre/modules/LoginRecipes.jsm"
 );
@@ -29,17 +28,13 @@ const { MockDocument } = ChromeUtils.import(
   "resource://testing-common/MockDocument.jsm"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "DownloadPaths",
-  "resource://gre/modules/DownloadPaths.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "FileUtils",
-  "resource://gre/modules/FileUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
+const lazy = {};
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  DownloadPaths: "resource://gre/modules/DownloadPaths.jsm",
+  FileUtils: "resource://gre/modules/FileUtils.jsm",
+  OS: "resource://gre/modules/osfile.jsm",
+});
 
 const LoginInfo = Components.Constructor(
   "@mozilla.org/login-manager/loginInfo;1",

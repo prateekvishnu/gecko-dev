@@ -118,11 +118,12 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
 
   [[nodiscard]] nsresult AddStandardRequestHeaders(
       nsHttpRequestHead*, bool isSecure,
-      ExtContentPolicyType aContentPolicyType);
+      ExtContentPolicyType aContentPolicyType,
+      bool aShouldResistFingerprinting);
   [[nodiscard]] nsresult AddConnectionHeader(nsHttpRequestHead*, uint32_t caps);
   bool IsAcceptableEncoding(const char* encoding, bool isSecure);
 
-  const nsCString& UserAgent();
+  const nsCString& UserAgent(bool aShouldResistFingerprinting);
 
   enum HttpVersion HttpVersion() { return mHttpVersion; }
   enum HttpVersion ProxyHttpVersion() { return mProxyHttpVersion; }
@@ -519,7 +520,7 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
 
   friend class SocketProcessChild;
   void SetHttpHandlerInitArgs(const HttpHandlerInitArgs& aArgs);
-  void SetDeviceModelId(const nsCString& aModelId);
+  void SetDeviceModelId(const nsACString& aModelId);
 
   // Checks if there are any user certs or active smart cards on a different
   // thread. Updates mSpeculativeConnectEnabled when done.

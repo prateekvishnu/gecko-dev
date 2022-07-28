@@ -4318,8 +4318,10 @@ nscoord nsFlexContainerFrame::ComputeMainSize(
 
   // Column-oriented case, with size-containment in block axis:
   // Behave as if we had no content and just use our MinBSize.
-  if (aReflowInput.mStyleDisplay->GetContainSizeAxes().mBContained) {
-    return aReflowInput.ComputedMinBSize();
+  if (Maybe<nscoord> containBSize =
+          aReflowInput.mFrame->ContainIntrinsicBSize()) {
+    return NS_CSS_MINMAX(*containBSize, aReflowInput.ComputedMinBSize(),
+                         aReflowInput.ComputedMaxBSize());
   }
 
   const AuCoord64 largestLineMainSize = GetLargestLineMainSize(aLines);
@@ -4379,9 +4381,11 @@ nscoord nsFlexContainerFrame::ComputeCrossSize(
 
   // Row-oriented case, with size-containment in block axis:
   // Behave as if we had no content and just use our MinBSize.
-  if (aReflowInput.mStyleDisplay->GetContainSizeAxes().mBContained) {
+  if (Maybe<nscoord> containBSize =
+          aReflowInput.mFrame->ContainIntrinsicBSize()) {
     *aIsDefinite = true;
-    return aReflowInput.ComputedMinBSize();
+    return NS_CSS_MINMAX(*containBSize, aReflowInput.ComputedMinBSize(),
+                         aReflowInput.ComputedMaxBSize());
   }
 
   // The cross size must not be definite in the following cases.
@@ -4796,8 +4800,6 @@ void nsFlexContainerFrame::Reflow(nsPresContext* aPresContext,
   FinishReflowWithAbsoluteFrames(PresContext(), aReflowOutput, aReflowInput,
                                  aStatus);
 
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aReflowOutput)
-
   // Finally update our line and item measurements in our containerInfo.
   if (MOZ_UNLIKELY(containerInfo)) {
     UpdateFlexLineAndItemInfo(*containerInfo, flr.mLines);
@@ -4817,9 +4819,12 @@ void nsFlexContainerFrame::Reflow(nsPresContext* aPresContext,
       data->mContentBoxCrossSize = flr.mContentBoxCrossSize;
 
       SetProperty(SumOfChildrenBlockSizeProperty(), sumOfChildrenBlockSize);
-    } else if (data) {
-      // We are fully-complete, so no next-in-flow is needed. Delete the
-      // existing data.
+    } else if (data && !GetNextInFlow()) {
+      // We are fully-complete, so no next-in-flow is needed. However, if we
+      // report SetInlineLineBreakBeforeAndReset() in a incremental reflow, our
+      // next-in-flow might still exist. It can be reflowed again before us if
+      // it is an overflow container. Delete the existing data only if we don't
+      // have a next-in-flow.
       RemoveProperty(SharedFlexData::Prop());
       RemoveProperty(SumOfChildrenBlockSizeProperty());
     }
@@ -5563,6 +5568,16 @@ void nsFlexContainerFrame::PopulateReflowOutput(
     aStatus.SetNextInFlowNeedsReflow();
   }
 
+  // If we are the first-in-flow and not fully complete (either our block-size
+  // or any of our flex items cannot fit in the available block-size), and the
+  // style requires us to avoid breaking inside, set the status to prompt our
+  // parent to push us to the next page/column.
+  if (!GetPrevInFlow() && !aStatus.IsFullyComplete() &&
+      ShouldAvoidBreakInside(aReflowInput)) {
+    aStatus.SetInlineLineBreakBeforeAndReset();
+    return;
+  }
+
   // Calculate the container baselines so that our parent can baseline-align us.
   mBaselineFromLastReflow = aFlexContainerAscent;
   mLastBaselineFromLastReflow = aLines.LastElement().LastBaselineOffset();
@@ -5799,10 +5814,12 @@ nscoord nsFlexContainerFrame::IntrinsicISize(gfxContext* aRenderingContext,
 nscoord nsFlexContainerFrame::GetMinISize(gfxContext* aRenderingContext) {
   DISPLAY_MIN_INLINE_SIZE(this, mCachedMinISize);
   if (mCachedMinISize == NS_INTRINSIC_ISIZE_UNKNOWN) {
-    mCachedMinISize =
-        StyleDisplay()->GetContainSizeAxes().mIContained
-            ? 0
-            : IntrinsicISize(aRenderingContext, IntrinsicISizeType::MinISize);
+    if (Maybe<nscoord> containISize = ContainIntrinsicISize()) {
+      mCachedMinISize = *containISize;
+    } else {
+      mCachedMinISize =
+          IntrinsicISize(aRenderingContext, IntrinsicISizeType::MinISize);
+    }
   }
 
   return mCachedMinISize;
@@ -5812,10 +5829,12 @@ nscoord nsFlexContainerFrame::GetMinISize(gfxContext* aRenderingContext) {
 nscoord nsFlexContainerFrame::GetPrefISize(gfxContext* aRenderingContext) {
   DISPLAY_PREF_INLINE_SIZE(this, mCachedPrefISize);
   if (mCachedPrefISize == NS_INTRINSIC_ISIZE_UNKNOWN) {
-    mCachedPrefISize =
-        StyleDisplay()->GetContainSizeAxes().mIContained
-            ? 0
-            : IntrinsicISize(aRenderingContext, IntrinsicISizeType::PrefISize);
+    if (Maybe<nscoord> containISize = ContainIntrinsicISize()) {
+      mCachedPrefISize = *containISize;
+    } else {
+      mCachedPrefISize =
+          IntrinsicISize(aRenderingContext, IntrinsicISizeType::PrefISize);
+    }
   }
 
   return mCachedPrefISize;

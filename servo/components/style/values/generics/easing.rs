@@ -6,32 +6,6 @@
 //! https://drafts.csswg.org/css-easing/#timing-functions
 
 use crate::parser::ParserContext;
-use crate::values::generics::Optional;
-
-/// An entry for linear easing function.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(C)]
-pub struct LinearStop<Number, Percentage> {
-    /// Output of the function at the given point.
-    pub output: Number,
-    /// Playback progress at which this output starts.
-    #[css(skip_if = "Optional::is_none")]
-    pub input_start: Optional<Percentage>,
-    /// Playback progress at which this output ends.
-    #[css(skip_if = "Optional::is_none")]
-    pub input_end: Optional<Percentage>,
-}
 
 /// A generic easing function.
 #[derive(
@@ -40,14 +14,15 @@ pub struct LinearStop<Number, Percentage> {
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
-    ToComputedValue,
     ToCss,
-    ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 #[value_info(ty = "TIMING_FUNCTION")]
 #[repr(u8, C)]
-pub enum TimingFunction<Integer, Number, Percentage> {
+/// cbindgen:private-default-tagged-enum-constructor=false
+pub enum TimingFunction<Integer, Number, LinearStops> {
     /// `linear | ease | ease-in | ease-out | ease-in-out`
     Keyword(TimingKeyword),
     /// `cubic-bezier(<number>, <number>, <number>, <number>)`
@@ -67,8 +42,8 @@ pub enum TimingFunction<Integer, Number, Percentage> {
     /// linear([<linear-stop>]#)
     /// <linear-stop> = <output> && <linear-stop-length>?
     /// <linear-stop-length> = <percentage>{1, 2}
-    #[css(comma, function = "linear")]
-    LinearFunction(#[css(iterable)] crate::OwnedSlice<LinearStop<Number, Percentage>>),
+    #[css(function = "linear")]
+    LinearFunction(LinearStops),
 }
 
 #[allow(missing_docs)]
@@ -86,6 +61,8 @@ pub enum TimingFunction<Integer, Number, Percentage> {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 #[repr(u8)]
 pub enum TimingKeyword {
@@ -94,6 +71,16 @@ pub enum TimingKeyword {
     EaseIn,
     EaseOut,
     EaseInOut,
+}
+
+/// Before flag, defined as per https://drafts.csswg.org/css-easing/#before-flag
+/// This flag is never user-specified.
+#[allow(missing_docs)]
+#[derive(PartialEq)]
+#[repr(u8)]
+pub enum BeforeFlag {
+    Unset,
+    Set,
 }
 
 #[cfg(feature = "gecko")]
@@ -120,6 +107,8 @@ fn step_position_jump_enabled(_context: &ParserContext) -> bool {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 #[repr(u8)]
 pub enum StepPosition {
@@ -140,7 +129,7 @@ fn is_end(position: &StepPosition) -> bool {
     *position == StepPosition::JumpEnd || *position == StepPosition::End
 }
 
-impl<Integer, Number, Percentage> TimingFunction<Integer, Number, Percentage> {
+impl<Integer, Number, LinearStops> TimingFunction<Integer, Number, LinearStops> {
     /// `ease`
     #[inline]
     pub fn ease() -> Self {

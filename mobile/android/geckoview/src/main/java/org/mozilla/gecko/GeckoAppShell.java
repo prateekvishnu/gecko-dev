@@ -46,7 +46,6 @@ import android.os.PowerManager;
 import android.os.Vibrator;
 import android.provider.Settings;
 import android.text.TextUtils;
-import android.text.format.DateFormat;
 import android.util.Log;
 import android.view.ContextThemeWrapper;
 import android.view.Display;
@@ -179,6 +178,8 @@ public class GeckoAppShell {
   }
 
   private static volatile boolean locationHighAccuracyEnabled;
+  private static volatile boolean locationListeningRequested = false;
+  private static volatile boolean locationPaused = false;
 
   // See also HardwareUtils.LOW_MEMORY_THRESHOLD_MB.
   private static final int HIGH_MEMORY_DEVICE_THRESHOLD_MB = 768;
@@ -309,16 +310,32 @@ public class GeckoAppShell {
     return lastKnownLocation;
   }
 
+  // Toggles the location listeners on/off, which will then provide/stop location information
   @WrapForJNI(calledFrom = "gecko")
+  private static synchronized boolean enableLocationUpdates(final boolean enable) {
+    locationListeningRequested = enable;
+    final boolean canListen = updateLocationListeners();
+    if (!canListen && locationListeningRequested) {
+      // Didn't successfully start listener when requested
+      locationListeningRequested = false;
+    }
+    return canListen;
+  }
+
   // Permissions are explicitly checked when requesting content permission.
   @SuppressLint("MissingPermission")
-  private static synchronized boolean enableLocation(final boolean enable) {
+  private static synchronized boolean updateLocationListeners() {
+    final boolean shouldListen = locationListeningRequested && !locationPaused;
     final LocationManager lm = getLocationManager(getApplicationContext());
     if (lm == null) {
       return false;
     }
 
-    if (!enable) {
+    if (!shouldListen) {
+      // Could not complete request, because paused
+      if (locationListeningRequested) {
+        return false;
+      }
       lm.removeUpdates(sAndroidListeners);
       return true;
     }
@@ -357,6 +374,16 @@ public class GeckoAppShell {
     return true;
   }
 
+  public static void pauseLocation() {
+    locationPaused = true;
+    updateLocationListeners();
+  }
+
+  public static void resumeLocation() {
+    locationPaused = false;
+    updateLocationListeners();
+  }
+
   private static LocationManager getLocationManager(final Context context) {
     try {
       return (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
@@ -387,8 +414,7 @@ public class GeckoAppShell {
       float accuracy,
       float altitudeAccuracy,
       float heading,
-      float speed,
-      long time);
+      float speed);
 
   private static class AndroidListeners implements SensorEventListener, LocationListener {
     @Override
@@ -485,8 +511,7 @@ public class GeckoAppShell {
           accuracy,
           altitudeAccuracy,
           heading,
-          speed,
-          location.getTime());
+          speed);
     }
 
     @Override
@@ -1149,6 +1174,7 @@ public class GeckoAppShell {
   }
 
   private static Context sApplicationContext;
+  private static Boolean sIs24HourFormat = true;
 
   @WrapForJNI
   public static Context getApplicationContext() {
@@ -1502,10 +1528,13 @@ public class GeckoAppShell {
     return locales;
   }
 
+  public static void setIs24HourFormat(final Boolean is24HourFormat) {
+    sIs24HourFormat = is24HourFormat;
+  }
+
   @WrapForJNI
   public static boolean getIs24HourFormat() {
-    final Context context = getApplicationContext();
-    return DateFormat.is24HourFormat(context);
+    return sIs24HourFormat;
   }
 
   @WrapForJNI

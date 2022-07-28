@@ -1037,7 +1037,6 @@ impl SpatialNodeInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct DisplayListBuilder {
     payload: DisplayListPayload,
     pub pipeline_id: PipelineId,
@@ -1350,11 +1349,17 @@ impl DisplayListBuilder {
 
     pub fn push_hit_test(
         &mut self,
-        common: &di::CommonItemProperties,
+        rect: LayoutRect,
+        clip_chain_id: di::ClipChainId,
+        spatial_id: di::SpatialId,
+        flags: di::PrimitiveFlags,
         tag: di::ItemTag,
     ) {
         let item = di::DisplayItem::HitTest(di::HitTestDisplayItem {
-            common: *common,
+            rect,
+            clip_chain_id,
+            spatial_id,
+            flags,
             tag,
         });
         self.push_item(&item);
@@ -1734,7 +1739,7 @@ impl DisplayListBuilder {
         origin: LayoutPoint,
         spatial_id: di::SpatialId,
         prim_flags: di::PrimitiveFlags,
-        clip_id: Option<di::ClipId>,
+        clip_chain_id: Option<di::ClipChainId>,
         transform_style: di::TransformStyle,
         mix_blend_mode: di::MixBlendMode,
         filters: &[di::FilterOp],
@@ -1752,7 +1757,7 @@ impl DisplayListBuilder {
             stacking_context: di::StackingContext {
                 transform_style,
                 mix_blend_mode,
-                clip_id,
+                clip_chain_id,
                 raster_space,
                 flags,
             },
@@ -1863,7 +1868,7 @@ impl DisplayListBuilder {
 
     fn generate_clip_index(&mut self) -> di::ClipId {
         self.next_clip_index += 1;
-        di::ClipId::Clip(self.next_clip_index - 1, self.pipeline_id)
+        di::ClipId(self.next_clip_index - 1, self.pipeline_id)
     }
 
     fn generate_spatial_index(&mut self) -> di::SpatialId {
@@ -1931,14 +1936,14 @@ impl DisplayListBuilder {
 
     pub fn define_clip_image_mask(
         &mut self,
-        parent_space_and_clip: &di::SpaceAndClipInfo,
+        spatial_id: di::SpatialId,
         image_mask: di::ImageMask,
         points: &[LayoutPoint],
         fill_rule: di::FillRule,
     ) -> di::ClipId {
         let id = self.generate_clip_index();
 
-        let current_offset = self.current_offset(parent_space_and_clip.spatial_id);
+        let current_offset = self.current_offset(spatial_id);
 
         let image_mask = di::ImageMask {
             rect: image_mask.rect.translate(current_offset),
@@ -1947,7 +1952,7 @@ impl DisplayListBuilder {
 
         let item = di::DisplayItem::ImageMaskClip(di::ImageMaskClipDisplayItem {
             id,
-            parent_space_and_clip: *parent_space_and_clip,
+            spatial_id,
             image_mask,
             fill_rule,
         });
@@ -1966,17 +1971,17 @@ impl DisplayListBuilder {
 
     pub fn define_clip_rect(
         &mut self,
-        parent_space_and_clip: &di::SpaceAndClipInfo,
+        spatial_id: di::SpatialId,
         clip_rect: LayoutRect,
     ) -> di::ClipId {
         let id = self.generate_clip_index();
 
-        let current_offset = self.current_offset(parent_space_and_clip.spatial_id);
+        let current_offset = self.current_offset(spatial_id);
         let clip_rect = clip_rect.translate(current_offset);
 
         let item = di::DisplayItem::RectClip(di::RectClipDisplayItem {
             id,
-            parent_space_and_clip: *parent_space_and_clip,
+            spatial_id,
             clip_rect,
         });
 
@@ -1986,12 +1991,12 @@ impl DisplayListBuilder {
 
     pub fn define_clip_rounded_rect(
         &mut self,
-        parent_space_and_clip: &di::SpaceAndClipInfo,
+        spatial_id: di::SpatialId,
         clip: di::ComplexClipRegion,
     ) -> di::ClipId {
         let id = self.generate_clip_index();
 
-        let current_offset = self.current_offset(parent_space_and_clip.spatial_id);
+        let current_offset = self.current_offset(spatial_id);
 
         let clip = di::ComplexClipRegion {
             rect: clip.rect.translate(current_offset),
@@ -2000,7 +2005,7 @@ impl DisplayListBuilder {
 
         let item = di::DisplayItem::RoundedRectClip(di::RoundedRectClipDisplayItem {
             id,
-            parent_space_and_clip: *parent_space_and_clip,
+            spatial_id,
             clip,
         });
 

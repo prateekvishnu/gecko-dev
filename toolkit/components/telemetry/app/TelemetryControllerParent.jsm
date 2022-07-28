@@ -8,21 +8,23 @@
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
+const { AsyncShutdown } = ChromeUtils.import(
+  "resource://gre/modules/AsyncShutdown.jsm"
+);
 const { PromiseUtils } = ChromeUtils.import(
   "resource://gre/modules/PromiseUtils.jsm"
 );
 const { DeferredTask } = ChromeUtils.import(
   "resource://gre/modules/DeferredTask.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { TelemetryUtils } = ChromeUtils.import(
   "resource://gre/modules/TelemetryUtils.jsm"
 );
 const { TelemetryControllerBase } = ChromeUtils.import(
   "resource://gre/modules/TelemetryControllerBase.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const Utils = TelemetryUtils;
@@ -59,7 +61,6 @@ ChromeUtils.defineModuleGetter(
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   ClientID: "resource://gre/modules/ClientID.jsm",
   CoveragePing: "resource://gre/modules/CoveragePing.jsm",
-  AsyncShutdown: "resource://gre/modules/AsyncShutdown.jsm",
   TelemetryStorage: "resource://gre/modules/TelemetryStorage.jsm",
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.jsm",
   TelemetryArchive: "resource://gre/modules/TelemetryArchive.jsm",
@@ -301,13 +302,13 @@ var Impl = {
   // This is a public barrier Telemetry clients can use to add blockers to the shutdown
   // of TelemetryController.
   // After this barrier, clients can not submit Telemetry pings anymore.
-  _shutdownBarrier: new lazy.AsyncShutdown.Barrier(
+  _shutdownBarrier: new AsyncShutdown.Barrier(
     "TelemetryController: Waiting for clients."
   ),
   // This state is included in the async shutdown annotation for crash pings and reports.
   _shutdownState: "Shutdown not started.",
   // This is a private barrier blocked by pending async ping activity (sending & saving).
-  _connectionsBarrier: new lazy.AsyncShutdown.Barrier(
+  _connectionsBarrier: new AsyncShutdown.Barrier(
     "TelemetryController: Waiting for pending ping activity"
   ),
   // This is true when running in the test infrastructure.
@@ -910,7 +911,7 @@ var Impl = {
       this._testMode ? 0 : undefined
     );
 
-    lazy.AsyncShutdown.sendTelemetry.addBlocker(
+    AsyncShutdown.sendTelemetry.addBlocker(
       "TelemetryController: shutting down",
       () => this.shutdown(),
       () => this._getState()
@@ -926,69 +927,50 @@ var Impl = {
       return;
     }
 
-    let start = TelemetryUtils.monotonicNow();
-    let now = () => " " + (TelemetryUtils.monotonicNow() - start);
-    this._shutdownStep = "_cleanupOnShutdown begin " + now();
-
     this._detachObservers();
 
     // Now do an orderly shutdown.
     try {
       if (this._delayedNewPingTask) {
-        this._shutdownStep = "awaiting delayed new ping task" + now();
         await this._delayedNewPingTask.finalize();
       }
 
-      this._shutdownStep = "Update" + now();
       lazy.UpdatePing.shutdown();
 
-      this._shutdownStep = "Event" + now();
       lazy.TelemetryEventPing.shutdown();
-      this._shutdownStep = "Prio" + now();
       await lazy.TelemetryPrioPing.shutdown();
 
       // Shutdown the sync ping if it is initialized - this is likely, but not
       // guaranteed, to submit a "shutdown" sync ping.
       if (this._fnSyncPingShutdown) {
-        this._shutdownStep = "Sync" + now();
         this._fnSyncPingShutdown();
       }
 
       // Stop the datachoices infobar display.
-      this._shutdownStep = "Policy" + now();
       lazy.TelemetryReportingPolicy.shutdown();
-      this._shutdownStep = "Environment" + now();
       lazy.TelemetryEnvironment.shutdown();
 
       // Stop any ping sending.
-      this._shutdownStep = "TelemetrySend" + now();
       await lazy.TelemetrySend.shutdown();
 
       // Send latest data.
-      this._shutdownStep = "Health ping" + now();
       await lazy.TelemetryHealthPing.shutdown();
 
-      this._shutdownStep = "TelemetrySession" + now();
       await lazy.TelemetrySession.shutdown();
-      this._shutdownStep = "Services.telemetry" + now();
       await Services.telemetry.shutdown();
 
       // First wait for clients processing shutdown.
-      this._shutdownStep = "await shutdown barrier" + now();
       await this._shutdownBarrier.wait();
 
       // ... and wait for any outstanding async ping activity.
-      this._shutdownStep = "await connections barrier" + now();
       await this._connectionsBarrier.wait();
 
       if (AppConstants.platform !== "android") {
         // No PingSender on Android.
-        this._shutdownStep = "Flush pingsender batch" + now();
         lazy.TelemetrySend.flushPingSenderBatch();
       }
 
       // Perform final shutdown operations.
-      this._shutdownStep = "await TelemetryStorage" + now();
       await lazy.TelemetryStorage.shutdown();
     } finally {
       // Reset state.
@@ -1075,7 +1057,6 @@ var Impl = {
       connectionsBarrier: this._connectionsBarrier.state,
       sendModule: lazy.TelemetrySend.getShutdownState(),
       haveDelayedNewProfileTask: !!this._delayedNewPingTask,
-      shutdownStep: this._shutdownStep,
     };
   },
 
@@ -1230,10 +1211,10 @@ var Impl = {
 
     let sessionReset = lazy.TelemetrySession.testReset();
 
-    this._connectionsBarrier = new lazy.AsyncShutdown.Barrier(
+    this._connectionsBarrier = new AsyncShutdown.Barrier(
       "TelemetryController: Waiting for pending ping activity"
     );
-    this._shutdownBarrier = new lazy.AsyncShutdown.Barrier(
+    this._shutdownBarrier = new AsyncShutdown.Barrier(
       "TelemetryController: Waiting for clients."
     );
 

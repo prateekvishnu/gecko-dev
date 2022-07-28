@@ -53,7 +53,7 @@ static bool InvokeWatchtowerCallback(JSContext* cx, const char* kind,
                               &rval);
 }
 
-static bool ReshapeForShadowedProp(JSContext* cx, HandleNativeObject obj,
+static bool ReshapeForShadowedProp(JSContext* cx, Handle<NativeObject*> obj,
                                    HandleId id) {
   // |obj| has been used as the prototype of another object. Check if we're
   // shadowing a property on its proto chain. In this case we need to reshape
@@ -85,7 +85,8 @@ static bool ReshapeForShadowedProp(JSContext* cx, HandleNativeObject obj,
   return true;
 }
 
-static void InvalidateMegamorphicCache(JSContext* cx, HandleNativeObject obj) {
+static void InvalidateMegamorphicCache(JSContext* cx,
+                                       Handle<NativeObject*> obj) {
   // The megamorphic cache only checks the receiver object's shape. We need to
   // invalidate the cache when a prototype object changes its set of properties,
   // to account for cached properties that are deleted, turned into an accessor
@@ -97,7 +98,7 @@ static void InvalidateMegamorphicCache(JSContext* cx, HandleNativeObject obj) {
 }
 
 // static
-bool Watchtower::watchPropertyAddSlow(JSContext* cx, HandleNativeObject obj,
+bool Watchtower::watchPropertyAddSlow(JSContext* cx, Handle<NativeObject*> obj,
                                       HandleId id) {
   MOZ_ASSERT(watchesPropertyAdd(obj));
 
@@ -189,7 +190,8 @@ bool Watchtower::watchProtoChangeSlow(JSContext* cx, HandleObject obj) {
 }
 
 // static
-bool Watchtower::watchPropertyRemoveSlow(JSContext* cx, HandleNativeObject obj,
+bool Watchtower::watchPropertyRemoveSlow(JSContext* cx,
+                                         Handle<NativeObject*> obj,
                                          HandleId id) {
   MOZ_ASSERT(watchesPropertyRemove(obj));
 
@@ -208,7 +210,8 @@ bool Watchtower::watchPropertyRemoveSlow(JSContext* cx, HandleNativeObject obj,
 }
 
 // static
-bool Watchtower::watchPropertyChangeSlow(JSContext* cx, HandleNativeObject obj,
+bool Watchtower::watchPropertyChangeSlow(JSContext* cx,
+                                         Handle<NativeObject*> obj,
                                          HandleId id) {
   MOZ_ASSERT(watchesPropertyChange(obj));
 
@@ -227,7 +230,8 @@ bool Watchtower::watchPropertyChangeSlow(JSContext* cx, HandleNativeObject obj,
 }
 
 // static
-bool Watchtower::watchFreezeOrSealSlow(JSContext* cx, HandleNativeObject obj) {
+bool Watchtower::watchFreezeOrSealSlow(JSContext* cx,
+                                       Handle<NativeObject*> obj) {
   MOZ_ASSERT(watchesFreezeOrSeal(obj));
 
   if (MOZ_UNLIKELY(obj->useWatchtowerTestingCallback())) {
@@ -241,7 +245,7 @@ bool Watchtower::watchFreezeOrSealSlow(JSContext* cx, HandleNativeObject obj) {
 }
 
 // static
-bool Watchtower::watchObjectSwapSlow(JSContext* cx, HandleObject a,
+void Watchtower::watchObjectSwapSlow(JSContext* cx, HandleObject a,
                                      HandleObject b) {
   MOZ_ASSERT(watchesObjectSwap(a, b));
 
@@ -252,18 +256,6 @@ bool Watchtower::watchObjectSwapSlow(JSContext* cx, HandleObject a,
     InvalidateMegamorphicCache(cx, b.as<NativeObject>());
   }
 
-  if (MOZ_UNLIKELY(a->useWatchtowerTestingCallback() ||
-                   b->useWatchtowerTestingCallback())) {
-    RootedValue extra(cx, ObjectValue(*b));
-    if (!InvokeWatchtowerCallback(cx, "object-swap", a, extra)) {
-      // The JSObject::swap caller unfortunately assumes failures are OOM and
-      // crashes. Ignore non-OOM exceptions for now.
-      if (cx->isThrowingOutOfMemory()) {
-        return false;
-      }
-      cx->clearPendingException();
-    }
-  }
-
-  return true;
+  // Note: we don't invoke the testing callback for swap because the objects may
+  // not be safe to expose to JS at this point. See bug 1754699.
 }

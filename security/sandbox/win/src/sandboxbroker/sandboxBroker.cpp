@@ -344,10 +344,11 @@ bool SandboxBroker::LaunchApp(const wchar_t* aPath, const wchar_t* aArguments,
 
   if (!isThunderbird &&
       XRE_GetChildProcBinPathType(aProcessType) == BinPathType::Self) {
+    bool isUtilityProcess = aProcessType == GeckoProcessType_Utility;
     RefPtr<DllServices> dllSvc(DllServices::Get());
     LauncherVoidResultWithLineInfo blocklistInitOk =
         dllSvc->InitDllBlocklistOOP(aPath, targetInfo.hProcess,
-                                    aCachedNtdllThunk);
+                                    aCachedNtdllThunk, isUtilityProcess);
     if (blocklistInitOk.isErr()) {
       dllSvc->HandleLauncherError(blocklistInitOk.unwrapErr(),
                                   XRE_GeckoProcessTypeToString(aProcessType));
@@ -1333,11 +1334,11 @@ bool SandboxBroker::SetSecurityLevelForUtilityProcess(
 
   mitigations = sandbox::MITIGATION_STRICT_HANDLE_CHECKS |
                 sandbox::MITIGATION_DLL_SEARCH_ORDER;
-// TODO: Bug 1766432 - Investigate why this crashes in MSAudDecMFT.dll during
-// Utility AudioDecoder process startup only on 32-bits systems.
-// Investigate also why it crashes (no idea where exactly) for MinGW64 builds
-//
-// TODO: Bug 1773005 - AAC seems to not work on Windows < 1703
+  // TODO: Bug 1766432 - Investigate why this crashes in MSAudDecMFT.dll during
+  // Utility AudioDecoder process startup only on 32-bits systems.
+  // Investigate also why it crashes (no idea where exactly) for MinGW64 builds
+  //
+  // TODO: Bug 1773005 - AAC seems to not work on Windows < 1703
   if (IsWin10CreatorsUpdateOrLater()) {
 #if defined(_M_X64) && !defined(__MINGW64__)
     mitigations |= sandbox::MITIGATION_DYNAMIC_CODE_DISABLE;

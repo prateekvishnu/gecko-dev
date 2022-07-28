@@ -32,7 +32,6 @@
 using namespace mozilla;
 using namespace mozilla::css;
 using mozilla::dom::Animation;
-using mozilla::dom::AnimationEffect;
 using mozilla::dom::AnimationPlayState;
 using mozilla::dom::CSSAnimation;
 using mozilla::dom::Element;
@@ -76,7 +75,8 @@ class MOZ_STACK_CLASS ServoCSSAnimationBuilder final {
   }
 
   bool BuildKeyframes(const Element& aElement, nsPresContext* aPresContext,
-                      nsAtom* aName, const nsTimingFunction& aTimingFunction,
+                      nsAtom* aName,
+                      const StyleComputedTimingFunction& aTimingFunction,
                       nsTArray<Keyframe>& aKeyframes) {
     return aPresContext->StyleSet()->GetKeyframesForName(
         aElement, *mComputedStyle, aName, aTimingFunction, aKeyframes);
@@ -131,7 +131,8 @@ static void UpdateOldAnimationPropertiesWithNew(
     CSSAnimation& aOld, TimingParams&& aNewTiming,
     nsTArray<Keyframe>&& aNewKeyframes, bool aNewIsStylePaused,
     CSSAnimationProperties aOverriddenProperties,
-    ServoCSSAnimationBuilder& aBuilder, dom::AnimationTimeline* aTimeline) {
+    ServoCSSAnimationBuilder& aBuilder, dom::AnimationTimeline* aTimeline,
+    dom::CompositeOperation aNewComposite) {
   bool animationChanged = false;
 
   // Update the old from the new so we can keep the original object
@@ -160,10 +161,15 @@ static void UpdateOldAnimationPropertiesWithNew(
     animationChanged = oldEffect->SpecifiedTiming() != updatedTiming;
     oldEffect->SetSpecifiedTiming(std::move(updatedTiming));
 
-    KeyframeEffect* oldKeyframeEffect = oldEffect->AsKeyframeEffect();
-    if (~aOverriddenProperties & CSSAnimationProperties::Keyframes &&
-        oldKeyframeEffect) {
-      aBuilder.SetKeyframes(*oldKeyframeEffect, std::move(aNewKeyframes));
+    if (KeyframeEffect* oldKeyframeEffect = oldEffect->AsKeyframeEffect()) {
+      if (~aOverriddenProperties & CSSAnimationProperties::Keyframes) {
+        aBuilder.SetKeyframes(*oldKeyframeEffect, std::move(aNewKeyframes));
+      }
+
+      if (~aOverriddenProperties & CSSAnimationProperties::Composition) {
+        animationChanged = oldKeyframeEffect->Composite() != aNewComposite;
+        oldKeyframeEffect->SetCompositeFromStyle(aNewComposite);
+      }
     }
   }
 
@@ -215,16 +221,18 @@ static already_AddRefed<dom::AnimationTimeline> GetTimeline(
         // That's how we represent `none`.
         return nullptr;
       }
-      const auto* rule =
-          aPresContext->StyleSet()->ScrollTimelineRuleForName(name);
-      if (!rule) {
-        // Unknown timeline, so treat is as no timeline. Keep nullptr.
-        return nullptr;
+      // 1. Check @scroll-timeline rule.
+      if (const auto* rule =
+              aPresContext->StyleSet()->ScrollTimelineRuleForName(name)) {
+        // We do intentionally use the pres context's document for the owner of
+        // ScrollTimeline since it's consistent with what we do for
+        // KeyframeEffect instance.
+        return ScrollTimeline::FromRule(*rule, aPresContext->Document(),
+                                        aTarget);
       }
-      // We do intentionally use the pres context's document for the owner of
-      // ScrollTimeline since it's consistent with what we do for
-      // KeyframeEffect instance.
-      return ScrollTimeline::FromRule(*rule, aPresContext->Document(), aTarget);
+      // 2. Check scroll-timeline-name property.
+      return ScrollTimeline::FromNamedScroll(aPresContext->Document(), aTarget,
+                                             name);
     }
     case StyleAnimationTimeline::Tag::Scroll: {
       const auto& scroll = aStyleTimeline.AsScroll();
@@ -285,11 +293,12 @@ static already_AddRefed<CSSAnimation> BuildAnimation(
     // In order to honor what the spec said, we'd copy more data over.
     UpdateOldAnimationPropertiesWithNew(
         *oldAnim, std::move(timing), std::move(keyframes), isStylePaused,
-        oldAnim->GetOverriddenProperties(), aBuilder, timeline);
+        oldAnim->GetOverriddenProperties(), aBuilder, timeline,
+        aStyle.GetAnimationComposition(animIdx));
     return oldAnim.forget();
   }
 
-  KeyframeEffectParams effectOptions;
+  KeyframeEffectParams effectOptions(aStyle.GetAnimationComposition(animIdx));
   RefPtr<KeyframeEffect> effect = new dom::CSSAnimationKeyframeEffect(
       aPresContext->Document(),
       OwningAnimationTarget(aTarget.mElement, aTarget.mPseudoType),

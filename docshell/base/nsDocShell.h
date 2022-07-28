@@ -50,6 +50,7 @@ class ClientSource;
 class EventTarget;
 class SessionHistoryInfo;
 struct LoadingSessionHistoryInfo;
+struct Wireframe;
 }  // namespace dom
 namespace net {
 class LoadInfo;
@@ -640,10 +641,10 @@ class nsDocShell final : public nsDocLoader,
 
   void UpdateActiveEntry(
       bool aReplace, const mozilla::Maybe<nsPoint>& aPreviousScrollPos,
-      nsIURI* aURI, nsIURI* aOriginalURI, nsIPrincipal* aTriggeringPrincipal,
-      nsIContentSecurityPolicy* aCsp, const nsAString& aTitle,
-      bool aScrollRestorationIsManual, nsIStructuredCloneContainer* aData,
-      bool aURIWasModified);
+      nsIURI* aURI, nsIURI* aOriginalURI, nsIReferrerInfo* aReferrerInfo,
+      nsIPrincipal* aTriggeringPrincipal, nsIContentSecurityPolicy* aCsp,
+      const nsAString& aTitle, bool aScrollRestorationIsManual,
+      nsIStructuredCloneContainer* aData, bool aURIWasModified);
 
   nsresult AddChildSHEntry(nsISHEntry* aCloneRef, nsISHEntry* aNewEntry,
                            int32_t aChildOffset, uint32_t aLoadType,
@@ -737,6 +738,10 @@ class nsDocShell final : public nsDocLoader,
                 bool aAddToGlobalHistory, bool aCloneSHChildren);
 
  public:
+  // If wireframe collection is enabled, will attempt to gather the
+  // wireframe for the document.
+  mozilla::Maybe<mozilla::dom::Wireframe> GetWireframe();
+
   // If wireframe collection is enabled, will attempt to gather the
   // wireframe for the document and stash it inside of the active history
   // entry. Returns true if wireframes were collected.

@@ -7,10 +7,9 @@ var EXPORTED_SYMBOLS = [
   "nsDefaultCommandLineHandler",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -45,7 +44,8 @@ const ONCE_PREF = "browser.startup.homepage_override.once";
 // Index of Private Browsing icon in firefox.exe
 // Must line up with the one in nsNativeAppSupportWin.h.
 const PRIVATE_BROWSING_ICON_INDEX = 5;
-const PRIVACY_SEGMENTATION_PREF = "browser.privacySegmentation.enabled";
+const PRIVATE_WINDOW_SEPARATION_PREF =
+  "browser.privacySegmentation.windowSeparation.enabled";
 
 function shouldLoadURI(aURI) {
   if (aURI && !aURI.schemeIs("chrome")) {
@@ -250,12 +250,17 @@ function openBrowserWindow(
     });
     args = [uriArray];
   } else {
+    let extraOptions = Cc["@mozilla.org/hash-property-bag;1"].createInstance(
+      Ci.nsIWritablePropertyBag2
+    );
+    extraOptions.setPropertyAsBool("fromExternal", true);
+
     // Always pass at least 3 arguments to avoid the "|"-splitting behavior,
     // ie. avoid the loadOneOrMoreURIs function.
     // Also, we need to pass the triggering principal.
     args = [
       urlOrUrlList,
-      null, // charset
+      extraOptions,
       null, // refererInfo
       postData,
       undefined, // allowThirdPartyFixup; this would be `false` but that
@@ -278,7 +283,7 @@ function openBrowserWindow(
         win.docShell.QueryInterface(
           Ci.nsILoadContext
         ).usePrivateBrowsing = true;
-        if (Services.prefs.getBoolPref(PRIVACY_SEGMENTATION_PREF)) {
+        if (Services.prefs.getBoolPref(PRIVATE_WINDOW_SEPARATION_PREF)) {
           // TODO: Changing this after the Window has been painted causes it to
           // change Taskbar icons if the original one had a different AUMID.
           // This must stay pref'ed off until this is resolved.

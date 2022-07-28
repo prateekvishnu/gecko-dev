@@ -252,7 +252,6 @@
 #include "vm/StringType.h"
 #include "vm/SymbolType.h"
 #include "vm/Time.h"
-#include "vm/TraceLogging.h"
 #include "vm/WrapperObject.h"
 
 #include "gc/Heap-inl.h"
@@ -319,14 +318,29 @@ void GCRuntime::verifyAllChunks() {
 }
 #endif
 
+void GCRuntime::setMinEmptyChunkCount(uint32_t value, const AutoLockGC& lock) {
+  minEmptyChunkCount_ = value;
+  if (minEmptyChunkCount_ > maxEmptyChunkCount_) {
+    maxEmptyChunkCount_ = minEmptyChunkCount_;
+  }
+  MOZ_ASSERT(maxEmptyChunkCount_ >= minEmptyChunkCount_);
+}
+
+void GCRuntime::setMaxEmptyChunkCount(uint32_t value, const AutoLockGC& lock) {
+  maxEmptyChunkCount_ = value;
+  if (minEmptyChunkCount_ > maxEmptyChunkCount_) {
+    minEmptyChunkCount_ = maxEmptyChunkCount_;
+  }
+  MOZ_ASSERT(maxEmptyChunkCount_ >= minEmptyChunkCount_);
+}
+
 inline bool GCRuntime::tooManyEmptyChunks(const AutoLockGC& lock) {
-  return emptyChunks(lock).count() > tunables.minEmptyChunkCount(lock);
+  return emptyChunks(lock).count() > minEmptyChunkCount(lock);
 }
 
 ChunkPool GCRuntime::expireEmptyChunkPool(const AutoLockGC& lock) {
   MOZ_ASSERT(emptyChunks(lock).verify());
-  MOZ_ASSERT(tunables.minEmptyChunkCount(lock) <=
-             tunables.maxEmptyChunkCount());
+  MOZ_ASSERT(minEmptyChunkCount(lock) <= maxEmptyChunkCount(lock));
 
   ChunkPool expired;
   while (tooManyEmptyChunks(lock)) {
@@ -337,8 +351,8 @@ ChunkPool GCRuntime::expireEmptyChunkPool(const AutoLockGC& lock) {
 
   MOZ_ASSERT(expired.verify());
   MOZ_ASSERT(emptyChunks(lock).verify());
-  MOZ_ASSERT(emptyChunks(lock).count() <= tunables.maxEmptyChunkCount());
-  MOZ_ASSERT(emptyChunks(lock).count() <= tunables.minEmptyChunkCount(lock));
+  MOZ_ASSERT(emptyChunks(lock).count() <= maxEmptyChunkCount(lock));
+  MOZ_ASSERT(emptyChunks(lock).count() <= minEmptyChunkCount(lock));
   return expired;
 }
 
@@ -375,7 +389,7 @@ void GCRuntime::releaseArena(Arena* arena, const AutoLockGC& lock) {
   MOZ_ASSERT(!arena->onDelayedMarkingList());
   MOZ_ASSERT(TlsGCContext.get()->isFinalizing());
 
-  arena->zone->gcHeapSize.removeGCArena();
+  arena->zone->gcHeapSize.removeGCArena(heapSize);
   arena->release(lock);
   arena->chunk()->releaseArena(this, arena, lock);
 }
@@ -390,11 +404,13 @@ GCRuntime::GCRuntime(JSRuntime* rt)
       marker(rt),
       barrierTracer(rt),
       sweepingTracer(rt),
-      heapSize(nullptr),
+      fullGCRequested(false),
       helperThreadRatio(TuningDefaults::HelperThreadRatio),
       maxHelperThreads(TuningDefaults::MaxHelperThreads),
       helperThreadCount(1),
       createBudgetCallback(nullptr),
+      minEmptyChunkCount_(TuningDefaults::MinEmptyChunkCount),
+      maxEmptyChunkCount_(TuningDefaults::MaxEmptyChunkCount),
       rootsHash(256),
       nextCellUniqueId_(LargestTaggedNullCellPointer +
                         1),  // Ensure disjoint from null tagged pointers.
@@ -822,7 +838,7 @@ bool GCRuntime::init(uint32_t maxbytes) {
   {
     AutoLockGCBgAlloc lock(this);
 
-    MOZ_ALWAYS_TRUE(tunables.setParameter(JSGC_MAX_BYTES, maxbytes, lock));
+    MOZ_ALWAYS_TRUE(tunables.setParameter(JSGC_MAX_BYTES, maxbytes));
 
     const char* size = getenv("JSGC_MARK_STACK_LIMIT");
     if (size) {
@@ -838,7 +854,7 @@ bool GCRuntime::init(uint32_t maxbytes) {
       char* last;
       long pretenureThreshold = strtol(pretenureThresholdStr, &last, 10);
       if (last[0] || !tunables.setParameter(JSGC_PRETENURE_THRESHOLD,
-                                            pretenureThreshold, lock)) {
+                                            pretenureThreshold)) {
         fprintf(stderr, "Invalid value for JSGC_PRETENURE_THRESHOLD: %s\n",
                 pretenureThresholdStr);
       }
@@ -1025,11 +1041,17 @@ bool GCRuntime::setParameter(JSGCParamKey key, uint32_t value,
       maxHelperThreads = value;
       updateHelperThreadCount();
       break;
+    case JSGC_MIN_EMPTY_CHUNK_COUNT:
+      setMinEmptyChunkCount(value, lock);
+      break;
+    case JSGC_MAX_EMPTY_CHUNK_COUNT:
+      setMaxEmptyChunkCount(value, lock);
+      break;
     default:
-      if (!tunables.setParameter(key, value, lock)) {
+      if (!tunables.setParameter(key, value)) {
         return false;
       }
-      updateAllGCStartThresholds(lock);
+      updateAllGCStartThresholds();
   }
 
   return true;
@@ -1077,9 +1099,15 @@ void GCRuntime::resetParameter(JSGCParamKey key, AutoLockGC& lock) {
       maxHelperThreads = TuningDefaults::MaxHelperThreads;
       updateHelperThreadCount();
       break;
+    case JSGC_MIN_EMPTY_CHUNK_COUNT:
+      setMinEmptyChunkCount(TuningDefaults::MinEmptyChunkCount, lock);
+      break;
+    case JSGC_MAX_EMPTY_CHUNK_COUNT:
+      setMaxEmptyChunkCount(TuningDefaults::MaxEmptyChunkCount, lock);
+      break;
     default:
-      tunables.resetParameter(key, lock);
-      updateAllGCStartThresholds(lock);
+      tunables.resetParameter(key);
+      updateAllGCStartThresholds();
   }
 }
 
@@ -1143,9 +1171,9 @@ uint32_t GCRuntime::getParameter(JSGCParamKey key, const AutoLockGC& lock) {
     case JSGC_LARGE_HEAP_INCREMENTAL_LIMIT:
       return uint32_t(tunables.largeHeapIncrementalLimit() * 100);
     case JSGC_MIN_EMPTY_CHUNK_COUNT:
-      return tunables.minEmptyChunkCount(lock);
+      return minEmptyChunkCount(lock);
     case JSGC_MAX_EMPTY_CHUNK_COUNT:
-      return tunables.maxEmptyChunkCount();
+      return maxEmptyChunkCount(lock);
     case JSGC_COMPACTING_ENABLED:
       return compactingEnabled;
     case JSGC_INCREMENTAL_WEAKMAP_ENABLED:
@@ -2496,8 +2524,6 @@ void BackgroundUnmarkTask::initZones() {
 void BackgroundUnmarkTask::run(AutoLockHelperThreadState& helperTheadLock) {
   AutoUnlockHelperThreadState unlock(helperTheadLock);
 
-  AutoTraceLog log(TraceLoggerForCurrentThread(), TraceLogger_GCUnmarking);
-
   for (Zone* zone : zones) {
     for (auto kind : AllAllocKinds()) {
       ArenaList& arenas = zone->arenas.collectingArenaList(kind);
@@ -2797,10 +2823,7 @@ void GCRuntime::finishCollection() {
 
   maybeStopPretenuring();
 
-  {
-    AutoLockGC lock(this);
-    updateGCThresholdsAfterCollection(lock);
-  }
+  updateGCThresholdsAfterCollection();
 
   for (GCZonesIter zone(this); !zone.done(); zone.next()) {
     zone->changeGCState(Zone::Finished, Zone::NoGC);
@@ -2877,16 +2900,16 @@ void GCRuntime::maybeStopPretenuring() {
   }
 }
 
-void GCRuntime::updateGCThresholdsAfterCollection(const AutoLockGC& lock) {
+void GCRuntime::updateGCThresholdsAfterCollection() {
   for (GCZonesIter zone(this); !zone.done(); zone.next()) {
     zone->clearGCSliceThresholds();
-    zone->updateGCStartThresholds(*this, lock);
+    zone->updateGCStartThresholds(*this);
   }
 }
 
-void GCRuntime::updateAllGCStartThresholds(const AutoLockGC& lock) {
+void GCRuntime::updateAllGCStartThresholds() {
   for (ZonesIter zone(this, WithAtoms); !zone.done(); zone.next()) {
-    zone->updateGCStartThresholds(*this, lock);
+    zone->updateGCStartThresholds(*this);
   }
 }
 
@@ -3653,9 +3676,11 @@ void GCRuntime::maybeCallGCCallback(JSGCStatus status, JS::GCReason reason) {
     }
   }
 
-  // Save and clear GC options in case the callback reenters GC.
+  // Save and clear GC options and state in case the callback reenters GC.
   JS::GCOptions options = gcOptions();
   maybeGcOptions = Nothing();
+  bool savedFullGCRequested = fullGCRequested;
+  fullGCRequested = false;
 
   gcCallbackDepth++;
 
@@ -3666,6 +3691,10 @@ void GCRuntime::maybeCallGCCallback(JSGCStatus status, JS::GCReason reason) {
 
   // Restore the original GC options.
   maybeGcOptions = Some(options);
+
+  // At the end of a GC, clear out the fullGCRequested state. At the start,
+  // restore the previous setting.
+  fullGCRequested = (status == JSGC_END) ? false : savedFullGCRequested;
 
   if (gcCallbackDepth == 0) {
     // Ensure any zone that was originally scheduled stays scheduled.
@@ -3905,9 +3934,8 @@ void GCRuntime::collect(bool nonincrementalByAPI, const SliceBudget& budget,
     return;
   }
 
-  stats().log("GC starting in state %s", StateName(incrementalState));
+  stats().log("GC slice starting in state %s", StateName(incrementalState));
 
-  AutoTraceLog logGC(TraceLoggerForCurrentThread(), TraceLogger_GC);
   AutoStopVerifyingBarriers av(rt, isShutdownGC());
   AutoMaybeLeaveAtomsZone leaveAtomsZone(rt->mainContextFromOwnThread());
   AutoSetZoneSliceThresholds sliceThresholds(this);
@@ -3962,7 +3990,7 @@ void GCRuntime::collect(bool nonincrementalByAPI, const SliceBudget& budget,
     MOZ_RELEASE_ASSERT(CheckGrayMarkingState(rt));
   }
 #endif
-  stats().log("GC ending in state %s", StateName(incrementalState));
+  stats().log("GC slice ending in state %s", StateName(incrementalState));
 
   UnscheduleZones(this);
 }
@@ -4159,8 +4187,6 @@ void GCRuntime::collectNursery(JS::GCOptions options, JS::GCReason reason,
   gcstats::AutoPhase ap(stats(), phase);
 
   nursery().clearMinorGCRequest();
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread();
-  AutoTraceLog logMinorGC(logger, TraceLogger_MinorGC);
   nursery().collect(options, reason);
   MOZ_ASSERT(nursery().isEmpty());
 
@@ -4661,7 +4687,5 @@ void GCRuntime::setPerformanceHint(PerformanceHint hint) {
     return;
   }
 
-  AutoLockGC lock(this);
-  atomsZone->updateGCStartThresholds(*this, lock);
-  maybeTriggerGCAfterAlloc(atomsZone);
+  atomsZone->updateGCStartThresholds(*this);
 }

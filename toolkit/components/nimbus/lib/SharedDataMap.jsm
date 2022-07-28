@@ -6,12 +6,12 @@
 
 const EXPORTED_SYMBOLS = ["SharedDataMap"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { EventEmitter } = ChromeUtils.import(
   "resource://gre/modules/EventEmitter.jsm"
 );
+const lazy = {};
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "PromiseUtils",
   "resource://gre/modules/PromiseUtils.jsm"
 );
@@ -20,12 +20,12 @@ const IS_MAIN_PROCESS =
   Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_DEFAULT;
 
 ChromeUtils.defineModuleGetter(
-  this,
+  lazy,
   "JSONFile",
   "resource://gre/modules/JSONFile.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 class SharedDataMap extends EventEmitter {
@@ -35,7 +35,7 @@ class SharedDataMap extends EventEmitter {
     this._sharedDataKey = sharedDataKey;
     this._isParent = options.isParent;
     this._isReady = false;
-    this._readyDeferred = PromiseUtils.defer();
+    this._readyDeferred = lazy.PromiseUtils.defer();
     this._data = null;
 
     if (this.isParent) {
@@ -52,7 +52,7 @@ class SharedDataMap extends EventEmitter {
           }
         }
         try {
-          store = new JSONFile({ path });
+          store = new lazy.JSONFile({ path });
         } catch (e) {
           Cu.reportError(e);
         }

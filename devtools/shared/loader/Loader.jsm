@@ -8,12 +8,14 @@
  * Manages the base loader (base-loader.js) instance used to load the developer tools.
  */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 var { Loader, Require, resolveURI, unload } = ChromeUtils.import(
   "resource://devtools/shared/loader/base-loader.js"
 );
 var { requireRawId } = ChromeUtils.import(
   "resource://devtools/shared/loader/loader-plugin-raw.jsm"
+);
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
 );
 
 const EXPORTED_SYMBOLS = [
@@ -99,6 +101,7 @@ function DevToolsLoader({
     "devtools/shared/locales": "chrome://devtools-shared/locale",
     "devtools/startup/locales": "chrome://devtools-startup/locale",
     "toolkit/locales": "chrome://global/locale",
+    ...this.devPaths,
   };
 
   this.loader = new Loader({
@@ -170,6 +173,25 @@ function DevToolsLoader({
 }
 
 DevToolsLoader.prototype = {
+  get devPaths() {
+    if (AppConstants.DEBUG_JS_MODULES) {
+      return {
+        "devtools/client/shared/vendor/react":
+          "resource://devtools/client/shared/vendor/react-dev",
+        "devtools/client/shared/vendor/react-dom":
+          "resource://devtools/client/shared/vendor/react-dom-dev",
+        "devtools/client/shared/vendor/react-dom-server":
+          "resource://devtools/client/shared/vendor/react-dom-server-dev",
+        "devtools/client/shared/vendor/react-prop-types":
+          "resource://devtools/client/shared/vendor/react-prop-types-dev",
+        "devtools/client/shared/vendor/react-dom-test-utils":
+          "resource://devtools/client/shared/vendor/react-dom-test-utils-dev",
+      };
+    }
+
+    return {};
+  },
+
   destroy: function(reason = "shutdown") {
     unload(this.loader, reason);
     delete this.loader;

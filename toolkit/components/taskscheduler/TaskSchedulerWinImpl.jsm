@@ -5,16 +5,15 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = ["_TaskSchedulerWinImpl"];
+var EXPORTED_SYMBOLS = ["WinImpl"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const lazy = {};
 
@@ -36,7 +35,7 @@ XPCOMUtils.defineLazyServiceGetters(lazy, {
  * Not intended for external use, this is in a separate module to ship the code only
  * on Windows, and to expose for testing.
  */
-var _TaskSchedulerWinImpl = {
+var WinImpl = {
   registerTask(id, command, intervalSeconds, options) {
     // The folder might not yet exist.
     this._createFolderIfNonexistent();

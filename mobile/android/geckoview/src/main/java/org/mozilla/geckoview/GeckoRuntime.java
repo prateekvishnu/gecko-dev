@@ -23,6 +23,7 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.Process;
 import android.provider.Settings;
+import android.text.format.DateFormat;
 import android.util.Log;
 import androidx.annotation.AnyThread;
 import androidx.annotation.NonNull;
@@ -159,15 +160,23 @@ public final class GeckoRuntime implements Parcelable {
         GeckoThread.onResume();
       }
       mPaused = false;
+      // Can resume location services, checks if was in use before going to background
+      GeckoAppShell.resumeLocation();
       // Monitor network status and send change notifications to Gecko
       // while active.
       GeckoNetworkManager.getInstance().start(GeckoAppShell.getApplicationContext());
+
+      // Set settings that may have changed between last app opening
+      GeckoAppShell.setIs24HourFormat(
+          DateFormat.is24HourFormat(GeckoAppShell.getApplicationContext()));
     }
 
     @OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
     void onPause() {
       Log.d(LOGTAG, "Lifecycle: onPause");
       mPaused = true;
+      // Pause listening for locations when in background
+      GeckoAppShell.pauseLocation();
       // Stop monitoring network status while inactive.
       GeckoNetworkManager.getInstance().stop();
       GeckoThread.onPause();

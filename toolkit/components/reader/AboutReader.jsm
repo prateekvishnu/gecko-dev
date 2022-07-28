@@ -9,7 +9,6 @@ var EXPORTED_SYMBOLS = ["AboutReader"];
 const { ReaderMode } = ChromeUtils.import(
   "resource://gre/modules/ReaderMode.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
@@ -139,6 +138,9 @@ var AboutReader = function(
 
   this.colorSchemeMediaList = win.matchMedia("(prefers-color-scheme: dark)");
   this.colorSchemeMediaList.addEventListener("change", this);
+
+  this.forcedColorsMediaList = win.matchMedia("(forced-colors)");
+  this.forcedColorsMediaList.addEventListener("change", this);
 
   this._topScrollChange = this._topScrollChange.bind(this);
   this._intersectionObs = new win.IntersectionObserver(this._topScrollChange, {
@@ -342,7 +344,7 @@ AboutReader.prototype = {
           let btn = this._doc.createElement("button");
           btn.dataset.buttonid = message.data.id;
           btn.dataset.telemetryId = `reader-${message.data.telemetryId}`;
-          btn.className = "button " + message.data.id;
+          btn.className = "toolbar-button " + message.data.id;
           let tip = this._doc.createElement("span");
           tip.className = "hover-label";
           tip.textContent = message.data.label;
@@ -491,15 +493,18 @@ AboutReader.prototype = {
         break;
 
       case "change":
-        // We should only be changing the color scheme in relation to a preference change
-        // if the user has the color scheme preference set to "Auto"
-        if (Services.prefs.getCharPref("reader.color_scheme") === "auto") {
-          let colorScheme = this.colorSchemeMediaList.matches
-            ? "dark"
-            : "light";
-
-          this._setColorScheme(colorScheme);
+        let colorScheme;
+        if (this.forcedColorsMediaList.matches) {
+          colorScheme = "hcm";
+        } else {
+          colorScheme = Services.prefs.getCharPref("reader.color_scheme");
+          // We should be changing the color scheme in relation to a preference change
+          // if the user has the color scheme preference set to "Auto".
+          if (colorScheme == "auto") {
+            colorScheme = this.colorSchemeMediaList.matches ? "dark" : "light";
+          }
         }
+        this._setColorScheme(colorScheme);
 
         break;
     }
@@ -780,10 +785,16 @@ AboutReader.prototype = {
       bodyClasses.remove(this._colorScheme);
     }
 
-    if (newColorScheme === "auto") {
-      this._colorScheme = this.colorSchemeMediaList.matches ? "dark" : "light";
+    if (!this._win.matchMedia("(forced-colors)").matches) {
+      if (newColorScheme === "auto") {
+        this._colorScheme = this.colorSchemeMediaList.matches
+          ? "dark"
+          : "light";
+      } else {
+        this._colorScheme = newColorScheme;
+      }
     } else {
-      this._colorScheme = newColorScheme;
+      this._colorScheme = "hcm";
     }
 
     bodyClasses.add(this._colorScheme);

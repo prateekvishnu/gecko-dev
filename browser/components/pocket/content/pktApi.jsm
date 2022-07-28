@@ -44,15 +44,19 @@
 
 var EXPORTED_SYMBOLS = ["pktApi"];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const lazy = {};
 ChromeUtils.defineModuleGetter(
   lazy,
   "IndexedDB",
   "resource://gre/modules/IndexedDB.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  lazy,
+  "PrivateBrowsingUtils",
+  "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -201,6 +205,9 @@ var pktApi = (function() {
     if (lazy.gCookieFirstPartyIsolate) {
       oa.firstPartyDomain = pocketSiteHost;
     }
+    oa.privateBrowsingId = lazy.PrivateBrowsingUtils.permanentPrivateBrowsing
+      ? 1
+      : 0;
     for (let cookie of Services.cookies.getCookiesFromHost(
       pocketSiteHost,
       oa

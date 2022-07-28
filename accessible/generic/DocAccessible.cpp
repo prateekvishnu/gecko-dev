@@ -90,6 +90,7 @@ DocAccessible::DocAccessible(dom::Document* aDocument,
       mDocumentNode(aDocument),
       mLoadState(eTreeConstructionPending),
       mDocFlags(0),
+      mViewportCacheDirty(false),
       mLoadEventType(0),
       mPrevStateBits(0),
       mVirtualCursor(nullptr),
@@ -263,24 +264,6 @@ void DocAccessible::ApplyARIAState(uint64_t* aState) const {
   if (mParent) mParent->ApplyARIAState(aState);
 }
 
-already_AddRefed<AccAttributes> DocAccessible::Attributes() {
-  RefPtr<AccAttributes> attributes = HyperTextAccessibleWrap::Attributes();
-
-  // No attributes if document is not attached to the tree or if it's a root
-  // document.
-  if (!mParent || IsRoot()) return attributes.forget();
-
-  // Override ARIA object attributes from outerdoc.
-  aria::AttrIterator attribIter(mParent->GetContent());
-  while (attribIter.Next()) {
-    nsString value;
-    attribIter.AttrValue(value);
-    attributes->SetAttribute(attribIter.AttrName(), std::move(value));
-  }
-
-  return attributes.forget();
-}
-
 LocalAccessible* DocAccessible::FocusedChild() {
   // Return an accessible for the current global focus, which does not have to
   // be contained within the current document.
@@ -358,9 +341,11 @@ void DocAccessible::DocType(nsAString& aType) const {
 
 void DocAccessible::QueueCacheUpdate(LocalAccessible* aAcc,
                                      uint64_t aNewDomain) {
+  if (!mIPCDoc || !StaticPrefs::accessibility_cache_enabled_AtStartup()) {
+    return;
+  }
   uint64_t& domain = mQueuedCacheUpdates.LookupOrInsert(aAcc, 0);
   domain |= aNewDomain;
-
   Controller()->ScheduleProcessing();
 }
 
@@ -773,16 +758,24 @@ void DocAccessible::AttributeChanged(dom::Element* aElement,
     return;
   }
 
-  // Ignore attribute change if the element doesn't have an accessible (at all
-  // or still) if the element is not a root content of this document accessible
-  // (which is treated as attribute change on this document accessible).
-  // Note: we don't bail if all the content hasn't finished loading because
-  // these attributes are changing for a loaded part of the content.
   LocalAccessible* accessible = GetAccessible(aElement);
   if (!accessible) {
-    if (mContent != aElement) return;
-
-    accessible = this;
+    if (mContent == aElement) {
+      // The attribute change occurred on the root content of this
+      // DocAccessible, so handle it as an attribute change on this.
+      accessible = this;
+    } else {
+      if (aModType == dom::MutationEvent_Binding::ADDITION &&
+          aria::AttrCharacteristicsFor(aAttribute) & ATTR_GLOBAL) {
+        // The element doesn't have an Accessible, but a global ARIA attribute
+        // was just added, which means we should probably create an Accessible.
+        ContentInserted(aElement, aElement->GetNextSibling());
+        return;
+      }
+      // The element doesn't have an Accessible, so ignore the attribute
+      // change.
+      return;
+    }
   }
 
   MOZ_ASSERT(accessible->IsBoundToParent() || accessible->IsDoc(),
@@ -1444,6 +1437,15 @@ void DocAccessible::ProcessQueuedCacheUpdates() {
   }
 
   mQueuedCacheUpdates.Clear();
+
+  if (mViewportCacheDirty) {
+    RefPtr<AccAttributes> fields =
+        BundleFieldsForCache(CacheDomain::Viewport, CacheUpdateType::Update);
+    if (fields->Count()) {
+      data.AppendElement(CacheData(0, fields));
+    }
+    mViewportCacheDirty = false;
+  }
 
   if (data.Length()) {
     IPCDoc()->SendCache(CacheUpdateType::Update, data, true);

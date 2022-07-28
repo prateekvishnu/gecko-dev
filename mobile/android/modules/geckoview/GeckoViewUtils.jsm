@@ -3,17 +3,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
+const { clearTimeout, setTimeout } = ChromeUtils.import(
+  "resource://gre/modules/Timer.jsm"
+);
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   AndroidLog: "resource://gre/modules/AndroidLog.jsm",
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
-  Log: "resource://gre/modules/Log.jsm",
 });
 
 var EXPORTED_SYMBOLS = ["GeckoViewUtils"];
@@ -22,7 +24,7 @@ var EXPORTED_SYMBOLS = ["GeckoViewUtils"];
  * A formatter that does not prepend time/name/level information to messages,
  * because those fields are logged separately when using the Android logger.
  */
-class AndroidFormatter extends lazy.Log.BasicFormatter {
+class AndroidFormatter extends Log.BasicFormatter {
   format(message) {
     return this.formatText(message);
   }
@@ -32,20 +34,20 @@ class AndroidFormatter extends lazy.Log.BasicFormatter {
  * AndroidAppender
  * Logs to Android logcat using AndroidLog.jsm
  */
-class AndroidAppender extends lazy.Log.Appender {
+class AndroidAppender extends Log.Appender {
   constructor(aFormatter) {
     super(aFormatter || new AndroidFormatter());
     this._name = "AndroidAppender";
 
     // Map log level to AndroidLog.foo method.
     this._mapping = {
-      [lazy.Log.Level.Fatal]: "e",
-      [lazy.Log.Level.Error]: "e",
-      [lazy.Log.Level.Warn]: "w",
-      [lazy.Log.Level.Info]: "i",
-      [lazy.Log.Level.Config]: "d",
-      [lazy.Log.Level.Debug]: "d",
-      [lazy.Log.Level.Trace]: "v",
+      [Log.Level.Fatal]: "e",
+      [Log.Level.Error]: "e",
+      [Log.Level.Warn]: "w",
+      [Log.Level.Info]: "i",
+      [Log.Level.Config]: "d",
+      [Log.Level.Debug]: "d",
+      [Log.Level.Trace]: "v",
     };
   }
 
@@ -327,6 +329,54 @@ var GeckoViewUtils = {
   },
 
   /**
+   * Return promise for waiting for finishing PanZoomState.
+   *
+   * @param aWindow a DOM window.
+   * @return promise
+   */
+  waitForPanZoomState(aWindow) {
+    return new Promise((resolve, reject) => {
+      if (
+        !aWindow?.windowUtils.asyncPanZoomEnabled ||
+        !Services.prefs.getBoolPref("apz.zoom-to-focused-input.enabled")
+      ) {
+        // No zoomToFocusedInput.
+        resolve();
+        return;
+      }
+
+      let timerId = 0;
+
+      const panZoomState = (aSubject, aTopic, aData) => {
+        if (timerId != 0) {
+          // aWindow may be dead object now.
+          try {
+            clearTimeout(timerId);
+          } catch (e) {}
+          timerId = 0;
+        }
+
+        if (aData === "NOTHING") {
+          Services.obs.removeObserver(panZoomState, "PanZoom:StateChange");
+          resolve();
+        }
+      };
+
+      Services.obs.addObserver(panZoomState, "PanZoom:StateChange");
+
+      // "GeckoView:ZoomToInput" has the timeout as 500ms when window isn't
+      // resized (it means on-screen-keyboard is already shown).
+      // So after up to 500ms, APZ event is sent. So we need to wait for more
+      // 500ms.
+      timerId = setTimeout(() => {
+        // PanZoom state isn't changed. zoomToFocusedInput will return error.
+        Services.obs.removeObserver(panZoomState, "PanZoom:StateChange");
+        reject();
+      }, 600);
+    });
+  },
+
+  /**
    * Add logging functions to the specified scope that forward to the given
    * Log.jsm logger. Currently "debug" and "warn" functions are supported. To
    * log something, call the function through a template literal:
@@ -358,7 +408,7 @@ var GeckoViewUtils = {
         this._log(log.logger, level, strings, exprs);
 
       XPCOMUtils.defineLazyGetter(log, "logger", _ => {
-        const logger = lazy.Log.repository.getLogger(tag);
+        const logger = Log.repository.getLogger(tag);
         logger.parent = this.rootLogger;
         return logger;
       });
@@ -372,7 +422,7 @@ var GeckoViewUtils = {
 
   get rootLogger() {
     if (!this._rootLogger) {
-      this._rootLogger = lazy.Log.repository.getLogger("GeckoView");
+      this._rootLogger = Log.repository.getLogger("GeckoView");
       this._rootLogger.addAppender(new AndroidAppender());
       this._rootLogger.manageLevelFromPref("geckoview.logging");
     }
@@ -389,7 +439,7 @@ var GeckoViewUtils = {
       );
     }
 
-    if (aLogger.level > lazy.Log.Level.Numbers[aLevel]) {
+    if (aLogger.level > Log.Level.Numbers[aLevel]) {
       // Log disabled.
       return;
     }

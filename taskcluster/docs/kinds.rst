@@ -668,10 +668,6 @@ geckodriver-signing
 -------------------
 Signing for geckodriver binary.
 
-iris
-----
-Iris testing suite
-
 maybe-release
 -------------
 A shipitscript task that does the following:
@@ -700,6 +696,10 @@ Generate missing macOS and windows system symbols from crash reports.
 system-symbols-upload
 ---------------------
 Upload macOS and windows system symbols to tecken.
+
+system-symbols-reprocess
+------------------------
+Call Crash-Stats API to reprocess after symbols upload.
 
 scriptworker-canary
 -------------------
@@ -730,3 +730,7 @@ fxrecord
 
 Visual metrics computation of desktop Firefox startup. The performance team
 monitors this task to watch for regressions in Firefox startup performance.
+
+are-we-esmified-yet
+---------------------
+Collects data about the transition to ECMAScript Modules from JSMs.

@@ -142,7 +142,7 @@ static void JoinPathIfRelative(const nsACString& aCwd, const nsACString& inPath,
                                nsACString& outPath) {
   if (inPath.Length() < 1) {
     outPath.Assign(aCwd);
-    SANDBOX_LOG_ERROR("Unjoinable path: %s", PromiseFlatCString(aCwd).get());
+    SANDBOX_LOG("Unjoinable path: %s", PromiseFlatCString(aCwd).get());
     return;
   }
   const char* startChar = inPath.BeginReading();
@@ -257,8 +257,8 @@ static void AddPathsFromFile(SandboxBroker::Policy* aPolicy,
     return;
   }
   if (SandboxInfo::Get().Test(SandboxInfo::kVerbose)) {
-    SANDBOX_LOG_ERROR("Adding paths from %s to policy.",
-                      PromiseFlatCString(aPath).get());
+    SANDBOX_LOG("Adding paths from %s to policy.",
+                PromiseFlatCString(aPath).get());
   }
 
   // Find the parent dir where this file sits in.
@@ -273,8 +273,7 @@ static void AddPathsFromFile(SandboxBroker::Policy* aPolicy,
     return;
   }
   if (SandboxInfo::Get().Test(SandboxInfo::kVerbose)) {
-    SANDBOX_LOG_ERROR("Parent path is %s",
-                      PromiseFlatCString(parentPath).get());
+    SANDBOX_LOG("Parent path is %s", PromiseFlatCString(parentPath).get());
   }
   AddPathsFromFileInternal(aPolicy, parentPath, aPath);
 }
@@ -377,6 +376,15 @@ static void AddGLDependencies(SandboxBroker::Policy* policy) {
   policy->AddDir(rdonly, "/etc");
   policy->AddDir(rdonly, "/usr/share");
   policy->AddDir(rdonly, "/usr/local/share");
+
+  // Snap puts the usual /usr/share things in a different place, and
+  // we'll fail to load the library if we don't have (at least) the
+  // glvnd config:
+  if (const char* snapDesktopDir = PR_GetEnv("SNAP_DESKTOP_RUNTIME")) {
+    nsAutoCString snapDesktopShare(snapDesktopDir);
+    snapDesktopShare.AppendLiteral("/usr/share");
+    policy->AddDir(rdonly, snapDesktopShare.get());
+  }
 
   // Note: This function doesn't do anything about Mesa's shader
   // cache, because the details can vary by process type, including

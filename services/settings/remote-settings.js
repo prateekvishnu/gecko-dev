@@ -12,9 +12,8 @@ var EXPORTED_SYMBOLS = [
   "remoteSettingsBroadcastHandler",
 ];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
@@ -27,13 +26,11 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   pushBroadcastService: "resource://gre/modules/PushBroadcastService.jsm",
   RemoteSettingsClient: "resource://services-settings/RemoteSettingsClient.jsm",
   SyncHistory: "resource://services-settings/SyncHistory.jsm",
+  Database: "resource://services-settings/Database.jsm",
   Utils: "resource://services-settings/Utils.jsm",
   FilterExpressions:
     "resource://gre/modules/components-utils/FilterExpressions.jsm",
-  RemoteSettingsWorker: "resource://services-settings/RemoteSettingsWorker.jsm",
 });
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 const PREF_SETTINGS_BRANCH = "services.settings.";
 const PREF_SETTINGS_SERVER_BACKOFF = "server.backoff";
@@ -71,6 +68,13 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "gPrefBrokenSyncThreshold",
   PREF_SETTINGS_BRANCH + PREF_SETTINGS_SYNC_HISTORY_ERROR_THRESHOLD,
   10
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "gPrefDestroyBrokenEnabled",
+  PREF_SETTINGS_BRANCH + "destroy_broken_db_enabled",
+  true
 );
 
 /**
@@ -251,6 +255,38 @@ function remoteSettingsFunction() {
       }
     }
 
+    // When triggered from the daily timer, we try to recover a broken
+    // sync state by destroying the local DB completely and retrying from scratch.
+    if (
+      lazy.gPrefDestroyBrokenEnabled &&
+      trigger == "timer" &&
+      (await isSynchronizationBroken())
+    ) {
+      // We don't want to destroy the local DB if the failures are related to
+      // network or server errors though.
+      const lastStatus = await lazy.gSyncHistory.last();
+      const lastErrorClass =
+        lazy.RemoteSettingsClient[lastStatus?.infos?.errorName] || Error;
+      const isLocalError = !(
+        lastErrorClass.prototype instanceof lazy.RemoteSettingsClient.APIError
+      );
+      if (isLocalError) {
+        console.warn(
+          "Synchronization has failed consistently. Destroy database."
+        );
+        // Clear the last ETag to refetch everything.
+        lazy.gPrefs.clearUserPref(PREF_SETTINGS_LAST_ETAG);
+        // Clear the history, to avoid re-destroying several times in a row.
+        await lazy.gSyncHistory.clear().catch(error => Cu.reportError(error));
+        // Delete the whole IndexedDB database.
+        await lazy.Database.destroy().catch(error => Cu.reportError(error));
+      } else {
+        console.warn(
+          `Synchronization is broken, but last error is ${lastStatus}`
+        );
+      }
+    }
+
     lazy.console.info("Start polling for changes");
     Services.obs.notifyObservers(
       null,
@@ -279,6 +315,9 @@ function remoteSettingsFunction() {
         reportStatus = lazy.UptakeTelemetry.STATUS.CONTENT_ERROR;
       } else if (/Server/.test(e.message)) {
         reportStatus = lazy.UptakeTelemetry.STATUS.SERVER_ERROR;
+        // If the server replied with bad request, clear the last ETag
+        // value to unblock the next run of synchronization.
+        lazy.gPrefs.clearUserPref(PREF_SETTINGS_LAST_ETAG);
       } else if (/Timeout/.test(e.message)) {
         reportStatus = lazy.UptakeTelemetry.STATUS.TIMEOUT_ERROR;
       } else if (/NetworkError/.test(e.message)) {

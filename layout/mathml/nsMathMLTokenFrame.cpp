@@ -41,7 +41,7 @@ eMathMLFrameType nsMathMLTokenFrame::GetMathMLFrameType() {
 
   StyleMathVariant mathVariant = StyleFont()->mMathVariant;
   if ((mathVariant == StyleMathVariant::None &&
-       (StyleFont()->mFont.style == FontSlantStyle::Italic() ||
+       (StyleFont()->mFont.style.IsItalic() ||
         HasAnyStateBits(NS_FRAME_IS_IN_SINGLE_CHAR_MI))) ||
       mathVariant == StyleMathVariant::Italic ||
       mathVariant == StyleMathVariant::BoldItalic ||
@@ -145,7 +145,6 @@ void nsMathMLTokenFrame::Reflow(nsPresContext* aPresContext,
   FinalizeReflow(aReflowInput.mRenderingContext->GetDrawTarget(), aDesiredSize);
 
   aStatus.Reset();  // This type of frame can't be split.
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 // For token elements, mBoundingMetrics is computed at the ReflowToken

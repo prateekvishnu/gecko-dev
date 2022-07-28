@@ -107,11 +107,11 @@ type WrColorDepth = ColorDepth;
 type WrColorRange = ColorRange;
 
 #[inline]
-fn clip_chain_id_to_webrender(id: u64, pipeline_id: WrPipelineId) -> ClipId {
+fn clip_chain_id_to_webrender(id: u64, pipeline_id: WrPipelineId) -> ClipChainId {
     if id == ROOT_CLIP_CHAIN {
-        ClipId::root(pipeline_id)
+        ClipChainId::INVALID
     } else {
-        ClipId::ClipChain(ClipChainId(id, pipeline_id))
+        ClipChainId(id, pipeline_id)
     }
 }
 
@@ -126,7 +126,7 @@ impl WrSpaceAndClipChain {
         //Warning: special case here to support dummy clip chain
         SpaceAndClipInfo {
             spatial_id: self.space.to_webrender(pipeline_id),
-            clip_id: clip_chain_id_to_webrender(self.clip_chain, pipeline_id),
+            clip_chain_id: clip_chain_id_to_webrender(self.clip_chain, pipeline_id),
         }
     }
 }
@@ -134,16 +134,20 @@ impl WrSpaceAndClipChain {
 #[repr(C)]
 pub enum WrStackingContextClip {
     None,
-    ClipId(WrClipId),
     ClipChain(u64),
 }
 
 impl WrStackingContextClip {
-    fn to_webrender(&self, pipeline_id: WrPipelineId) -> Option<ClipId> {
+    fn to_webrender(&self, pipeline_id: WrPipelineId) -> Option<ClipChainId> {
         match *self {
             WrStackingContextClip::None => None,
-            WrStackingContextClip::ClipChain(id) => Some(clip_chain_id_to_webrender(id, pipeline_id)),
-            WrStackingContextClip::ClipId(id) => Some(id.to_webrender(pipeline_id)),
+            WrStackingContextClip::ClipChain(id) => {
+                if id == ROOT_CLIP_CHAIN {
+                    None
+                } else {
+                    Some(ClipChainId(id, pipeline_id))
+                }
+            },
         }
     }
 }
@@ -2294,7 +2298,7 @@ fn read_font_descriptor(bytes: &mut WrVecU8, index: u32) -> NativeFontHandle {
 fn read_font_descriptor(bytes: &mut WrVecU8, _index: u32) -> NativeFontHandle {
     let chars = bytes.flush_into_vec();
     NativeFontHandle {
-        name: String::from_utf8(chars).unwrap()
+        name: String::from_utf8(chars).unwrap(),
     }
 }
 
@@ -2657,7 +2661,7 @@ pub extern "C" fn wr_dp_define_clipchain(
 #[no_mangle]
 pub extern "C" fn wr_dp_define_image_mask_clip_with_parent_clip_chain(
     state: &mut WrState,
-    parent: &WrSpaceAndClipChain,
+    space: WrSpatialId,
     mask: ImageMask,
     points: *const LayoutPoint,
     point_count: usize,
@@ -2669,7 +2673,7 @@ pub extern "C" fn wr_dp_define_image_mask_clip_with_parent_clip_chain(
     let points: Vec<LayoutPoint> = c_points.iter().copied().collect();
 
     let clip_id = state.frame_builder.dl_builder.define_clip_image_mask(
-        &parent.to_webrender(state.pipeline_id),
+        space.to_webrender(state.pipeline_id),
         mask,
         &points,
         fill_rule,
@@ -2685,30 +2689,10 @@ pub extern "C" fn wr_dp_define_rounded_rect_clip(
 ) -> WrClipId {
     debug_assert!(unsafe { is_in_main_thread() });
 
-    let space_and_clip = SpaceAndClipInfo {
-        spatial_id: space.to_webrender(state.pipeline_id),
-        clip_id: ClipId::root(state.pipeline_id),
-    };
-
     let clip_id = state
         .frame_builder
         .dl_builder
-        .define_clip_rounded_rect(&space_and_clip, complex);
-    WrClipId::from_webrender(clip_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wr_dp_define_rounded_rect_clip_with_parent_clip_chain(
-    state: &mut WrState,
-    parent: &WrSpaceAndClipChain,
-    complex: ComplexClipRegion,
-) -> WrClipId {
-    debug_assert!(unsafe { is_in_main_thread() });
-
-    let clip_id = state
-        .frame_builder
-        .dl_builder
-        .define_clip_rounded_rect(&parent.to_webrender(state.pipeline_id), complex);
+        .define_clip_rounded_rect(space.to_webrender(state.pipeline_id), complex);
     WrClipId::from_webrender(clip_id)
 }
 
@@ -2716,30 +2700,10 @@ pub extern "C" fn wr_dp_define_rounded_rect_clip_with_parent_clip_chain(
 pub extern "C" fn wr_dp_define_rect_clip(state: &mut WrState, space: WrSpatialId, clip_rect: LayoutRect) -> WrClipId {
     debug_assert!(unsafe { is_in_main_thread() });
 
-    let space_and_clip = SpaceAndClipInfo {
-        spatial_id: space.to_webrender(state.pipeline_id),
-        clip_id: ClipId::root(state.pipeline_id),
-    };
-
     let clip_id = state
         .frame_builder
         .dl_builder
-        .define_clip_rect(&space_and_clip, clip_rect);
-    WrClipId::from_webrender(clip_id)
-}
-
-#[no_mangle]
-pub extern "C" fn wr_dp_define_rect_clip_with_parent_clip_chain(
-    state: &mut WrState,
-    parent: &WrSpaceAndClipChain,
-    clip_rect: LayoutRect,
-) -> WrClipId {
-    debug_assert!(unsafe { is_in_main_thread() });
-
-    let clip_id = state
-        .frame_builder
-        .dl_builder
-        .define_clip_rect(&parent.to_webrender(state.pipeline_id), clip_rect);
+        .define_clip_rect(space.to_webrender(state.pipeline_id), clip_rect);
     WrClipId::from_webrender(clip_id)
 }
 
@@ -2867,7 +2831,7 @@ fn common_item_properties_for_rect(
         // early-return here for empty rects. I couldn't figure out why, but
         // it's pretty harmless to feed these through, so, uh, we do?
         clip_rect,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     }
@@ -2966,7 +2930,7 @@ pub extern "C" fn wr_dp_push_backdrop_filter(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip_rect.unwrap(),
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -2990,7 +2954,7 @@ pub extern "C" fn wr_dp_push_clear_rect(
 
     let prim_info = CommonItemProperties {
         clip_rect,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(true, /* prefer_compositor_surface */ false),
     };
@@ -3010,22 +2974,27 @@ pub extern "C" fn wr_dp_push_hit_test(
 ) {
     debug_assert!(unsafe { !is_in_render_thread() });
 
-    let space_and_clip = parent.to_webrender(state.pipeline_id);
-
     let clip_rect = clip.intersection(&rect);
     if clip_rect.is_none() {
         return;
     }
     let tag = (scroll_id, hit_info);
 
-    let prim_info = CommonItemProperties {
-        clip_rect: clip_rect.unwrap(),
-        clip_id: space_and_clip.clip_id,
-        spatial_id: space_and_clip.spatial_id,
-        flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
+    let spatial_id = parent.space.to_webrender(state.pipeline_id);
+
+    let clip_chain_id = if parent.clip_chain == ROOT_CLIP_CHAIN {
+        ClipChainId::INVALID
+    } else {
+        ClipChainId(parent.clip_chain, state.pipeline_id)
     };
 
-    state.frame_builder.dl_builder.push_hit_test(&prim_info, tag);
+    state.frame_builder.dl_builder.push_hit_test(
+        clip_rect.unwrap(),
+        clip_chain_id,
+        spatial_id,
+        prim_flags(is_backface_visible, false),
+        tag,
+    );
 }
 
 #[no_mangle]
@@ -3059,7 +3028,7 @@ pub extern "C" fn wr_dp_push_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags,
     };
@@ -3096,7 +3065,7 @@ pub extern "C" fn wr_dp_push_repeating_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3143,7 +3112,7 @@ pub extern "C" fn wr_dp_push_yuv_planar_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags2(
             is_backface_visible,
@@ -3186,7 +3155,7 @@ pub extern "C" fn wr_dp_push_yuv_NV12_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags2(
             is_backface_visible,
@@ -3229,7 +3198,7 @@ pub extern "C" fn wr_dp_push_yuv_P010_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags2(
             is_backface_visible,
@@ -3271,7 +3240,7 @@ pub extern "C" fn wr_dp_push_yuv_interleaved_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags2(
             is_backface_visible,
@@ -3313,7 +3282,7 @@ pub extern "C" fn wr_dp_push_text(
     let prim_info = CommonItemProperties {
         clip_rect: clip,
         spatial_id: space_and_clip.spatial_id,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
 
@@ -3368,7 +3337,7 @@ pub extern "C" fn wr_dp_push_line(
 
     let prim_info = CommonItemProperties {
         clip_rect: *clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3409,7 +3378,7 @@ pub extern "C" fn wr_dp_push_border(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3458,7 +3427,7 @@ pub extern "C" fn wr_dp_push_border_image(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3513,7 +3482,7 @@ pub extern "C" fn wr_dp_push_border_gradient(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3572,7 +3541,7 @@ pub extern "C" fn wr_dp_push_border_radial_gradient(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3631,7 +3600,7 @@ pub extern "C" fn wr_dp_push_border_conic_gradient(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3671,7 +3640,7 @@ pub extern "C" fn wr_dp_push_linear_gradient(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3711,7 +3680,7 @@ pub extern "C" fn wr_dp_push_radial_gradient(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3751,7 +3720,7 @@ pub extern "C" fn wr_dp_push_conic_gradient(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3783,7 +3752,7 @@ pub extern "C" fn wr_dp_push_box_shadow(
 
     let prim_info = CommonItemProperties {
         clip_rect: clip,
-        clip_id: space_and_clip.clip_id,
+        clip_chain_id: space_and_clip.clip_chain_id,
         spatial_id: space_and_clip.spatial_id,
         flags: prim_flags(is_backface_visible, /* prefer_compositor_surface */ false),
     };
@@ -3887,6 +3856,7 @@ pub unsafe extern "C" fn wr_api_end_builder(
 pub struct HitResult {
     pipeline_id: WrPipelineId,
     scroll_id: u64,
+    animation_id: u64,
     hit_info: u16,
 }
 
@@ -3897,6 +3867,7 @@ pub extern "C" fn wr_api_hit_test(dh: &mut DocumentHandle, point: WorldPoint, ou
         out_results.push(HitResult {
             pipeline_id: item.pipeline,
             scroll_id: item.tag.0,
+            animation_id: item.animation_id,
             hit_info: item.tag.1,
         });
     }
@@ -3956,14 +3927,11 @@ pub struct WrClipId {
 
 impl WrClipId {
     fn to_webrender(&self, pipeline_id: WrPipelineId) -> ClipId {
-        ClipId::Clip(self.id, pipeline_id)
+        ClipId(self.id, pipeline_id)
     }
 
     fn from_webrender(clip_id: ClipId) -> Self {
-        match clip_id {
-            ClipId::Clip(id, _) => WrClipId { id },
-            ClipId::ClipChain(_) => panic!("Unexpected clip chain"),
-        }
+        WrClipId { id: clip_id.0 }
     }
 }
 

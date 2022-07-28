@@ -550,7 +550,8 @@ class JSTerm extends Component {
     }
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     this.imperativeUpdate(nextProps);
   }
 
@@ -1488,11 +1489,7 @@ class JSTerm extends Component {
   }
 
   renderEvaluationContextSelector() {
-    if (
-      !this.props.webConsoleUI.wrapper.toolbox ||
-      this.props.editorMode ||
-      !this.props.showEvaluationContextSelector
-    ) {
+    if (this.props.editorMode || !this.props.showEvaluationContextSelector) {
       return null;
     }
 

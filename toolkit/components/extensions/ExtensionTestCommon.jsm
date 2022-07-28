@@ -14,9 +14,8 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionTestCommon", "MockExtension"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -77,10 +76,6 @@ const { ExtensionUtils } = ChromeUtils.import(
 const { flushJarCache } = ExtensionUtils;
 
 const { instanceOf } = ExtensionCommon;
-
-XPCOMUtils.defineLazyGetter(lazy, "console", () =>
-  ExtensionCommon.getConsole()
-);
 
 var ExtensionTestCommon;
 

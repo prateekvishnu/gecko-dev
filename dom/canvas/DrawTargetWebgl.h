@@ -11,6 +11,7 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/ThreadLocal.h"
+#include "mozilla/ipc/Shmem.h"
 #include <vector>
 
 namespace mozilla {
@@ -68,6 +69,8 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
   RefPtr<WebGLFramebufferJS> mFramebuffer;
   RefPtr<WebGLTextureJS> mTex;
   RefPtr<DrawTargetSkia> mSkia;
+  // The Shmem backing the Skia DT, if applicable.
+  mozilla::ipc::Shmem mShmem;
   // The currently cached snapshot of the WebGL context
   RefPtr<DataSourceSurface> mSnapshot;
   // Whether or not the Skia target has valid contents and is being drawn to
@@ -75,11 +78,13 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
   // Whether or not Skia layering over the WebGL context is enabled
   bool mSkiaLayer = false;
   // Whether or not the WebGL context has valid contents and is being drawn to
-  bool mWebglValid = false;
+  bool mWebglValid = true;
   // Whether or not the clip state has changed since last used by SharedContext.
   bool mClipDirty = true;
   // The framebuffer has been modified and should be copied to the swap chain.
   bool mNeedsPresent = true;
+  // The number of layers currently pushed.
+  int32_t mLayerDepth = 0;
 
   RefPtr<TextureHandle> mSnapshotTexture;
 
@@ -196,6 +201,10 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
     // A memory pressure event may signal from another thread that caches should
     // be cleared if possible.
     Atomic<bool> mShouldClearCaches;
+    // Whether the Shmem is currently being processed by the remote side. If so,
+    // we need to wait for processing to complete before any further commands
+    // modifying the Skia DT can proceed.
+    bool mWaitForShmem = false;
 
     const Matrix& GetTransform() const { return mCurrentTarget->mTransform; }
 
@@ -221,6 +230,7 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
 
     bool SupportsPattern(const Pattern& aPattern);
 
+    void SetTexFilter(WebGLTextureJS* aTex, bool aFilter);
     void InitTexParameters(WebGLTextureJS* aTex);
 
     bool ReadInto(uint8_t* aDstData, int32_t aDstStride, SurfaceFormat aFormat,
@@ -270,6 +280,8 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
     void ClearAllTextures();
     void ClearEmptyTextureMemory();
     void ClearCachesIfNecessary();
+
+    void WaitForShmem();
   };
 
   RefPtr<SharedContext> mSharedContext;
@@ -293,6 +305,7 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
   BackendType GetBackendType() const override { return BackendType::WEBGL; }
   IntSize GetSize() const override { return mSize; }
 
+  already_AddRefed<SourceSurface> GetDataSnapshot();
   already_AddRefed<SourceSurface> Snapshot() override;
   already_AddRefed<SourceSurface> GetBackingSurface() override;
   void DetachAllSnapshots() override;
@@ -360,17 +373,13 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
   void PushLayer(bool aOpaque, Float aOpacity, SourceSurface* aMask,
                  const Matrix& aMaskTransform,
                  const IntRect& aBounds = IntRect(),
-                 bool aCopyBackground = false) override {
-    MOZ_ASSERT(false);
-  }
+                 bool aCopyBackground = false) override;
   void PushLayerWithBlend(
       bool aOpaque, Float aOpacity, SourceSurface* aMask,
       const Matrix& aMaskTransform, const IntRect& aBounds = IntRect(),
       bool aCopyBackground = false,
-      CompositionOp aCompositionOp = CompositionOp::OP_OVER) override {
-    MOZ_ASSERT(false);
-  }
-  void PopLayer() override { MOZ_ASSERT(false); }
+      CompositionOp aCompositionOp = CompositionOp::OP_OVER) override;
+  void PopLayer() override;
   already_AddRefed<SourceSurface> CreateSourceSurfaceFromData(
       unsigned char* aData, const IntSize& aSize, int32_t aStride,
       SurfaceFormat aFormat) const override;
@@ -397,8 +406,6 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
   void* GetNativeSurface(NativeSurfaceType aType) override;
 
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer();
-
-  bool CopySnapshotTo(DrawTarget* aDT);
 
   void OnMemoryPressure() { mSharedContext->OnMemoryPressure(); }
 
@@ -436,7 +443,14 @@ class DrawTargetWebgl : public DrawTarget, public SupportsWeakPtr {
   void FlattenSkia();
   bool FlushFromSkia();
 
+  void WaitForShmem() {
+    if (mSharedContext->mWaitForShmem) {
+      mSharedContext->WaitForShmem();
+    }
+  }
+
   void MarkSkiaChanged() {
+    WaitForShmem();
     if (!mSkiaValid) {
       ReadIntoSkia();
     } else if (mSkiaLayer) {

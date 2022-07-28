@@ -24,8 +24,7 @@ from taskgraph.util.parameterization import (
     resolve_task_references,
     resolve_timestamps,
 )
-
-from gecko_taskgraph.util.python_path import import_sibling_modules
+from taskgraph.util.python_path import import_sibling_modules
 
 logger = logging.getLogger(__name__)
 registry = {}
@@ -581,6 +580,7 @@ register_strategy("test", args=("skip-unless-schedules",))(Alias)
 register_strategy("test-inclusive", args=("skip-unless-schedules",))(Alias)
 register_strategy("test-verify", args=("skip-unless-schedules",))(Alias)
 register_strategy("upload-symbols", args=("never",))(Alias)
+register_strategy("reprocess-symbols", args=("never",))(Alias)
 
 
 # Strategy overrides used to tweak the default strategies. These are referenced
@@ -816,5 +816,6 @@ tryselect = ExperimentalOverride(
         ),
         "test-verify": "base:test",
         "upload-symbols": Alias("always"),
+        "reprocess-symbols": Alias("always"),
     },
 )

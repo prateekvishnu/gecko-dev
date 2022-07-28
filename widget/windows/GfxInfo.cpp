@@ -1784,20 +1784,10 @@ const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
                                 "FEATURE_FAILURE_BUG_1767212");
 
     APPEND_TO_DRIVER_BLOCKLIST2(
-        OperatingSystem::Windows, DeviceFamily::RadeonBlockNoVideoCopy,
+        OperatingSystem::Windows, DeviceFamily::RadeonBlockZeroVideoCopy,
         nsIGfxInfo::FEATURE_HW_DECODED_VIDEO_ZERO_COPY,
         nsIGfxInfo::FEATURE_BLOCKED_DRIVER_VERSION, DRIVER_LESS_THAN,
         V(26, 20, 15000, 37), "FEATURE_FAILURE_BUG_1767212");
-
-    ////////////////////////////////////
-    // FEATURE_HW_DECODED_VIDEO_ZERO_COPY - ALLOWLIST
-#ifdef NIGHTLY_BUILD
-    APPEND_TO_DRIVER_BLOCKLIST2(OperatingSystem::Windows, DeviceFamily::All,
-                                nsIGfxInfo::FEATURE_HW_DECODED_VIDEO_ZERO_COPY,
-                                nsIGfxInfo::FEATURE_ALLOW_ALWAYS,
-                                DRIVER_COMPARISON_IGNORED, V(0, 0, 0, 0),
-                                "FEATURE_ROLLOUT_ALL");
-#endif
 
     ////////////////////////////////////
     // FEATURE_WEBRENDER

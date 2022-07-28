@@ -145,9 +145,6 @@ let propNameWhitelist = [
 
   // This variable is used from CSS embedded in JS in adjustableTitle.js
   { propName: "--icon-url", isFromDevTools: false },
-
-  // This variable is used from CSS embedded in JS in pdf.js
-  { propName: "--zoom-factor", isFromDevTools: false },
 ];
 
 // Add suffix to stylesheets' URI so that we always load them here and
@@ -440,7 +437,7 @@ add_task(async function checkAllTheCSS() {
     return true;
   });
   // Wait for all manifest to be parsed
-  await throttledMapPromises(manifestURIs, parseManifest);
+  await PerfTestHelpers.throttledMapPromises(manifestURIs, parseManifest);
 
   // filter out either the devtools paths or the non-devtools paths:
   let isDevtools = SimpleTest.harnessParameters.subsuite == "devtools";
@@ -491,7 +488,7 @@ add_task(async function checkAllTheCSS() {
   }
 
   // Wait for all the files to have actually loaded:
-  await throttledMapPromises(allPromises, loadCSS);
+  await PerfTestHelpers.throttledMapPromises(allPromises, loadCSS);
 
   // Check if all the files referenced from CSS actually exist.
   // Files in browser/ should never be referenced outside browser/.

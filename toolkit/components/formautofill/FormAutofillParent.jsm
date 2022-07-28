@@ -31,12 +31,14 @@
 // constructor via a backstage pass.
 var EXPORTED_SYMBOLS = ["FormAutofillParent", "FormAutofillStatus"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { FormAutofill } = ChromeUtils.import(
   "resource://autofill/FormAutofill.jsm"
+);
+const { FormAutofillUtils } = ChromeUtils.import(
+  "resource://autofill/FormAutofillUtils.jsm"
 );
 
 const lazy = {};
@@ -46,11 +48,12 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   CreditCard: "resource://gre/modules/CreditCard.jsm",
   FormAutofillPreferences: "resource://autofill/FormAutofillPreferences.jsm",
   FormAutofillPrompter: "resource://autofill/FormAutofillPrompter.jsm",
-  FormAutofillUtils: "resource://autofill/FormAutofillUtils.jsm",
   OSKeyStore: "resource://gre/modules/OSKeyStore.jsm",
 });
 
-FormAutofill.defineLazyLogGetter(lazy, EXPORTED_SYMBOLS[0]);
+XPCOMUtils.defineLazyGetter(lazy, "log", () =>
+  FormAutofill.defineLogGetter(lazy, EXPORTED_SYMBOLS[0])
+);
 
 const {
   ENABLED_AUTOFILL_ADDRESSES_PREF,
@@ -60,7 +63,7 @@ const {
 const {
   ADDRESSES_COLLECTION_NAME,
   CREDITCARDS_COLLECTION_NAME,
-} = lazy.FormAutofillUtils;
+} = FormAutofillUtils;
 
 let gMessageObservers = new Set();
 
@@ -325,7 +328,7 @@ class FormAutofillParent extends JSWindowActorParent {
       }
       case "FormAutofill:GetDecryptedString": {
         let { cipherText, reauth } = data;
-        if (!lazy.FormAutofillUtils._reauthEnabledByUser) {
+        if (!FormAutofillUtils._reauthEnabledByUser) {
           lazy.log.debug("Reauth is disabled");
           reauth = false;
         }
@@ -361,7 +364,7 @@ class FormAutofillParent extends JSWindowActorParent {
         break;
       }
       case "FormAutofill:SaveCreditCard": {
-        if (!(await lazy.FormAutofillUtils.ensureLoggedIn()).authenticated) {
+        if (!(await FormAutofillUtils.ensureLoggedIn()).authenticated) {
           lazy.log.warn("User canceled encryption login");
           return undefined;
         }
@@ -498,9 +501,7 @@ class FormAutofillParent extends JSWindowActorParent {
         );
 
         showDoorhanger = async () => {
-          const description = lazy.FormAutofillUtils.getAddressLabel(
-            address.record
-          );
+          const description = FormAutofillUtils.getAddressLabel(address.record);
           const state = await lazy.FormAutofillPrompter.promptToSaveAddress(
             browser,
             "updateAddress",
@@ -574,9 +575,7 @@ class FormAutofillParent extends JSWindowActorParent {
           false
         );
         showDoorhanger = async () => {
-          const description = lazy.FormAutofillUtils.getAddressLabel(
-            address.record
-          );
+          const description = FormAutofillUtils.getAddressLabel(address.record);
           const state = await lazy.FormAutofillPrompter.promptToSaveAddress(
             browser,
             "firstTimeUse",

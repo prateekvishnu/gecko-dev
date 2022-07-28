@@ -11,21 +11,14 @@
 const EXPORTED_SYMBOLS = ["FormAutofillHeuristics", "FieldScanner"];
 let FormAutofillHeuristics;
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { FormAutofill } = ChromeUtils.import(
   "resource://autofill/FormAutofill.jsm"
 );
 
 const lazy = {};
-
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "FormAutofillUtils",
-  "resource://autofill/FormAutofillUtils.jsm"
-);
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   CreditCard: "resource://gre/modules/CreditCard.jsm",
@@ -34,7 +27,9 @@ XPCOMUtils.defineLazyModuleGetters(lazy, {
   LabelUtils: "resource://autofill/FormAutofillUtils.jsm",
 });
 
-FormAutofill.defineLazyLogGetter(lazy, EXPORTED_SYMBOLS[0]);
+XPCOMUtils.defineLazyGetter(lazy, "log", () =>
+  FormAutofill.defineLogGetter(lazy, EXPORTED_SYMBOLS[0])
+);
 
 const PREF_HEURISTICS_ENABLED = "extensions.formautofill.heuristics.enabled";
 const PREF_SECTION_ENABLED = "extensions.formautofill.section.enabled";

@@ -1,8 +1,6 @@
 /* import-globals-from ../../../common/tests/unit/head_helpers.js */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const { RemoteSettings } = ChromeUtils.import(
   "resource://services-settings/remote-settings.js"
 );
@@ -17,7 +15,6 @@ const { TelemetryTestUtils } = ChromeUtils.import(
 );
 
 const PREF_SETTINGS_SERVER = "services.settings.server";
-const PREF_SIGNATURE_ROOT = "security.content.signature.root_hash";
 const SIGNER_NAME = "onecrl.content-signature.mozilla.org";
 const TELEMETRY_COMPONENT = "remotesettings";
 

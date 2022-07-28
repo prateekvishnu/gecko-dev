@@ -8,9 +8,6 @@
 "use strict";
 
 const lazy = {};
-const { Services } = ChromeUtils.import(
-  "resource://gre/modules/Services.jsm"
-);
 ChromeUtils.defineModuleGetter(lazy, "AddonManager", "resource://gre/modules/AddonManager.jsm");
 
 var EXPORTED_SYMBOLS = ["AppConstants"];
@@ -452,6 +449,21 @@ var AppConstants = Object.freeze({
   MOZ_JXL:
 #ifdef MOZ_JXL
     true,
+#else
+    false,
+#endif
+
+  MOZ_CAN_FOLLOW_SYSTEM_TIME:
+#ifdef XP_WIN
+    true,
+#elif XP_MACOSX
+    true,
+#elif MOZ_WIDGET_GTK
+  #ifdef MOZ_ENABLE_DBUS
+    true,
+  #else
+    false,
+  #endif
 #else
     false,
 #endif

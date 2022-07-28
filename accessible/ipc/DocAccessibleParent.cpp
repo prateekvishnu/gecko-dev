@@ -444,7 +444,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
 }
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvTextChangeEvent(
-    const uint64_t& aID, const nsString& aStr, const int32_t& aStart,
+    const uint64_t& aID, const nsAString& aStr, const int32_t& aStart,
     const uint32_t& aLen, const bool& aIsInsert, const bool& aFromUser) {
   ACQUIRE_ANDROID_LOCK
   if (mShutdown) {
@@ -478,7 +478,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvTextChangeEvent(
 #if defined(XP_WIN)
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvSyncTextChangeEvent(
-    const uint64_t& aID, const nsString& aStr, const int32_t& aStart,
+    const uint64_t& aID, const nsAString& aStr, const int32_t& aStart,
     const uint32_t& aLen, const bool& aIsInsert, const bool& aFromUser) {
   return RecvTextChangeEvent(aID, aStr, aStart, aLen, aIsInsert, aFromUser);
 }
@@ -549,7 +549,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvVirtualCursorChangeEvent(
           GetXPCAccessible(target), doc, nullptr, aFromUser,
           GetXPCAccessible(oldPosition), aOldStartOffset, aOldEndOffset,
           GetXPCAccessible(newPosition), aNewStartOffset, aNewEndOffset,
-          aBoundaryType, aReason);
+          aReason, aBoundaryType);
   nsCoreUtils::DispatchAccEvent(std::move(event));
 
   return IPC_OK();
@@ -619,6 +619,41 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCache(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult DocAccessibleParent::RecvSelectedAccessiblesChanged(
+    nsTArray<uint64_t>&& aSelectedIDs, nsTArray<uint64_t>&& aUnselectedIDs) {
+  ACQUIRE_ANDROID_LOCK
+  if (mShutdown) {
+    return IPC_OK();
+  }
+
+  for (auto& id : aSelectedIDs) {
+    RemoteAccessible* remote = GetAccessible(id);
+    if (!remote) {
+      MOZ_ASSERT_UNREACHABLE("No remote found!");
+      continue;
+    }
+
+    remote->UpdateStateCache(states::SELECTED, true);
+  }
+
+  for (auto& id : aUnselectedIDs) {
+    RemoteAccessible* remote = GetAccessible(id);
+    if (!remote) {
+      MOZ_ASSERT_UNREACHABLE("No remote found!");
+      continue;
+    }
+
+    remote->UpdateStateCache(states::SELECTED, false);
+  }
+
+  if (nsCOMPtr<nsIObserverService> obsService =
+          services::GetObserverService()) {
+    obsService->NotifyObservers(nullptr, NS_ACCESSIBLE_CACHE_TOPIC, nullptr);
+  }
+
+  return IPC_OK();
+}
+
 mozilla::ipc::IPCResult DocAccessibleParent::RecvAccessiblesWillMove(
     nsTArray<uint64_t>&& aIDs) {
   for (uint64_t id : aIDs) {
@@ -629,7 +664,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvAccessiblesWillMove(
 
 #if !defined(XP_WIN)
 mozilla::ipc::IPCResult DocAccessibleParent::RecvAnnouncementEvent(
-    const uint64_t& aID, const nsString& aAnnouncement,
+    const uint64_t& aID, const nsAString& aAnnouncement,
     const uint16_t& aPriority) {
   ACQUIRE_ANDROID_LOCK
   if (mShutdown) {
@@ -1190,12 +1225,27 @@ DocAccessiblePlatformExtParent* DocAccessibleParent::GetPlatformExtension() {
 
 void DocAccessibleParent::SelectionRanges(nsTArray<TextRange>* aRanges) const {
   for (const auto& data : mTextSelections) {
-    aRanges->AppendElement(
-        TextRange(const_cast<DocAccessibleParent*>(this),
-                  const_cast<RemoteAccessible*>(GetAccessible(data.StartID())),
-                  data.StartOffset(),
-                  const_cast<RemoteAccessible*>(GetAccessible(data.EndID())),
-                  data.EndOffset()));
+    // Selection ranges should usually be in sync with the tree. However, tree
+    // and selection updates happen using separate IPDL calls, so it's possible
+    // for a client selection query to arrive between them. Thus, we validate
+    // the Accessibles and offsets here.
+    auto* startAcc =
+        const_cast<RemoteAccessible*>(GetAccessible(data.StartID()));
+    auto* endAcc = const_cast<RemoteAccessible*>(GetAccessible(data.EndID()));
+    if (!startAcc || !endAcc) {
+      continue;
+    }
+    uint32_t startCount = startAcc->CharacterCount();
+    if (data.StartOffset() > static_cast<int32_t>(startCount)) {
+      continue;
+    }
+    uint32_t endCount = endAcc->CharacterCount();
+    if (data.EndOffset() > static_cast<int32_t>(endCount)) {
+      continue;
+    }
+    aRanges->AppendElement(TextRange(const_cast<DocAccessibleParent*>(this),
+                                     startAcc, data.StartOffset(), endAcc,
+                                     data.EndOffset()));
   }
 }
 

@@ -43,6 +43,7 @@
 
 #include "builtin/Array-inl.h"
 #include "builtin/Boolean-inl.h"
+#include "vm/GeckoProfiler-inl.h"
 #include "vm/JSAtom-inl.h"
 #include "vm/NativeObject-inl.h"
 
@@ -655,7 +656,7 @@ static bool JA(JSContext* cx, HandleObject obj, StringifyContext* scx) {
          */
         MOZ_ASSERT(obj->is<ArrayObject>());
         MOZ_ASSERT(obj->is<NativeObject>());
-        RootedNativeObject nativeObj(cx, &obj->as<NativeObject>());
+        Rooted<NativeObject*> nativeObj(cx, &obj->as<NativeObject>());
         if (i <= PropertyKey::IntMax) {
           MOZ_ASSERT(
               nativeObj->containsDenseElement(i) != nativeObj->isIndexed(),
@@ -941,7 +942,7 @@ bool js::Stringify(JSContext* cx, MutableHandleValue vp, JSObject* replacer_,
     MOZ_ASSERT(gap.empty());
   }
 
-  RootedPlainObject wrapper(cx);
+  Rooted<PlainObject*> wrapper(cx);
   RootedId emptyId(cx, NameToId(cx->names().empty));
   if (replacer && replacer->isCallable()) {
     // We can skip creating the initial wrapper object if no replacer
@@ -1090,7 +1091,7 @@ static bool Walk(JSContext* cx, HandleObject holder, HandleId name,
 }
 
 static bool Revive(JSContext* cx, HandleValue reviver, MutableHandleValue vp) {
-  RootedPlainObject obj(cx, NewPlainObject(cx));
+  Rooted<PlainObject*> obj(cx, NewPlainObject(cx));
   if (!obj) {
     return false;
   }
@@ -1143,6 +1144,7 @@ static bool json_toSource(JSContext* cx, unsigned argc, Value* vp) {
 
 /* ES5 15.12.2. */
 static bool json_parse(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "parse");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   /* Step 1. */
@@ -1185,7 +1187,7 @@ bool BuildImmutableProperty(JSContext* cx, HandleValue value, HandleId name,
 
     // Step 1.a-1.b
     if (value.toObject().is<ArrayObject>()) {
-      RootedArrayObject arr(cx, &value.toObject().as<ArrayObject>());
+      Rooted<ArrayObject*> arr(cx, &value.toObject().as<ArrayObject>());
 
       // Step 1.b.iii
       uint32_t len = arr->length();
@@ -1291,6 +1293,7 @@ bool BuildImmutableProperty(JSContext* cx, HandleValue value, HandleId name,
 }
 
 static bool json_parseImmutable(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "parseImmutable");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   /* Step 1. */
@@ -1330,6 +1333,7 @@ static bool json_parseImmutable(JSContext* cx, unsigned argc, Value* vp) {
 
 /* ES6 24.3.2. */
 bool json_stringify(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "JSON", "stringify");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   RootedObject replacer(cx,

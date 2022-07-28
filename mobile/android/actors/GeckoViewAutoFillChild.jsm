@@ -5,20 +5,17 @@
 const { GeckoViewActorChild } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewActorChild.jsm"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { GeckoViewUtils } = ChromeUtils.import(
   "resource://gre/modules/GeckoViewUtils.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const lazy = {};
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   FormLikeFactory: "resource://gre/modules/FormLikeFactory.jsm",
-  GeckoViewAutofill: "resource://gre/modules/GeckoViewAutofill.jsm",
-  WebNavigationFrames: "resource://gre/modules/WebNavigationFrames.jsm",
   LoginManagerChild: "resource://gre/modules/LoginManagerChild.jsm",
 });
 
@@ -50,11 +47,22 @@ class GeckoViewAutoFillChild extends GeckoViewActorChild {
         break;
       }
       case "focusin": {
-        if (
-          this.contentWindow.HTMLInputElement.isInstance(aEvent.composedTarget)
-        ) {
-          this.onFocus(aEvent.composedTarget);
+        const element = aEvent.composedTarget;
+        if (!this.contentWindow.HTMLInputElement.isInstance(element)) {
+          break;
         }
+        GeckoViewUtils.waitForPanZoomState(this.contentWindow).finally(() => {
+          if (Cu.isDeadWrapper(element)) {
+            // Focus element is removed or document is navigated to new page.
+            return;
+          }
+          const focusedElement =
+            Services.focus.focusedElement ||
+            element.ownerDocument?.activeElement;
+          if (element == focusedElement) {
+            this.onFocus(focusedElement);
+          }
+        });
         break;
       }
       case "focusout": {
@@ -111,9 +119,13 @@ class GeckoViewAutoFillChild extends GeckoViewActorChild {
       }
     }
 
-    const [usernameField] = lazy.LoginManagerChild.forWindow(
-      window
-    ).getUserNameAndPasswordFields(passwordField || aFormLike.elements[0]);
+    const loginManagerChild = lazy.LoginManagerChild.forWindow(window);
+    const docState = loginManagerChild.stateForDocument(
+      passwordField.ownerDocument
+    );
+    const [usernameField] = docState.getUserNameAndPasswordFields(
+      passwordField || aFormLike.elements[0]
+    );
 
     const focusedElement = aFormLike.rootElement.ownerDocument.activeElement;
     let sendFocusEvent = aFormLike.rootElement === focusedElement;

@@ -448,14 +448,10 @@ a11y::DocAccessibleParent* BrowserParent::GetTopLevelDocAccessible() const {
     // embedded out-of-process iframe. Therefore, we use
     // IsTopLevelInContentProcess. In contrast, using IsToplevel would only
     // include documents that aren't embedded; e.g. tab documents.
-    if (doc->IsTopLevelInContentProcess()) {
+    if (doc->IsTopLevelInContentProcess() && !doc->IsShutdown()) {
       return doc;
     }
   }
-
-  MOZ_ASSERT(docs.Count() == 0,
-             "If there isn't a top level accessible doc "
-             "there shouldn't be an accessible doc at all!");
 #endif
   return nullptr;
 }
@@ -887,11 +883,11 @@ mozilla::ipc::IPCResult BrowserParent::RecvEvent(const RemoteDOMEvent& aEvent) {
   return IPC_OK();
 }
 
-bool BrowserParent::SendLoadRemoteScript(const nsString& aURL,
+bool BrowserParent::SendLoadRemoteScript(const nsAString& aURL,
                                          const bool& aRunInGlobalScope) {
   if (mCreatingWindow) {
     mDelayedFrameScripts.AppendElement(
-        FrameScriptInfo(aURL, aRunInGlobalScope));
+        FrameScriptInfo(nsString(aURL), aRunInGlobalScope));
     return true;
   }
 
@@ -1008,12 +1004,14 @@ mozilla::ipc::IPCResult BrowserParent::RecvSetDimensions(
   // We only care about the parameters that actually changed, see more details
   // in `BrowserChild::SetDimensions()`.
   // Note that `BrowserChild::SetDimensions()` may be called before receiving
-  // our `SendUIResolutionChanged()` call.  Therefore, if given each cordinate
+  // our `SendUIResolutionChanged()` call.  Therefore, if given each coordinate
   // shouldn't be ignored, we need to recompute it if DPI has been changed.
   // And also note that don't use `mDefaultScale.scale` here since it may be
-  // different from the result of `GetUnscaledDevicePixelsPerCSSPixel()`.
-  double currentScale;
-  treeOwnerAsWin->GetUnscaledDevicePixelsPerCSSPixel(&currentScale);
+  // different from the result of `GetWidgetCSSToDeviceScale()`.
+  // NOTE(emilio): We use GetWidgetCSSToDeviceScale() because the old scale is a
+  // widget scale, and we only use the current scale to scale up/down the
+  // relevant values.
+  double currentScale = treeOwnerAsWin->GetWidgetCSSToDeviceScale();
 
   int32_t x = aX;
   int32_t y = aY;
@@ -1361,36 +1359,6 @@ PFilePickerParent* BrowserParent::AllocPFilePickerParent(const nsString& aTitle,
 bool BrowserParent::DeallocPFilePickerParent(PFilePickerParent* actor) {
   delete actor;
   return true;
-}
-
-IPCResult BrowserParent::RecvIndexedDBPermissionRequest(
-    nsIPrincipal* aPrincipal, IndexedDBPermissionRequestResolver&& aResolve) {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  nsCOMPtr<nsIPrincipal> principal(aPrincipal);
-  if (!principal) {
-    return IPC_FAIL_NO_REASON(this);
-  }
-
-  if (NS_WARN_IF(!mFrameElement)) {
-    return IPC_FAIL_NO_REASON(this);
-  }
-
-  RefPtr<indexedDB::PermissionRequestHelper> actor =
-      new indexedDB::PermissionRequestHelper(mFrameElement, principal,
-                                             aResolve);
-
-  mozilla::Result permissionOrErr = actor->PromptIfNeeded();
-  if (permissionOrErr.isErr()) {
-    return IPC_FAIL_NO_REASON(this);
-  }
-
-  if (permissionOrErr.inspect() !=
-      indexedDB::PermissionRequestBase::kPermissionPrompt) {
-    aResolve(permissionOrErr.inspect());
-  }
-
-  return IPC_OK();
 }
 
 already_AddRefed<PSessionStoreParent>
@@ -2612,9 +2580,13 @@ LayoutDeviceIntPoint BrowserParent::TransformParentToChild(
   LayoutDeviceToLayoutDeviceMatrix4x4 matrix =
       GetChildToParentConversionMatrix();
   if (!matrix.Invert()) {
-    return LayoutDeviceIntPoint(0, 0);
+    return LayoutDeviceIntPoint();
   }
-  return TransformPoint(aPoint, matrix);
+  auto transformed = UntransformBy(matrix, aPoint);
+  if (!transformed) {
+    return LayoutDeviceIntPoint();
+  }
+  return transformed.ref();
 }
 
 LayoutDevicePoint BrowserParent::TransformParentToChild(
@@ -2622,9 +2594,13 @@ LayoutDevicePoint BrowserParent::TransformParentToChild(
   LayoutDeviceToLayoutDeviceMatrix4x4 matrix =
       GetChildToParentConversionMatrix();
   if (!matrix.Invert()) {
-    return LayoutDevicePoint(0.0, 0.0);
+    return LayoutDevicePoint();
   }
-  return TransformPoint(aPoint, matrix);
+  auto transformed = UntransformBy(matrix, aPoint);
+  if (!transformed) {
+    return LayoutDeviceIntPoint();
+  }
+  return transformed.ref();
 }
 
 LayoutDeviceIntPoint BrowserParent::TransformChildToParent(
@@ -4034,6 +4010,9 @@ mozilla::ipc::IPCResult BrowserParent::RecvIsWindowSupportingProtectedMedia(
       FxRWindowManager::GetInstance()->IsFxRWindow(aOuterWindowID);
   aResolve(!isFxrWindow);
 #else
+#  ifdef FUZZING_SNAPSHOT
+  return IPC_FAIL(this, "Should only be called on Windows");
+#  endif
   MOZ_CRASH("Should only be called on Windows");
 #endif
 

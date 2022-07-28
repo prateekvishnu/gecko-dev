@@ -10,7 +10,6 @@ const { VoiceSelect } = ChromeUtils.import(
 const { Narrator } = ChromeUtils.import(
   "resource://gre/modules/narrate/Narrator.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AsyncPrefs } = ChromeUtils.import(
   "resource://gre/modules/AsyncPrefs.jsm"
 );
@@ -45,7 +44,7 @@ function NarrateControls(win, languagePromise) {
 
   let toggle = win.document.createElement("li");
   let toggleButton = win.document.createElement("button");
-  toggleButton.className = "dropdown-toggle button narrate-toggle";
+  toggleButton.className = "dropdown-toggle toolbar-button narrate-toggle";
   toggleButton.dataset.telemetryId = "reader-listen";
   let tip = win.document.createElement("span");
   let labelText = gStrings.GetStringFromName("listen");

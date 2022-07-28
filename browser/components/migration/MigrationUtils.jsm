@@ -15,27 +15,17 @@ const TOPIC_PLACES_DEFAULTS_FINISHED = "places-browser-init-complete";
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 
 const lazy = {};
 
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "BookmarkHTMLUtils",
-  "resource://gre/modules/BookmarkHTMLUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(lazy, {
+  BookmarkHTMLUtils: "resource://gre/modules/BookmarkHTMLUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   lazy,
   "LoginHelper",
   "resource://gre/modules/LoginHelper.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
 );
 ChromeUtils.defineModuleGetter(
   lazy,
@@ -72,7 +62,7 @@ let gForceExitSpinResolve = false;
 let gKeepUndoData = false;
 let gUndoData = null;
 
-XPCOMUtils.defineLazyGetter(lazy, "gAvailableMigratorKeys", function() {
+const gAvailableMigratorKeys = (function() {
   if (AppConstants.platform == "win") {
     return [
       "firefox",
@@ -111,7 +101,7 @@ XPCOMUtils.defineLazyGetter(lazy, "gAvailableMigratorKeys", function() {
     ];
   }
   return [];
-});
+})();
 
 function getL10n() {
   if (!gL10n) {
@@ -1026,7 +1016,7 @@ var MigrationUtils = Object.seal({
 
     if (!migrator) {
       let migrators = await Promise.all(
-        lazy.gAvailableMigratorKeys.map(key => this.getMigrator(key))
+        gAvailableMigratorKeys.map(key => this.getMigrator(key))
       );
       // If there's no migrator set so far, ensure that there is at least one
       // migrator available before opening the wizard.
@@ -1242,7 +1232,7 @@ var MigrationUtils = Object.seal({
     gL10n = null;
   },
 
-  gAvailableMigratorKeys: lazy.gAvailableMigratorKeys,
+  gAvailableMigratorKeys,
 
   MIGRATION_ENTRYPOINT_UNKNOWN: 0,
   MIGRATION_ENTRYPOINT_FIRSTRUN: 1,

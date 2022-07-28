@@ -315,16 +315,14 @@ xpcAccessible::GetAccessKey(nsAString& aAccessKey) {
 
   if (!IntlGeneric()) return NS_ERROR_FAILURE;
 
-  if (RemoteAccessible* proxy = IntlGeneric()->AsRemote()) {
 #if defined(XP_WIN)
+  if (IntlGeneric()->IsRemote() &&
+      !StaticPrefs::accessibility_cache_enabled_AtStartup()) {
     return NS_ERROR_NOT_IMPLEMENTED;
-#else
-    proxy->AccessKey().ToString(aAccessKey);
-#endif
-  } else {
-    Intl()->AccessKey().ToString(aAccessKey);
   }
+#endif
 
+  IntlGeneric()->AccessKey().ToString(aAccessKey);
   return NS_OK;
 }
 
@@ -333,15 +331,10 @@ xpcAccessible::GetKeyboardShortcut(nsAString& aKeyBinding) {
   aKeyBinding.Truncate();
   if (!IntlGeneric()) return NS_ERROR_FAILURE;
 
-  if (RemoteAccessible* proxy = IntlGeneric()->AsRemote()) {
-#if defined(XP_WIN)
+  if (IntlGeneric()->IsRemote()) {
     return NS_ERROR_NOT_IMPLEMENTED;
-#else
-    proxy->KeyboardShortcut().ToString(aKeyBinding);
-#endif
-  } else {
-    Intl()->KeyboardShortcut().ToString(aKeyBinding);
   }
+  Intl()->KeyboardShortcut().ToString(aKeyBinding);
   return NS_OK;
 }
 
@@ -435,13 +428,7 @@ xpcAccessible::GetBounds(int32_t* aX, int32_t* aY, int32_t* aWidth,
 
   if (!IntlGeneric()) return NS_ERROR_FAILURE;
 
-  LayoutDeviceIntRect rect;
-  if (LocalAccessible* acc = IntlGeneric()->AsLocal()) {
-    rect = acc->Bounds();
-  } else {
-    rect = IntlGeneric()->AsRemote()->Bounds();
-  }
-
+  LayoutDeviceIntRect rect = IntlGeneric()->Bounds();
   rect.GetRect(aX, aY, aWidth, aHeight);
   return NS_OK;
 }
@@ -462,13 +449,7 @@ xpcAccessible::GetBoundsInCSSPixels(int32_t* aX, int32_t* aY, int32_t* aWidth,
     return NS_ERROR_FAILURE;
   }
 
-  nsIntRect rect;
-  if (LocalAccessible* acc = IntlGeneric()->AsLocal()) {
-    rect = acc->BoundsInCSSPixels();
-  } else {
-    rect = IntlGeneric()->AsRemote()->BoundsInCSSPixels();
-  }
-
+  nsIntRect rect = IntlGeneric()->BoundsInCSSPixels();
   rect.GetRect(aX, aY, aWidth, aHeight);
   return NS_OK;
 }

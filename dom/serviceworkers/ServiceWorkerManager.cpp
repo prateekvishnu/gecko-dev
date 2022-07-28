@@ -116,23 +116,6 @@ uint32_t gServiceWorkersRegistered = 0;
 uint32_t gServiceWorkersRegisteredFetch = 0;
 
 static_assert(
-    nsIHttpChannelInternal::CORS_MODE_SAME_ORIGIN ==
-        static_cast<uint32_t>(RequestMode::Same_origin),
-    "RequestMode enumeration value should match Necko CORS mode value.");
-static_assert(
-    nsIHttpChannelInternal::CORS_MODE_NO_CORS ==
-        static_cast<uint32_t>(RequestMode::No_cors),
-    "RequestMode enumeration value should match Necko CORS mode value.");
-static_assert(
-    nsIHttpChannelInternal::CORS_MODE_CORS ==
-        static_cast<uint32_t>(RequestMode::Cors),
-    "RequestMode enumeration value should match Necko CORS mode value.");
-static_assert(
-    nsIHttpChannelInternal::CORS_MODE_NAVIGATE ==
-        static_cast<uint32_t>(RequestMode::Navigate),
-    "RequestMode enumeration value should match Necko CORS mode value.");
-
-static_assert(
     nsIHttpChannelInternal::REDIRECT_MODE_FOLLOW ==
         static_cast<uint32_t>(RequestRedirect::Follow),
     "RequestRedirect enumeration value should make Necko Redirect mode value.");
@@ -2663,6 +2646,16 @@ void ServiceWorkerManager::UpdateClientControllers(
   }
 }
 
+void ServiceWorkerManager::EvictFromBFCache(
+    ServiceWorkerRegistrationInfo* aRegistration) {
+  MOZ_ASSERT(NS_IsMainThread());
+  for (const auto& client : mControlledClients.Values()) {
+    if (client->mRegistrationInfo == aRegistration) {
+      client->mClientHandle->EvictFromBFCache();
+    }
+  }
+}
+
 already_AddRefed<ServiceWorkerRegistrationInfo>
 ServiceWorkerManager::GetRegistration(nsIPrincipal* aPrincipal,
                                       const nsACString& aScope) const {
@@ -3142,7 +3135,7 @@ ServiceWorkerManager::PropagateUnregister(
     return NS_ERROR_FAILURE;
   }
 
-  mActor->SendPropagateUnregister(principalInfo, nsString(aScope));
+  mActor->SendPropagateUnregister(principalInfo, aScope);
 
   nsresult rv = Unregister(aPrincipal, aCallback, aScope);
   if (NS_WARN_IF(NS_FAILED(rv))) {

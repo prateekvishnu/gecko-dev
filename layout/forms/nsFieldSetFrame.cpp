@@ -109,11 +109,6 @@ class nsDisplayFieldSetBorder final : public nsPaintedDisplayItem {
   MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayFieldSetBorder)
 
   virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
-  virtual nsDisplayItemGeometry* AllocateGeometry(
-      nsDisplayListBuilder* aBuilder) override;
-  virtual void ComputeInvalidationRegion(
-      nsDisplayListBuilder* aBuilder, const nsDisplayItemGeometry* aGeometry,
-      nsRegion* aInvalidRegion) const override;
   bool CreateWebRenderCommands(
       mozilla::wr::DisplayListBuilder& aBuilder,
       mozilla::wr::IpcResourceUpdateQueue& aResources,
@@ -127,30 +122,8 @@ class nsDisplayFieldSetBorder final : public nsPaintedDisplayItem {
 
 void nsDisplayFieldSetBorder::Paint(nsDisplayListBuilder* aBuilder,
                                     gfxContext* aCtx) {
-  ImgDrawResult result = static_cast<nsFieldSetFrame*>(mFrame)->PaintBorder(
+  Unused << static_cast<nsFieldSetFrame*>(mFrame)->PaintBorder(
       aBuilder, *aCtx, ToReferenceFrame(), GetPaintRect(aBuilder, aCtx));
-
-  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
-}
-
-nsDisplayItemGeometry* nsDisplayFieldSetBorder::AllocateGeometry(
-    nsDisplayListBuilder* aBuilder) {
-  return new nsDisplayItemGenericImageGeometry(this, aBuilder);
-}
-
-void nsDisplayFieldSetBorder::ComputeInvalidationRegion(
-    nsDisplayListBuilder* aBuilder, const nsDisplayItemGeometry* aGeometry,
-    nsRegion* aInvalidRegion) const {
-  auto geometry =
-      static_cast<const nsDisplayItemGenericImageGeometry*>(aGeometry);
-
-  if (aBuilder->ShouldSyncDecodeImages() &&
-      geometry->ShouldInvalidateToSyncDecodeImages()) {
-    bool snap;
-    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
-  }
-
-  nsDisplayItem::ComputeInvalidationRegion(aBuilder, aGeometry, aInvalidRegion);
 }
 
 nsRect nsDisplayFieldSetBorder::GetBounds(nsDisplayListBuilder* aBuilder,
@@ -217,8 +190,6 @@ bool nsDisplayFieldSetBorder::CreateWebRenderCommands(
   if (drawResult == ImgDrawResult::NOT_SUPPORTED) {
     return false;
   }
-
-  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, drawResult);
   return true;
 };
 
@@ -481,14 +452,11 @@ void nsFieldSetFrame::Reflow(nsPresContext* aPresContext,
       // Propagate break-before from the legend to the fieldset.
       if (legend->StyleDisplay()->BreakBefore() ||
           aStatus.IsInlineBreakBefore()) {
-        // XXX(mats) setting a desired size shouldn't be necessary: bug 1599159.
-        aDesiredSize.SetSize(wm, LogicalSize(wm));
         aStatus.SetInlineLineBreakBeforeAndReset();
         return;
       }
       // Honor break-inside:avoid by breaking before instead.
       if (MOZ_UNLIKELY(avoidBreakInside) && !aStatus.IsFullyComplete()) {
-        aDesiredSize.SetSize(wm, LogicalSize(wm));
         aStatus.SetInlineLineBreakBeforeAndReset();
         return;
       }
@@ -650,7 +618,6 @@ void nsFieldSetFrame::Reflow(nsPresContext* aPresContext,
         !aReflowInput.mFlags.mIsTopOfPage &&
         availSize.BSize(wm) != NS_UNCONSTRAINEDSIZE) {
       if (status.IsInlineBreakBefore() || !status.IsFullyComplete()) {
-        aDesiredSize.SetSize(wm, LogicalSize(wm));
         aStatus.SetInlineLineBreakBeforeAndReset();
         return;
       }
@@ -775,7 +742,6 @@ void nsFieldSetFrame::Reflow(nsPresContext* aPresContext,
       border.BEnd(wm) > 0 && aReflowInput.AvailableBSize() > border.BEnd(wm)) {
     // Our end border doesn't fit but it should fit in the next column/page.
     if (MOZ_UNLIKELY(avoidBreakInside)) {
-      aDesiredSize.SetSize(wm, LogicalSize(wm));
       aStatus.SetInlineLineBreakBeforeAndReset();
       return;
     } else {
@@ -811,7 +777,6 @@ void nsFieldSetFrame::Reflow(nsPresContext* aPresContext,
   FinishReflowWithAbsoluteFrames(aPresContext, aDesiredSize, aReflowInput,
                                  aStatus);
   InvalidateFrame();
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void nsFieldSetFrame::SetInitialChildList(ChildListID aListID,

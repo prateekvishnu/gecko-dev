@@ -6,6 +6,8 @@
 
 /* utility functions for drawing borders and backgrounds */
 
+#include "nsCSSRendering.h"
+
 #include <ctime>
 
 #include "gfx2DGlue.h"
@@ -41,7 +43,6 @@
 #include "nsIScrollableFrame.h"
 #include "imgIContainer.h"
 #include "ImageOps.h"
-#include "nsCSSRendering.h"
 #include "nsCSSColorUtils.h"
 #include "nsITheme.h"
 #include "nsLayoutUtils.h"
@@ -1118,34 +1119,58 @@ void nsImageRenderer::ComputeObjectAnchorPoint(const Position& aPos,
                            aImageSize.height, &aTopLeft->y, &aAnchorPoint->y);
 }
 
-auto nsCSSRendering::FindNonTransparentBackgroundFrame(nsIFrame* aFrame,
-                                                       bool aStopAtThemed)
-    -> NonTransparentBackgroundFrame {
-  NS_ASSERTION(aFrame,
-               "Cannot find NonTransparentBackgroundFrame in a null frame");
+auto nsCSSRendering::FindEffectiveBackgroundColor(nsIFrame* aFrame,
+                                                  bool aStopAtThemed,
+                                                  bool aPreferBodyToCanvas)
+    -> EffectiveBackgroundColor {
+  MOZ_ASSERT(aFrame);
+
+  auto BgColorIfNotTransparent = [](nsIFrame* aFrame) -> Maybe<nscolor> {
+    nscolor c =
+        aFrame->GetVisitedDependentColor(&nsStyleBackground::mBackgroundColor);
+    if (NS_GET_A(c) == 255) {
+      return Some(c);
+    }
+    if (NS_GET_A(c)) {
+      // TODO(emilio): We should maybe just blend with ancestor bg colors and
+      // such, but this is probably good enough for now, matches pre-existing
+      // behavior.
+      const nscolor defaultBg = aFrame->PresContext()->DefaultBackgroundColor();
+      MOZ_ASSERT(NS_GET_A(defaultBg) == 255, "PreferenceSheet guarantees this");
+      return Some(NS_ComposeColors(defaultBg, c));
+    }
+    return Nothing();
+  };
 
   for (nsIFrame* frame = aFrame; frame;
        frame = nsLayoutUtils::GetParentOrPlaceholderForCrossDoc(frame)) {
-    // No need to call GetVisitedDependentColor because it always uses this
-    // alpha component anyway.
-    if (NS_GET_A(frame->StyleBackground()->BackgroundColor(frame))) {
-      return {frame, false, false};
+    if (auto bg = BgColorIfNotTransparent(frame)) {
+      return {*bg};
     }
 
     if (aStopAtThemed && frame->IsThemed()) {
-      return {frame, true, false};
+      return {NS_TRANSPARENT, true};
     }
 
     if (IsCanvasFrame(frame)) {
-      nsIFrame* bgFrame = nullptr;
-      if (FindBackgroundFrame(frame, &bgFrame) &&
-          NS_GET_A(bgFrame->StyleBackground()->BackgroundColor(bgFrame))) {
-        return {bgFrame, false, true};
+      if (aPreferBodyToCanvas) {
+        if (auto* body = frame->PresContext()->Document()->GetBodyElement()) {
+          if (nsIFrame* f = body->GetPrimaryFrame()) {
+            if (auto bg = BgColorIfNotTransparent(f)) {
+              return {*bg};
+            }
+          }
+        }
+      }
+      if (nsIFrame* bgFrame = FindBackgroundFrame(frame)) {
+        if (auto bg = BgColorIfNotTransparent(bgFrame)) {
+          return {*bg};
+        }
       }
     }
   }
 
-  return {};
+  return {aFrame->PresContext()->DefaultBackgroundColor()};
 }
 
 // Returns true if aFrame is a canvas frame.
@@ -1188,12 +1213,12 @@ nsIFrame* nsCSSRendering::FindBackgroundStyleFrame(nsIFrame* aForFrame) {
   // through to the content sink, which will call |StartLayout|
   // and thus |Initialize| on the pres shell.  See bug 119351
   // for the ugly details.
-  if (!bodyContent) {
+  if (!bodyContent || aForFrame->StyleDisplay()->IsContainAny()) {
     return aForFrame;
   }
 
   nsIFrame* bodyFrame = bodyContent->GetPrimaryFrame();
-  if (!bodyFrame) {
+  if (!bodyFrame || bodyFrame->StyleDisplay()->IsContainAny()) {
     return aForFrame;
   }
 
@@ -1223,16 +1248,23 @@ nsIFrame* nsCSSRendering::FindBackgroundStyleFrame(nsIFrame* aForFrame) {
  *  + we don't paint the background on the BODY element in *some* cases,
  *    and for SGML-based HTML documents only.
  *
- * |FindBackground| returns true if a background should be painted, and
- * the resulting ComputedStyle to use for the background information
- * will be filled in to |aBackground|.
+ * |FindBackground| checks whether a background should be painted. If yes, it
+ * returns the resulting ComputedStyle to use for the background information;
+ * Otherwise, it returns nullptr.
  */
 ComputedStyle* nsCSSRendering::FindRootFrameBackground(nsIFrame* aForFrame) {
   return FindBackgroundStyleFrame(aForFrame)->Style();
 }
 
-inline bool FindElementBackground(const nsIFrame* aForFrame,
-                                  nsIFrame* aRootElementFrame) {
+// Helper for FindBackgroundFrame. Returns true if aForFrame has a meaningful
+// background that it should draw (i.e. that it hasn't propagated to another
+// frame).  See documentation for FindBackground.
+inline bool FrameHasMeaningfulBackground(const nsIFrame* aForFrame,
+                                         nsIFrame* aRootElementFrame) {
+  MOZ_ASSERT(!nsCSSRendering::IsCanvasFrame(aForFrame),
+             "FindBackgroundFrame handles canvas frames before calling us, "
+             "so we don't need to consider them here");
+
   if (aForFrame == aRootElementFrame) {
     // We must have propagated our background to the viewport or canvas. Abort.
     return false;
@@ -1242,26 +1274,29 @@ inline bool FindElementBackground(const nsIFrame* aForFrame,
   // was propagated to the viewport.
 
   nsIContent* content = aForFrame->GetContent();
-  if (!content || content->NodeInfo()->NameAtom() != nsGkAtoms::body)
+  if (!content || content->NodeInfo()->NameAtom() != nsGkAtoms::body) {
     return true;  // not frame for a "body" element
+  }
   // It could be a non-HTML "body" element but that's OK, we'd fail the
   // bodyContent check below
 
-  if (aForFrame->Style()->GetPseudoType() != PseudoStyleType::NotPseudo) {
-    return true;  // A pseudo-element frame.
+  if (aForFrame->Style()->GetPseudoType() != PseudoStyleType::NotPseudo ||
+      aForFrame->StyleDisplay()->IsContainAny()) {
+    return true;  // A pseudo-element frame, or contained.
   }
 
   // We should only look at the <html> background if we're in an HTML document
   Document* document = content->OwnerDoc();
 
   dom::Element* bodyContent = document->GetBodyElement();
-  if (bodyContent != content)
+  if (bodyContent != content) {
     return true;  // this wasn't the background that was propagated
+  }
 
   // This can be called even when there's no root element yet, during frame
   // construction, via nsLayoutUtils::FrameHasTransparency and
   // nsContainerFrame::SyncFrameViewProperties.
-  if (!aRootElementFrame) {
+  if (!aRootElementFrame || aRootElementFrame->StyleDisplay()->IsContainAny()) {
     return true;
   }
 
@@ -1269,27 +1304,25 @@ inline bool FindElementBackground(const nsIFrame* aForFrame,
   return !htmlBG->IsTransparent(aRootElementFrame);
 }
 
-bool nsCSSRendering::FindBackgroundFrame(const nsIFrame* aForFrame,
-                                         nsIFrame** aBackgroundFrame) {
+nsIFrame* nsCSSRendering::FindBackgroundFrame(const nsIFrame* aForFrame) {
   nsIFrame* rootElementFrame =
       aForFrame->PresShell()->FrameConstructor()->GetRootElementStyleFrame();
   if (IsCanvasFrame(aForFrame)) {
-    *aBackgroundFrame = FindCanvasBackgroundFrame(aForFrame, rootElementFrame);
-    return true;
+    return FindCanvasBackgroundFrame(aForFrame, rootElementFrame);
   }
 
-  *aBackgroundFrame = const_cast<nsIFrame*>(aForFrame);
-  return FindElementBackground(aForFrame, rootElementFrame);
+  if (FrameHasMeaningfulBackground(aForFrame, rootElementFrame)) {
+    return const_cast<nsIFrame*>(aForFrame);
+  }
+
+  return nullptr;
 }
 
-bool nsCSSRendering::FindBackground(const nsIFrame* aForFrame,
-                                    ComputedStyle** aBackgroundSC) {
-  nsIFrame* backgroundFrame = nullptr;
-  if (FindBackgroundFrame(aForFrame, &backgroundFrame)) {
-    *aBackgroundSC = backgroundFrame->Style();
-    return true;
+ComputedStyle* nsCSSRendering::FindBackground(const nsIFrame* aForFrame) {
+  if (auto* backgroundFrame = FindBackgroundFrame(aForFrame)) {
+    return backgroundFrame->Style();
   }
-  return false;
+  return nullptr;
 }
 
 void nsCSSRendering::BeginFrameTreesLocked() { ++gFrameTreeLockCount; }
@@ -1787,8 +1820,8 @@ ImgDrawResult nsCSSRendering::PaintStyleImageLayer(const PaintBGParams& aParams,
   MOZ_ASSERT(aParams.frame,
              "Frame is expected to be provided to PaintStyleImageLayer");
 
-  ComputedStyle* sc;
-  if (!FindBackground(aParams.frame, &sc)) {
+  const ComputedStyle* sc = FindBackground(aParams.frame);
+  if (!sc) {
     // We don't want to bail out if moz-appearance is set on a root
     // node. If it has a parent content node, bail because it's not
     // a root, otherwise keep going in order to let the theme stuff
@@ -1875,8 +1908,8 @@ ImgDrawResult nsCSSRendering::BuildWebRenderDisplayItemsForStyleImageLayer(
              "Frame is expected to be provided to "
              "BuildWebRenderDisplayItemsForStyleImageLayer");
 
-  ComputedStyle* sc;
-  if (!FindBackground(aParams.frame, &sc)) {
+  ComputedStyle* sc = FindBackground(aParams.frame);
+  if (!sc) {
     // We don't want to bail out if moz-appearance is set on a root
     // node. If it has a parent content node, bail because it's not
     // a root, otherwise keep going in order to let the theme stuff
@@ -2284,7 +2317,8 @@ static Maybe<nscolor> CalcScrollbarColor(nsIFrame* aFrame,
   return Some(color.CalcColor(*scrollbarStyle));
 }
 
-static nscolor GetBackgroundColor(nsIFrame* aFrame, ComputedStyle* aStyle) {
+static nscolor GetBackgroundColor(nsIFrame* aFrame,
+                                  const ComputedStyle* aStyle) {
   switch (aStyle->StyleDisplay()->EffectiveAppearance()) {
     case StyleAppearance::ScrollbarthumbVertical:
     case StyleAppearance::ScrollbarthumbHorizontal: {
@@ -2310,7 +2344,7 @@ static nscolor GetBackgroundColor(nsIFrame* aFrame, ComputedStyle* aStyle) {
 }
 
 nscolor nsCSSRendering::DetermineBackgroundColor(nsPresContext* aPresContext,
-                                                 ComputedStyle* aStyle,
+                                                 const ComputedStyle* aStyle,
                                                  nsIFrame* aFrame,
                                                  bool& aDrawBackgroundImage,
                                                  bool& aDrawBackgroundColor) {
@@ -2377,7 +2411,7 @@ static CompositionOp DetermineCompositionOp(
 
 ImgDrawResult nsCSSRendering::PaintStyleImageLayerWithSC(
     const PaintBGParams& aParams, gfxContext& aRenderingCtx,
-    ComputedStyle* aBackgroundSC, const nsStyleBorder& aBorder) {
+    const ComputedStyle* aBackgroundSC, const nsStyleBorder& aBorder) {
   MOZ_ASSERT(aParams.frame,
              "Frame is expected to be provided to PaintStyleImageLayerWithSC");
 

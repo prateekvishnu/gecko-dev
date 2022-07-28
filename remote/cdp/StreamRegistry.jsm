@@ -6,9 +6,8 @@
 
 var EXPORTED_SYMBOLS = ["StreamRegistry"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -45,7 +44,6 @@ class StreamRegistry {
   }
 
   async _discard(stream) {
-    // eslint-disable-next-line mozilla/use-isInstance
     if (stream instanceof lazy.OS.File) {
       let fileInfo;
 
@@ -73,7 +71,6 @@ class StreamRegistry {
   add(stream) {
     let handle;
 
-    // eslint-disable-next-line mozilla/use-isInstance
     if (stream instanceof lazy.OS.File) {
       handle = Services.uuid
         .generateUUID()

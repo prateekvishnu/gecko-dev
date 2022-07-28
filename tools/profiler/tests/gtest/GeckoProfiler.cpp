@@ -1252,6 +1252,46 @@ TEST(BaseProfiler, BlocksRingBuffer)
 
 // Common JSON checks.
 
+// Check that the given JSON string include no JSON whitespace characters
+// (excluding those in property names and strings).
+void JSONWhitespaceCheck(const char* aOutput) {
+  ASSERT_NE(aOutput, nullptr);
+
+  enum class State { Data, String, StringEscaped };
+  State state = State::Data;
+  size_t length = 0;
+  size_t whitespaces = 0;
+  for (const char* p = aOutput; *p != '\0'; ++p) {
+    ++length;
+    const char c = *p;
+
+    switch (state) {
+      case State::Data:
+        if (c == '\n' || c == '\r' || c == ' ' || c == '\t') {
+          ++whitespaces;
+        } else if (c == '"') {
+          state = State::String;
+        }
+        break;
+
+      case State::String:
+        if (c == '"') {
+          state = State::Data;
+        } else if (c == '\\') {
+          state = State::StringEscaped;
+        }
+        break;
+
+      case State::StringEscaped:
+        state = State::String;
+        break;
+    }
+  }
+
+  EXPECT_EQ(whitespaces, 0u);
+  EXPECT_GT(length, 0u);
+}
+
 // Does the GETTER return a non-null TYPE? (Non-critical)
 #  define EXPECT_HAS_JSON(GETTER, TYPE)              \
     do {                                             \
@@ -1378,6 +1418,9 @@ static void JSONRootCheck(const Json::Value& aRoot,
   GET_JSON(meta, aRoot["meta"], Object);
   EXPECT_HAS_JSON(meta["version"], UInt);
   EXPECT_HAS_JSON(meta["startTime"], Double);
+  EXPECT_HAS_JSON(meta["profilingStartTime"], Double);
+  EXPECT_HAS_JSON(meta["contentEarliestTime"], Double);
+  EXPECT_HAS_JSON(meta["profilingEndTime"], Double);
 
   EXPECT_HAS_JSON(aRoot["pages"], Array);
 
@@ -1502,6 +1545,22 @@ static void JSONRootCheck(const Json::Value& aRoot,
       JSONRootCheck(process, aWithMainThread);
     }
   }
+
+  GET_JSON(profilingLog, aRoot["profilingLog"], Object);
+  EXPECT_EQ(profilingLog.size(), 1u);
+  for (auto it = profilingLog.begin(); it != profilingLog.end(); ++it) {
+    // The key should be a pid.
+    const auto key = it.name();
+    for (const auto letter : key) {
+      EXPECT_GE(letter, '0');
+      EXPECT_LE(letter, '9');
+    }
+    // And the value should be an object.
+    GET_JSON(logForPid, profilingLog[key], Object);
+    // Its content is not defined, but we expect at least these:
+    EXPECT_HAS_JSON(logForPid["profilingLogBegin_TSms"], Double);
+    EXPECT_HAS_JSON(logForPid["profilingLogEnd_TSms"], Double);
+  }
 }
 
 // Check that various expected top properties are in the JSON, and then call the
@@ -1510,6 +1569,8 @@ template <typename JSONCheckFunction>
 void JSONOutputCheck(const char* aOutput,
                      JSONCheckFunction&& aJSONCheckFunction) {
   ASSERT_NE(aOutput, nullptr);
+
+  JSONWhitespaceCheck(aOutput);
 
   // Extract JSON.
   Json::Value parsedRoot;
@@ -3493,8 +3554,9 @@ TEST(GeckoProfiler, Counters)
   };
 
   int64_t testCounters[] = {10, 7, -17};
-  NumberAndCount expectedTestCounters[] = {{1u, 10}, {0u, 0},   {1u, 7},
-                                           {0u, 0},  {1u, -17}, {0u, 0}};
+  NumberAndCount expectedTestCounters[] = {{1u, 10}, {0u, 0}, {1u, 7},
+                                           {0u, 0},  {0u, 0}, {1u, -17},
+                                           {0u, 0},  {0u, 0}};
   constexpr size_t expectedTestCountersCount =
       MOZ_ARRAY_LENGTH(expectedTestCounters);
 

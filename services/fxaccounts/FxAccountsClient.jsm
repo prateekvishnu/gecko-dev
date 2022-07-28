@@ -4,7 +4,6 @@
 
 var EXPORTED_SYMBOLS = ["FxAccountsClient"];
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { CommonUtils } = ChromeUtils.import(
   "resource://services-common/utils.js"
 );
@@ -247,7 +246,11 @@ FxAccountsClient.prototype = {
       sessionTokenHex,
       "sessionToken"
     );
-    return this._request("/account/attached_clients", "GET", credentials);
+    return this._requestWithHeaders(
+      "/account/attached_clients",
+      "GET",
+      credentials
+    );
   },
 
   /**
@@ -754,7 +757,7 @@ FxAccountsClient.prototype = {
    *          "info": "https://docs.dev.lcip.og/errors/1234" // link to more info on the error
    *        }
    */
-  async _request(path, method, credentials, jsonPayload) {
+  async _requestWithHeaders(path, method, credentials, jsonPayload) {
     // We were asked to back off.
     if (this.backoffError) {
       log.debug("Received new request during backoff, re-rejecting.");
@@ -784,12 +787,22 @@ FxAccountsClient.prototype = {
       throw error;
     }
     try {
-      return JSON.parse(response.body);
+      return { body: JSON.parse(response.body), headers: response.headers };
     } catch (error) {
       log.error("json parse error on response: " + response.body);
       // eslint-disable-next-line no-throw-literal
       throw { error };
     }
+  },
+
+  async _request(path, method, credentials, jsonPayload) {
+    const response = await this._requestWithHeaders(
+      path,
+      method,
+      credentials,
+      jsonPayload
+    );
+    return response.body;
   },
 };
 

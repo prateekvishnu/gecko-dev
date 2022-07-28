@@ -55,12 +55,15 @@
 # the current structure that we may want to revisit.
             <arrowscrollbox id="tabbrowser-arrowscrollbox" orient="horizontal" flex="1" style="min-width: 1px;" clicktoscroll="true" scrolledtostart="true" scrolledtoend="true">
               <tab is="tabbrowser-tab" class="tabbrowser-tab" selected="true" visuallyselected="true" fadein="true"/>
-              <toolbarbutton id="tabs-newtab-button"
-                             class="toolbarbutton-1"
-                             command="cmd_newNavigatorTab"
-                             onclick="checkForMiddleClick(this, event);"
-                             tooltip="dynamic-shortcut-tooltip"/>
-              <spacer class="closing-tabs-spacer" style="width: 0;"/>
+              <hbox id="tabbrowser-arrowscrollbox-periphery">
+                <toolbartabstop/>
+                <toolbarbutton id="tabs-newtab-button"
+                               class="toolbarbutton-1"
+                               command="cmd_newNavigatorTab"
+                               onclick="checkForMiddleClick(this, event);"
+                               tooltip="dynamic-shortcut-tooltip"/>
+                <spacer class="closing-tabs-spacer" style="width: 0;"/>
+              </hbox>
             </arrowscrollbox>
             <html:span id="tabbrowser-tab-a11y-desc" hidden="true"/>
           </tabs>
@@ -91,6 +94,10 @@
       <button class="accessibility-indicator" data-l10n-id="navbar-accessibility-indicator"
               aria-live="polite"/>
       <hbox class="private-browsing-indicator"/>
+      <hbox id="private-browsing-indicator-with-label">
+        <image class="private-browsing-indicator-icon"/>
+        <label data-l10n-id="private-browsing-indicator-label"></label>
+      </hbox>
 
 #include titlebar-items.inc.xhtml
 
@@ -418,6 +425,16 @@
                      </vbox>
       </toolbarbutton>
     </hbox>
+
+    <toolbaritem id="unified-extensions" removable="false">
+      <toolbarbutton id="unified-extensions-button"
+                     class="toolbarbutton-1"
+                     data-l10n-id="unified-extensions-button"
+                     hidden="true"
+                     onkeypress="gUnifiedExtensions.togglePanel(event)"
+                     onmousedown="gUnifiedExtensions.togglePanel(event)"
+                     removable="false" />
+    </toolbaritem>
 
     <toolbarbutton id="nav-bar-overflow-button"
                    class="toolbarbutton-1 chromeclass-toolbar-additional overflow-button"

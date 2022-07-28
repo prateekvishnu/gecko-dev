@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -189,6 +189,7 @@
 #include "nsIScriptError.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsJSEnvironment.h"
+#include "nsJSUtils.h"
 #include "nsMemoryInfoDumper.h"
 #include "nsPluginHost.h"
 #include "nsServiceManagerUtils.h"
@@ -225,7 +226,6 @@
 #  include <process.h>
 #  define getpid _getpid
 #  include "mozilla/WinDllServices.h"
-#  include "mozilla/widget/WinContentSystemParameters.h"
 #endif
 
 #if defined(XP_MACOSX)
@@ -676,12 +676,9 @@ mozilla::ipc::IPCResult ContentChild::RecvSetXPCOMProcessAttributes(
   mLookAndFeelData = std::move(aLookAndFeelData);
   mFontList = std::move(aFontList);
   mSharedFontListBlocks = std::move(aSharedFontListBlocks);
-#ifdef XP_WIN
-  widget::WinContentSystemParameters::GetSingleton()->SetContentValues(
-      aXPCOMInit.systemParameters());
-#endif
 
   gfx::gfxVars::SetValuesForInitialize(aXPCOMInit.gfxNonDefaultVarUpdates());
+  PerfStats::SetCollectionMask(aXPCOMInit.perfStatsMask());
   InitSharedUASheets(std::move(aSharedUASheetHandle), aSharedUASheetAddress);
   InitXPCOM(std::move(aXPCOMInit), aInitialData,
             aIsReadyForBackgroundProcessing);
@@ -1409,6 +1406,11 @@ void ContentChild::InitXPCOM(
   // Initialize the RemoteDecoderManager thread and its associated PBackground
   // channel.
   RemoteDecoderManagerChild::Init();
+
+  Preferences::RegisterCallbackAndCall(&OnFissionBlocklistPrefChange,
+                                       kFissionEnforceBlockList);
+  Preferences::RegisterCallbackAndCall(&OnFissionBlocklistPrefChange,
+                                       kFissionOmitBlockListValues);
 
   // Set the dynamic scalar definitions for this process.
   TelemetryIPC::AddDynamicScalarDefinitions(aXPCOMInit.dynamicScalarDefs());
@@ -2315,16 +2317,6 @@ mozilla::ipc::IPCResult ContentChild::RecvThemeChanged(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult ContentChild::RecvUpdateSystemParameters(
-    nsTArray<SystemParameterKVPair>&& aUpdates) {
-#ifdef XP_WIN
-  widget::WinContentSystemParameters::GetSingleton()->SetContentValues(
-      aUpdates);
-#endif
-
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult ContentChild::RecvLoadProcessScript(
     const nsString& aURL) {
   auto* global = ContentProcessMessageManager::Get();
@@ -2467,6 +2459,11 @@ mozilla::ipc::IPCResult ContentChild::RecvUpdateAppLocales(
 mozilla::ipc::IPCResult ContentChild::RecvUpdateRequestedLocales(
     nsTArray<nsCString>&& aRequestedLocales) {
   LocaleService::GetInstance()->AssignRequestedLocales(aRequestedLocales);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult ContentChild::RecvSystemTimezoneChanged() {
+  nsJSUtils::ResetTimeZone();
   return IPC_OK();
 }
 
@@ -3032,6 +3029,13 @@ void ContentChild::ShutdownInternal() {
         CrashReporter::Annotation::ProfilerChildShutdownPhase,
         isProfiling ? "Profiling - SendShutdownProfile (sending)"_ns
                     : "Not profiling - SendShutdownProfile (sending)"_ns);
+    if (const size_t len = shutdownProfile.Length();
+        len >= size_t(IPC::Channel::kMaximumMessageSize)) {
+      shutdownProfile = nsPrintfCString(
+          "*Profile from pid %u bigger (%zu) than IPC max (%zu)",
+          unsigned(profiler_current_process_id().ToNumber()), len,
+          size_t(IPC::Channel::kMaximumMessageSize));
+    }
     // Send the shutdown profile to the parent process through our own
     // message channel, which we know will survive for long enough.
     bool sent = SendShutdownProfile(shutdownProfile);
@@ -3042,6 +3046,10 @@ void ContentChild::ShutdownInternal() {
              : (isProfiling
                     ? "Profiling - SendShutdownProfile (failed)"_ns
                     : "Not profiling - SendShutdownProfile (failed)"_ns));
+  }
+
+  if (PerfStats::GetCollectionMask() != 0) {
+    SendShutdownPerfStats(PerfStats::CollectLocalPerfStatsJSON());
   }
 
   // Start a timer that will insure we quickly exit after a reasonable
@@ -3263,8 +3271,7 @@ void ContentChild::CreateGetFilesRequest(const nsAString& aDirectoryPath,
   MOZ_ASSERT(aChild);
   MOZ_ASSERT(!mGetFilesPendingRequests.Contains(aUUID));
 
-  Unused << SendGetFilesRequest(aUUID, nsString(aDirectoryPath),
-                                aRecursiveFlag);
+  Unused << SendGetFilesRequest(aUUID, aDirectoryPath, aRecursiveFlag);
   mGetFilesPendingRequests.InsertOrUpdate(aUUID, RefPtr{aChild});
 }
 
@@ -4365,12 +4372,16 @@ mozilla::ipc::IPCResult ContentChild::RecvGetLayoutHistoryState(
     GetLayoutHistoryStateResolver&& aResolver) {
   nsCOMPtr<nsILayoutHistoryState> state;
   nsIDocShell* docShell;
+  mozilla::Maybe<mozilla::dom::Wireframe> wireframe;
   if (!aContext.IsNullOrDiscarded() &&
       (docShell = aContext.get()->GetDocShell())) {
     docShell->PersistLayoutHistoryState();
     docShell->GetLayoutHistoryState(getter_AddRefs(state));
+    wireframe = static_cast<nsDocShell*>(docShell)->GetWireframe();
   }
-  aResolver(state);
+  aResolver(Tuple<nsILayoutHistoryState*, const mozilla::Maybe<Wireframe>&>(
+      state, wireframe));
+
   return IPC_OK();
 }
 
@@ -4621,8 +4632,7 @@ IPCResult ContentChild::RecvFlushFOGData(FlushFOGDataResolver&& aResolver) {
 }
 
 IPCResult ContentChild::RecvUpdateMediaCodecsSupported(
-    RemoteDecodeIn aLocation,
-    const PDMFactory::MediaCodecsSupported& aSupported) {
+    RemoteDecodeIn aLocation, const media::MediaCodecsSupported& aSupported) {
   RemoteDecoderManagerChild::SetSupported(aLocation, aSupported);
 
   return IPC_OK();

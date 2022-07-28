@@ -35,7 +35,6 @@
 #include "gc/GC.h"                         // for MemoryUse
 #include "gc/GCContext.h"                  // for JS::GCContext
 #include "gc/Marking.h"                    // for IsAboutToBeFinalized
-#include "gc/Rooting.h"                    // for RootedValue
 #include "gc/Tracer.h"                     // for TraceCrossCompartmentEdge
 #include "gc/ZoneAllocator.h"              // for AddCellMemory
 #include "jit/JSJitFrameIter.h"            // for InlineFrameIterator
@@ -54,6 +53,7 @@
 #include "vm/BytecodeUtil.h"               // for JSDVG_SEARCH_STACK
 #include "vm/Compartment.h"                // for Compartment
 #include "vm/EnvironmentObject.h"          // for IsGlobalLexicalEnvironment
+#include "vm/ErrorContext.h"               // for MainThreadErrorContext
 #include "vm/GeneratorObject.h"            // for AbstractGeneratorObject
 #include "vm/GlobalObject.h"               // for GlobalObject
 #include "vm/Interpreter.h"                // for Call, ExecuteKernel
@@ -233,7 +233,7 @@ NativeObject* DebuggerFrame::initClass(JSContext* cx,
 
 /* static */
 DebuggerFrame* DebuggerFrame::create(
-    JSContext* cx, HandleObject proto, HandleNativeObject debugger,
+    JSContext* cx, HandleObject proto, Handle<NativeObject*> debugger,
     const FrameIter* maybeIter,
     Handle<AbstractGeneratorObject*> maybeGenerator) {
   Rooted<DebuggerFrame*> frame(
@@ -975,8 +975,8 @@ static bool EvaluateInEnv(JSContext* cx, Handle<Env*> env,
 
   if (frame) {
     MOZ_ASSERT(scopeKind == ScopeKind::NonSyntactic);
-    RootedScope scope(cx,
-                      GlobalScope::createEmpty(cx, ScopeKind::NonSyntactic));
+    Rooted<Scope*> scope(cx,
+                         GlobalScope::createEmpty(cx, ScopeKind::NonSyntactic));
     if (!scope) {
       return false;
     }
@@ -995,7 +995,8 @@ static bool EvaluateInEnv(JSContext* cx, Handle<Env*> env,
     MOZ_ASSERT(scopeKind == ScopeKind::Global ||
                scopeKind == ScopeKind::NonSyntactic);
 
-    script = frontend::CompileGlobalScript(cx, options, srcBuf, scopeKind);
+    MainThreadErrorContext ec(cx);
+    script = frontend::CompileGlobalScript(cx, &ec, options, srcBuf, scopeKind);
     if (!script) {
       return false;
     }
@@ -1049,7 +1050,7 @@ Result<Completion> js::DebuggerGenericEval(
 
   // If evalWithBindings, create the inner environment.
   if (bindings) {
-    RootedPlainObject nenv(cx, NewPlainObjectWithProto(cx, nullptr));
+    Rooted<PlainObject*> nenv(cx, NewPlainObjectWithProto(cx, nullptr));
     if (!nenv) {
       return cx->alreadyReportedError();
     }
@@ -1528,7 +1529,8 @@ bool DebuggerFrame::getOlderSavedFrame(JSContext* cx,
       if (iter.activation() != &activation && activation.asyncStack() &&
           (activation.asyncCallIsExplicit() || iter.done())) {
         const char* cause = activation.asyncCause();
-        RootedAtom causeAtom(cx, AtomizeUTF8Chars(cx, cause, strlen(cause)));
+        Rooted<JSAtom*> causeAtom(cx,
+                                  AtomizeUTF8Chars(cx, cause, strlen(cause)));
         if (!causeAtom) {
           return false;
         }
@@ -1713,7 +1715,8 @@ bool DebuggerFrame::CallData::getScript() {
     AbstractFramePtr framePtr = iter.abstractFramePtr();
 
     if (framePtr.isWasmDebugFrame()) {
-      RootedWasmInstanceObject instance(cx, framePtr.wasmInstance()->object());
+      Rooted<WasmInstanceObject*> instance(cx,
+                                           framePtr.wasmInstance()->object());
       scriptObject = debug->wrapWasmScript(cx, instance);
     } else {
       RootedScript script(cx, framePtr.script());

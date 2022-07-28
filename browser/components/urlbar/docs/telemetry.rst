@@ -65,6 +65,27 @@ urlbar.engagement
   example by picking a result in the urlbar panel or typing a search term or URL
   in the urlbar and pressing the enter key.
 
+urlbar.impression.*
+  A uint recording the number of impression that was displaying when user picks
+  any result.
+
+  - ``autofill_about``
+    For about-page type autofill.
+  - ``autofill_adaptive``
+    For adaptive history type autofill.
+  - ``autofill_origin``
+    For origin type autofill.
+  - ``autofill_other``
+    Counts how many times some other type of autofill result that does not have
+    a specific scalar was shown. This is a fallback that is used when the code is
+    not properly setting a specific autofill type, and it should not normally be
+    used. If it appears in the data, it means we need to investigate and fix the
+    code that is not properly setting a specific autofill type.
+  - ``autofill_preloaded``
+    For preloaded site type autofill.
+  - ``autofill_url``
+    For url type autofill.
+
 urlbar.tips
   This is a keyed scalar whose values are uints and are incremented each time a
   tip result is shown, a tip is picked, and a tip's help button is picked. The
@@ -204,23 +225,60 @@ urlbar.picked.*
 
   .. note::
     Available from Firefox 84 on. Use the *FX_URLBAR_SELECTED_** histograms in
-    earlier versions. See the `Obsolete probes`_ section below.
+    earlier versions.
 
   .. note::
-    Firefox 102 added ``autofill_adaptive``, ``autofill_origin`` and
-    ``autofill_url`` and deprecated ``autofill``.
+    Firefox 102 deprecated ``autofill`` and added ``autofill_about``,
+    ``autofill_adaptive``, ``autofill_origin``, ``autofill_other``,
+    ``autofill_preloaded``, and ``autofill_url``.
 
   Valid result types are:
 
   - ``autofill``
-    An origin or a URL completed the user typed text inline. This was deprecated
-    in Firefox 102.
+    This scalar was deprecated in Firefox 102 and replaced with
+    ``autofill_about``, ``autofill_adaptive``, ``autofill_origin``,
+    ``autofill_other``, ``autofill_preloaded``, and ``autofill_url``. Previously
+    it was recorded in each of the cases that the other scalars now cover.
+  - ``autofill_about``
+    An autofilled "about:" page URI (e.g., about:config). The user must first
+    type "about:" to trigger this type of autofill.
   - ``autofill_adaptive``
-    An adaptive history completed the user typed text inline.
+    An autofilled URL from the user's adaptive history. This type of autofill
+    differs from ``autofill_url`` in two ways: (1) It's based on the user's
+    adaptive history, a particular type of history that associates the user's
+    search string with the URL they pick in the address bar. (2) It autofills
+    full URLs instead of "up to the next slash" partial URLs. For more
+    information on this type of autofill, see this `adaptive history autofill
+    document`_.
   - ``autofill_origin``
-    An origin completed the user typed text inline.
+    An autofilled origin_ from the user's history. Typically "origin" means a
+    domain or host name like "mozilla.org". Technically it can also include a
+    URL scheme or protocol like "https" and a port number like ":8000". Firefox
+    can autofill domain names by themselves, domain names with schemes, domain
+    names with ports, and domain names with schemes and ports. All of these
+    cases count as origin autofill. For more information, see this `adaptive
+    history autofill document`_.
+  - ``autofill_other``
+    Counts how many times some other type of autofill result that does not have
+    a specific keyed scalar was picked at a given index. This is a fallback that
+    is used when the code is not properly setting a specific autofill type, and
+    it should not normally be used. If it appears in the data, it means we need
+    to investigate and fix the code that is not properly setting a specific
+    autofill type.
+  - ``autofill_preloaded``
+    An autofilled `preloaded site`_. The preloaded-sites feature (as it relates
+    to this telemetry scalar) has never been enabled in Firefox, so this scalar
+    should never be recorded. It can be enabled by flipping a hidden preference,
+    however. It's included here for consistency and correctness.
   - ``autofill_url``
-    A URL completed the user typed text inline.
+    An autofilled URL or partial URL from the user's history. Firefox autofills
+    URLs "up to the next slash", so to trigger URL autofill, the user must first
+    type a domain name (or trigger origin autofill) and then begin typing the
+    rest of the URL (technically speaking, its path). As they continue typing,
+    the URL will only be partially autofilled up to the next slash, or if there
+    is no next slash, to the end of the URL. This allows the user to easily
+    visit different subpaths of a domain. For more information, see this
+    `adaptive history autofill document`_.
   - ``bookmark``
     A bookmarked URL.
   - ``dynamic``
@@ -255,6 +313,10 @@ urlbar.picked.*
     An unknown result type, a bug should be filed to figure out what it is.
   - ``visiturl``
     The user typed string can be directly visited.
+
+  .. _adaptive history autofill document: https://docs.google.com/document/d/e/2PACX-1vRBLr_2dxus-aYhZRUkW9Q3B1K0uC-a0qQyE3kQDTU3pcNpDHb36-Pfo9fbETk89e7Jz4nkrqwRhi4j/pub
+  .. _origin: https://html.spec.whatwg.org/multipage/origin.html#origin
+  .. _preloaded site: https://searchfox.org/mozilla-central/source/browser/components/urlbar/UrlbarProviderPreloadedSites.jsm
 
 urlbar.picked.searchmode.*
   This is a set of keyed scalars whose values are uints incremented each time a
@@ -481,48 +543,5 @@ Telemetry Environment
 Firefox Suggest
   Telemetry specific to Firefox Suggest is described in the
   :doc:`firefox-suggest-telemetry` document.
-
-Obsolete probes
----------------
-
-Obsolete histograms
-~~~~~~~~~~~~~~~~~~~
-
-FX_URLBAR_SELECTED_RESULT_INDEX (OBSOLETE)
-  This probe tracked the indexes of picked results in the results list.
-  It was an enumerated histogram with 17 groups.
-
-FX_URLBAR_SELECTED_RESULT_TYPE and FX_URLBAR_SELECTED_RESULT_TYPE_2 (from Firefox 78 on) (OBSOLETE)
-  This probe tracked the types of picked results.
-  It was an enumerated histogram with the following groups:
-
-    0. autofill
-    1. bookmark
-    2. history
-    3. keyword
-    4. searchengine
-    5. searchsuggestion
-    6. switchtab
-    7. tag
-    8. visiturl
-    9. remotetab
-    10. extension
-    11. preloaded-top-site
-    12. tip
-    13. topsite
-    14. formhistory
-    15. dynamic
-    16. tabtosearch
-    17. quicksuggest
-    18. autofill_adaptive
-    19. autofill_origin
-    20. autofill_url
-
-FX_URLBAR_SELECTED_RESULT_INDEX_BY_TYPE and FX_URLBAR_SELECTED_RESULT_INDEX_BY_TYPE_2 (from Firefox 78 on) (OBSOLETE)
-  This probe tracked picked result type, for each one it tracked the index where
-  it appeared.
-  It was a keyed histogram where the keys were result types (see
-  FX_URLBAR_SELECTED_RESULT_TYPE above). For each key, this recorded the indexes
-  of picked results for that result type.
 
 .. _search telemetry: /browser/search/telemetry.html

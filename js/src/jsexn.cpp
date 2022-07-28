@@ -25,7 +25,6 @@
 #include "jsfriendapi.h"
 #include "jstypes.h"
 
-#include "gc/Rooting.h"
 #include "js/CharacterEncoding.h"
 #include "js/Class.h"
 #include "js/Conversions.h"
@@ -44,6 +43,7 @@
 #include "util/Memory.h"
 #include "util/StringBuffer.h"
 #include "vm/Compartment.h"
+#include "vm/ErrorContext.h"
 #include "vm/ErrorObject.h"
 #include "vm/FrameIter.h"  // js::NonBuiltinFrameIter
 #include "vm/JSAtom.h"
@@ -399,7 +399,7 @@ static bool IsDuckTypedErrorObject(JSContext* cx, HandleObject exnObject,
 
 static bool GetPropertyNoException(JSContext* cx, HandleObject obj,
                                    SniffingBehavior behavior,
-                                   HandlePropertyName name,
+                                   Handle<PropertyName*> name,
                                    MutableHandleValue vp) {
   // This function has no side-effects so always use it.
   if (GetPropertyPure(cx, obj, NameToId(name), vp.address())) {
@@ -685,7 +685,8 @@ bool JS::ErrorReportBuilder::populateUncaughtExceptionReportUTF8VA(
     }
   }
 
-  if (!ExpandErrorArgumentsVA(cx, GetErrorMessage, nullptr,
+  MainThreadErrorContext ec(cx);
+  if (!ExpandErrorArgumentsVA(&ec, GetErrorMessage, nullptr,
                               JSMSG_UNCAUGHT_EXCEPTION, ArgumentsAreUTF8,
                               &ownedReport, ap)) {
     return false;

@@ -305,11 +305,11 @@ void LIRGenerator::visitCreateInlinedArgumentsObject(
 }
 
 void LIRGenerator::visitGetInlinedArgument(MGetInlinedArgument* ins) {
-#if defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_MIPS64)
-  // On some 64-bit architectures, we don't support boxing a typed
-  // register in-place without using a scratch register, so the result
-  // register can't be the same as any of the inputs. Fortunately,
-  // those architectures have registers to spare.
+#if defined(JS_PUNBOX64)
+  // On 64-bit architectures, we don't support boxing a typed register
+  // in-place without using a scratch register, so the result register
+  // can't be the same as any of the inputs. Fortunately, those
+  // architectures have registers to spare.
   const bool useAtStart = false;
 #else
   const bool useAtStart = true;
@@ -901,12 +901,13 @@ void LIRGenerator::visitTest(MTest* test) {
       return;
     }
 
-    // Compare and branch Int32, Symbol or Object pointers.
+    // Compare and branch Int32, Symbol, Object, or RefOrNull pointers.
     if (comp->isInt32Comparison() ||
         comp->compareType() == MCompare::Compare_UInt32 ||
         comp->compareType() == MCompare::Compare_UIntPtr ||
         comp->compareType() == MCompare::Compare_Object ||
-        comp->compareType() == MCompare::Compare_Symbol) {
+        comp->compareType() == MCompare::Compare_Symbol ||
+        comp->compareType() == MCompare::Compare_RefOrNull) {
       JSOp op = ReorderComparison(comp->jsop(), &left, &right);
       LAllocation lhs = useRegister(left);
       LAllocation rhs;

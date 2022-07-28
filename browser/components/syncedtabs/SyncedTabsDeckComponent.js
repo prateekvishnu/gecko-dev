@@ -4,10 +4,9 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const { SyncedTabsDeckStore } = ChromeUtils.import(
   "resource:///modules/syncedtabs/SyncedTabsDeckStore.js"
@@ -28,12 +27,6 @@ let { getChromeWindow } = ChromeUtils.import(
   "resource:///modules/syncedtabs/util.js"
 );
 const { UIState } = ChromeUtils.import("resource://services-sync/UIState.jsm");
-
-const lazy = {};
-
-XPCOMUtils.defineLazyGetter(lazy, "FxAccountsCommon", function() {
-  return ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
-});
 
 let log = ChromeUtils.import(
   "resource://gre/modules/Log.jsm"

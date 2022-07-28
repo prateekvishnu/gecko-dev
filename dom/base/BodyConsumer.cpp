@@ -276,6 +276,7 @@ NS_IMPL_ISUPPORTS(ConsumeBodyDoneObserver, nsIStreamLoaderObserver)
     nsIInputStream* aBodyStream, AbortSignalImpl* aSignalImpl,
     ConsumeType aType, const nsACString& aBodyBlobURISpec,
     const nsAString& aBodyLocalPath, const nsACString& aBodyMimeType,
+    const nsACString& aMixedCaseMimeType,
     MutableBlobStorage::MutableBlobStorageType aBlobStorageType,
     ErrorResult& aRv) {
   MOZ_ASSERT(aBodyStream);
@@ -286,9 +287,10 @@ NS_IMPL_ISUPPORTS(ConsumeBodyDoneObserver, nsIStreamLoaderObserver)
     return nullptr;
   }
 
-  RefPtr<BodyConsumer> consumer = new BodyConsumer(
-      aMainThreadEventTarget, aGlobal, aBodyStream, promise, aType,
-      aBodyBlobURISpec, aBodyLocalPath, aBodyMimeType, aBlobStorageType);
+  RefPtr<BodyConsumer> consumer =
+      new BodyConsumer(aMainThreadEventTarget, aGlobal, aBodyStream, promise,
+                       aType, aBodyBlobURISpec, aBodyLocalPath, aBodyMimeType,
+                       aMixedCaseMimeType, aBlobStorageType);
 
   RefPtr<ThreadSafeWorkerRef> workerRef;
 
@@ -360,13 +362,14 @@ BodyConsumer::BodyConsumer(
     nsIEventTarget* aMainThreadEventTarget, nsIGlobalObject* aGlobalObject,
     nsIInputStream* aBodyStream, Promise* aPromise, ConsumeType aType,
     const nsACString& aBodyBlobURISpec, const nsAString& aBodyLocalPath,
-    const nsACString& aBodyMimeType,
+    const nsACString& aBodyMimeType, const nsACString& aMixedCaseMimeType,
     MutableBlobStorage::MutableBlobStorageType aBlobStorageType)
     : mTargetThread(NS_GetCurrentThread()),
       mMainThreadEventTarget(aMainThreadEventTarget),
       mBodyStream(aBodyStream),
       mBlobStorageType(aBlobStorageType),
       mBodyMimeType(aBodyMimeType),
+      mMixedCaseMimeType(aMixedCaseMimeType),
       mBodyBlobURISpec(aBodyBlobURISpec),
       mBodyLocalPath(aBodyLocalPath),
       mGlobal(aGlobalObject),
@@ -669,6 +672,8 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
     // Decoding errors should reject with a TypeError
     if (aStatus == NS_ERROR_INVALID_CONTENT_ENCODING) {
       localPromise->MaybeRejectWithTypeError<MSG_DOM_DECODING_FAILED>();
+    } else if (aStatus == NS_ERROR_DOM_WRONG_TYPE_ERR) {
+      localPromise->MaybeRejectWithTypeError<MSG_FETCH_BODY_WRONG_TYPE>();
     } else {
       localPromise->MaybeReject(NS_ERROR_DOM_ABORT_ERR);
     }
@@ -716,8 +721,8 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
       data.Adopt(reinterpret_cast<char*>(aResult), aResultLength);
       aResult = nullptr;
 
-      RefPtr<dom::FormData> fd =
-          BodyUtil::ConsumeFormData(mGlobal, mBodyMimeType, data, error);
+      RefPtr<dom::FormData> fd = BodyUtil::ConsumeFormData(
+          mGlobal, mBodyMimeType, mMixedCaseMimeType, data, error);
       if (!error.Failed()) {
         localPromise->MaybeResolve(fd);
       }

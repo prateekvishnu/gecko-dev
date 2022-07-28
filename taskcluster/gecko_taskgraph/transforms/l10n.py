@@ -10,7 +10,14 @@ import copy
 import json
 
 from mozbuild.chunkify import chunkify
+from taskgraph.transforms.base import TransformSequence
+from taskgraph.util.schema import (
+    optionally_keyed_by,
+    resolve_keyed_by,
+    taskref_or_string,
+)
 from taskgraph.util.taskcluster import get_artifact_prefix
+from taskgraph.util.treeherder import add_suffix
 from voluptuous import (
     Any,
     Optional,
@@ -18,19 +25,12 @@ from voluptuous import (
 )
 
 from gecko_taskgraph.loader.multi_dep import schema
-from gecko_taskgraph.transforms.base import TransformSequence
-from gecko_taskgraph.util.schema import (
-    optionally_keyed_by,
-    resolve_keyed_by,
-    taskref_or_string,
-)
+from gecko_taskgraph.transforms.job import job_description_schema
+from gecko_taskgraph.transforms.task import task_description_schema
 from gecko_taskgraph.util.attributes import (
     copy_attributes_from_dependent_job,
     task_name,
 )
-from gecko_taskgraph.util.treeherder import add_suffix
-from gecko_taskgraph.transforms.job import job_description_schema
-from gecko_taskgraph.transforms.task import task_description_schema
 
 
 def _by_platform(arg):

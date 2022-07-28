@@ -2756,6 +2756,9 @@ MDefinition* MPow::foldsConstantPower(TempAllocator& alloc) {
 
   MOZ_ASSERT(type() == MIRType::Double || type() == MIRType::Int32);
 
+  // NOTE: The optimizations must match the optimizations used in |js::ecmaPow|
+  // resp. |js::powi| to avoid differential testing issues.
+
   double pow = power()->toConstant()->numberToDouble();
 
   // Math.pow(x, 0.5) is a sqrt with edge-case detection.
@@ -5001,7 +5004,6 @@ MDefinition* MWasmTernarySimd128::foldsTo(TempAllocator& alloc) {
   return this;
 }
 
-#  ifdef ENABLE_WASM_SIMD_WORMHOLE
 inline static bool MatchSpecificShift(MDefinition* instr,
                                       wasm::SimdOp simdShiftOp,
                                       int shiftValue) {
@@ -5100,7 +5102,6 @@ static bool MatchPmaddubswSequence(MWasmBinarySimd128* lhs,
   *b = maybeB;
   return true;
 }
-#  endif  // ENABLE_WASM_SIMD_WORMHOLE
 
 MDefinition* MWasmBinarySimd128::foldsTo(TempAllocator& alloc) {
   if (simdOp() == wasm::SimdOp::I8x16Swizzle && rhs()->isWasmFloatConstant()) {
@@ -5149,19 +5150,18 @@ MDefinition* MWasmBinarySimd128::foldsTo(TempAllocator& alloc) {
     }
   }
 
-#  ifdef ENABLE_WASM_SIMD_WORMHOLE
-  if (simdOp() == wasm::SimdOp::I16x8AddSatS && lhs()->isWasmBinarySimd128() &&
-      rhs()->isWasmBinarySimd128() &&
+  // Check special encoding for PMADDUBSW.
+  if (canPmaddubsw() && simdOp() == wasm::SimdOp::I16x8AddSatS &&
+      lhs()->isWasmBinarySimd128() && rhs()->isWasmBinarySimd128() &&
       lhs()->toWasmBinarySimd128()->simdOp() == wasm::SimdOp::I16x8Mul &&
       rhs()->toWasmBinarySimd128()->simdOp() == wasm::SimdOp::I16x8Mul) {
     MDefinition *a, *b;
     if (MatchPmaddubswSequence(lhs()->toWasmBinarySimd128(),
                                rhs()->toWasmBinarySimd128(), &a, &b)) {
       return MWasmBinarySimd128::New(alloc, a, b, /* commutative = */ false,
-                                     wasm::SimdOp::MozWHPMADDUBSW);
+                                     wasm::SimdOp::MozPMADDUBSW);
     }
   }
-#  endif  // ENABLE_WASM_SIMD_WORMHOLE
 
   return this;
 }

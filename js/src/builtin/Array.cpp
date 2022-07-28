@@ -586,7 +586,7 @@ static bool DeletePropertiesOrThrow(JSContext* cx, HandleObject obj,
   return true;
 }
 
-static bool SetArrayLengthProperty(JSContext* cx, HandleArrayObject obj,
+static bool SetArrayLengthProperty(JSContext* cx, Handle<ArrayObject*> obj,
                                    HandleValue value) {
   RootedId id(cx, NameToId(cx->names().length));
   ObjectOpResult result;
@@ -633,7 +633,7 @@ bool js::ArrayLengthSetter(JSContext* cx, HandleObject obj, HandleId id,
                            HandleValue v, ObjectOpResult& result) {
   MOZ_ASSERT(id == NameToId(cx->names().length));
 
-  HandleArrayObject arr = obj.as<ArrayObject>();
+  Handle<ArrayObject*> arr = obj.as<ArrayObject>();
   MOZ_ASSERT(arr->lengthIsWritable(),
              "setter shouldn't be called if property is non-writable");
 
@@ -934,7 +934,7 @@ static bool array_addProperty(JSContext* cx, HandleObject obj, HandleId id,
   return true;
 }
 
-static Shape* AddLengthProperty(JSContext* cx, HandleShape shape) {
+static Shape* AddLengthProperty(JSContext* cx, Handle<Shape*> shape) {
   // Add the 'length' property for a newly created array shape.
 
   MOZ_ASSERT(shape->propMapLength() == 0);
@@ -1129,6 +1129,7 @@ static bool array_toSource(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "toSource");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   if (!args.thisv().isObject()) {
@@ -1149,7 +1150,7 @@ static bool array_toSource(JSContext* cx, unsigned argc, Value* vp) {
 
 template <typename SeparatorOp>
 static bool ArrayJoinDenseKernel(JSContext* cx, SeparatorOp sepOp,
-                                 HandleNativeObject obj, uint64_t length,
+                                 Handle<NativeObject*> obj, uint64_t length,
                                  StringBuffer& sb, uint32_t* numProcessed) {
   // This loop handles all elements up to initializedLength. If
   // length > initLength we rely on the second loop to add the
@@ -1261,9 +1262,7 @@ bool js::array_join(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.join", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "join");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -1289,7 +1288,7 @@ bool js::array_join(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   // Steps 3-4.
-  RootedLinearString sepstr(cx);
+  Rooted<JSLinearString*> sepstr(cx);
   if (args.hasDefined(0)) {
     JSString* s = ToString<CanGC>(cx, args[0]);
     if (!s) {
@@ -1370,7 +1369,7 @@ bool js::array_join(JSContext* cx, unsigned argc, Value* vp) {
       }
     }
   } else {
-    HandleLinearString sepHandle = sepstr;
+    Handle<JSLinearString*> sepHandle = sepstr;
     auto sepOp = [sepHandle](StringBuffer& sb) { return sb.append(sepHandle); };
     if (!ArrayJoinKernel(cx, sepOp, obj, length, sb)) {
       return false;
@@ -1396,6 +1395,9 @@ static bool array_toLocaleString(JSContext* cx, unsigned argc, Value* vp) {
   if (!recursion.check(cx)) {
     return false;
   }
+
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype",
+                                        "toLocaleString");
 
   CallArgs args = CallArgsFromVp(argc, vp);
 
@@ -1471,7 +1473,7 @@ static bool SetArrayElements(JSContext* cx, HandleObject obj, uint64_t start,
 }
 
 static DenseElementResult ArrayReverseDenseKernel(JSContext* cx,
-                                                  HandleNativeObject obj,
+                                                  Handle<NativeObject*> obj,
                                                   uint32_t length) {
   MOZ_ASSERT(length > 1);
 
@@ -1510,7 +1512,7 @@ static DenseElementResult ArrayReverseDenseKernel(JSContext* cx,
     return DenseElementResult::Success;
   }
 
-  auto setElementMaybeHole = [](JSContext* cx, HandleNativeObject obj,
+  auto setElementMaybeHole = [](JSContext* cx, Handle<NativeObject*> obj,
                                 uint32_t index, const Value& val) {
     if (MOZ_LIKELY(!val.isMagic(JS_ELEMENTS_HOLE))) {
       obj->setDenseElement(index, val);
@@ -1541,9 +1543,7 @@ static DenseElementResult ArrayReverseDenseKernel(JSContext* cx,
 // ES2017 draft rev 1b0184bc17fc09a8ddcf4aeec9b6d9fcac4eafce
 // 22.1.3.21 Array.prototype.reverse ( )
 static bool array_reverse(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.reverse", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "reverse");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -2044,6 +2044,9 @@ static bool FillWithUndefined(JSContext* cx, HandleObject obj, uint32_t start,
   return true;
 }
 
+static bool ArrayNativeSortImpl(JSContext* cx, Handle<JSObject*> obj,
+                                Handle<Value> fval, ComparatorMatchResult comp);
+
 bool js::intrinsic_ArrayNativeSort(JSContext* cx, unsigned argc, Value* vp) {
   // This function is called from the self-hosted Array.prototype.sort
   // implementation. It returns |true| if the array was sorted, otherwise it
@@ -2071,15 +2074,29 @@ bool js::intrinsic_ArrayNativeSort(JSContext* cx, unsigned argc, Value* vp) {
     comp = Match_None;
   }
 
-  RootedObject obj(cx, &args.thisv().toObject());
+  Rooted<JSObject*> obj(cx, &args.thisv().toObject());
 
+  if (!ArrayNativeSortImpl(cx, obj, fval, comp)) {
+    return false;
+  }
+
+  args.rval().setBoolean(true);
+  return true;
+}
+
+bool js::ArrayNativeSort(JSContext* cx, Handle<JSObject*> obj) {
+  return ArrayNativeSortImpl(cx, obj, UndefinedHandleValue, Match_None);
+}
+
+static bool ArrayNativeSortImpl(JSContext* cx, Handle<JSObject*> obj,
+                                Handle<Value> fval,
+                                ComparatorMatchResult comp) {
   uint64_t length;
   if (!GetLengthPropertyInlined(cx, obj, &length)) {
     return false;
   }
   if (length < 2) {
     /* [] and [a] remain unchanged when sorted. */
-    args.rval().setBoolean(true);
     return true;
   }
 
@@ -2122,7 +2139,7 @@ bool js::intrinsic_ArrayNativeSort(JSContext* cx, unsigned argc, Value* vp) {
     bool allInts = true;
     RootedValue v(cx);
     if (IsPackedArray(obj)) {
-      HandleArrayObject array = obj.as<ArrayObject>();
+      Handle<ArrayObject*> array = obj.as<ArrayObject>();
 
       for (uint32_t i = 0; i < len; i++) {
         if (!CheckForInterrupt(cx)) {
@@ -2168,7 +2185,6 @@ bool js::intrinsic_ArrayNativeSort(JSContext* cx, unsigned argc, Value* vp) {
      */
     n = vec.length();
     if (n == 0 && undefs == 0) {
-      args.rval().setBoolean(true);
       return true;
     }
 
@@ -2228,12 +2244,11 @@ bool js::intrinsic_ArrayNativeSort(JSContext* cx, unsigned argc, Value* vp) {
       return false;
     }
   }
-  args.rval().setBoolean(true);
   return true;
 }
 
 bool js::NewbornArrayPush(JSContext* cx, HandleObject obj, const Value& v) {
-  HandleArrayObject arr = obj.as<ArrayObject>();
+  Handle<ArrayObject*> arr = obj.as<ArrayObject>();
 
   MOZ_ASSERT(!v.isMagic());
   MOZ_ASSERT(arr->lengthIsWritable());
@@ -2254,9 +2269,7 @@ bool js::NewbornArrayPush(JSContext* cx, HandleObject obj, const Value& v) {
 // ES2017 draft rev 1b0184bc17fc09a8ddcf4aeec9b6d9fcac4eafce
 // 22.1.3.18 Array.prototype.push ( ...items )
 bool js::array_push(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.push", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "push");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -2315,9 +2328,7 @@ bool js::array_push(JSContext* cx, unsigned argc, Value* vp) {
 // ES2017 draft rev 1b0184bc17fc09a8ddcf4aeec9b6d9fcac4eafce
 // 22.1.3.17 Array.prototype.pop ( )
 bool js::array_pop(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.pop", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "pop");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -2391,7 +2402,7 @@ static DenseElementResult ArrayShiftDenseKernel(JSContext* cx, HandleObject obj,
     return DenseElementResult::Incomplete;
   }
 
-  HandleNativeObject nobj = obj.as<NativeObject>();
+  Handle<NativeObject*> nobj = obj.as<NativeObject>();
   if (nobj->denseElementsMaybeInIteration()) {
     return DenseElementResult::Incomplete;
   }
@@ -2423,9 +2434,7 @@ static DenseElementResult ArrayShiftDenseKernel(JSContext* cx, HandleObject obj,
 // ES2017 draft rev 1b0184bc17fc09a8ddcf4aeec9b6d9fcac4eafce
 // 22.1.3.22 Array.prototype.shift ( )
 bool js::array_shift(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.shift", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "shift");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -2509,9 +2518,7 @@ bool js::array_shift(JSContext* cx, unsigned argc, Value* vp) {
 // ES2017 draft rev 1b0184bc17fc09a8ddcf4aeec9b6d9fcac4eafce
 // 22.1.3.29 Array.prototype.unshift ( ...items )
 static bool array_unshift(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.unshift", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "unshift");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -2688,7 +2695,7 @@ static bool CanOptimizeForDenseStorage(HandleObject arr, uint64_t endIndex) {
 }
 
 static ArrayObject* CopyDenseArrayElements(JSContext* cx,
-                                           HandleNativeObject obj,
+                                           Handle<NativeObject*> obj,
                                            uint32_t begin, uint32_t count) {
   size_t initlen = obj->getDenseInitializedLength();
   MOZ_ASSERT(initlen <= UINT32_MAX,
@@ -2714,7 +2721,7 @@ static ArrayObject* CopyDenseArrayElements(JSContext* cx,
 }
 
 static bool CopyArrayElements(JSContext* cx, HandleObject obj, uint64_t begin,
-                              uint64_t count, HandleArrayObject result) {
+                              uint64_t count, Handle<ArrayObject*> result) {
   MOZ_ASSERT(result->length() == count);
 
   uint64_t startIndex = 0;
@@ -2846,9 +2853,7 @@ static bool GetActualDeleteCount(JSContext* cx, const CallArgs& args,
 
 static bool array_splice_impl(JSContext* cx, unsigned argc, Value* vp,
                               bool returnValueIsUsed) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.splice", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "splice");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   /* Step 1. */
@@ -2973,7 +2978,7 @@ static bool array_splice_impl(JSContext* cx, unsigned argc, Value* vp,
       MOZ_ASSERT(obj->is<NativeObject>());
 
       /* Step 16.b. */
-      HandleArrayObject arr = obj.as<ArrayObject>();
+      Handle<ArrayObject*> arr = obj.as<ArrayObject>();
       if (targetIndex != 0 || !arr->tryShiftDenseElements(sourceIndex)) {
         arr->moveDenseElements(uint32_t(targetIndex), uint32_t(sourceIndex),
                                uint32_t(len - sourceIndex));
@@ -3047,7 +3052,7 @@ static bool array_splice_impl(JSContext* cx, unsigned argc, Value* vp,
       // slow path handle it. We also have to ensure we maintain the
       // |capacity <= initializedLength| invariant for such objects. See
       // NativeObject::shrinkCapacityToInitializedLength.
-      HandleArrayObject arr = obj.as<ArrayObject>();
+      Handle<ArrayObject*> arr = obj.as<ArrayObject>();
       if (!arr->lengthIsWritable() || !arr->isExtensible()) {
         return DenseElementResult::Incomplete;
       }
@@ -3077,7 +3082,7 @@ static bool array_splice_impl(JSContext* cx, unsigned argc, Value* vp,
       uint32_t start = uint32_t(actualStart);
       uint32_t length = uint32_t(len);
 
-      HandleArrayObject arr = obj.as<ArrayObject>();
+      Handle<ArrayObject*> arr = obj.as<ArrayObject>();
       arr->moveDenseElements(start + itemCount, start + deleteCount,
                              length - (start + deleteCount));
 
@@ -3175,10 +3180,7 @@ static bool array_to_spliced(JSContext* cx, unsigned argc, Value* vp) {
    * dense arrays
    */
 
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.toSpliced", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
-
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "toSpliced");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   /* Step 1. Let O be ? ToObject(this value). */
@@ -3312,6 +3314,7 @@ bool IsIntegralNumber(JSContext* cx, HandleValue v, bool* result) {
  * Array.prototype.with()
  */
 static bool array_with(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "with");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   /* Step 1. Let O be ? ToObject(this value). */
@@ -3496,7 +3499,7 @@ static bool GetIndexedPropertiesInRange(JSContext* cx, HandleObject obj,
 }
 
 static bool SliceSparse(JSContext* cx, HandleObject obj, uint64_t begin,
-                        uint64_t end, HandleArrayObject result) {
+                        uint64_t end, Handle<ArrayObject*> result) {
   MOZ_ASSERT(begin <= end);
 
   Vector<uint32_t> indexes(cx);
@@ -3603,7 +3606,7 @@ static bool ArraySliceOrdinary(JSContext* cx, HandleObject obj, uint64_t begin,
     }
   }
 
-  RootedArrayObject narr(cx, NewDensePartlyAllocatedArray(cx, count));
+  Rooted<ArrayObject*> narr(cx, NewDensePartlyAllocatedArray(cx, count));
   if (!narr) {
     return false;
   }
@@ -3638,9 +3641,7 @@ static bool ArraySliceOrdinary(JSContext* cx, HandleObject obj, uint64_t begin,
 
 /* ES 2016 draft Mar 25, 2016 22.1.3.23. */
 bool js::array_slice(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.slice", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "slice");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   /* Step 1. */
@@ -3831,7 +3832,9 @@ JSObject* js::ArgumentsSliceDense(JSContext* cx, HandleObject obj,
 }
 
 static bool array_isArray(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array", "isArray");
   CallArgs args = CallArgsFromVp(argc, vp);
+
   bool isArray = false;
   if (args.get(0).isObject()) {
     RootedObject obj(cx, &args[0].toObject());
@@ -3856,6 +3859,7 @@ static bool ArrayFromCallArgs(JSContext* cx, CallArgs& args,
 }
 
 static bool array_of(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array", "of");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   bool isArrayConstructor =
@@ -4009,9 +4013,7 @@ static bool SearchElementDense(JSContext* cx, HandleValue val, Iter iterator,
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 22.1.3.14 Array.prototype.indexOf ( searchElement [ , fromIndex ] )
 bool js::array_indexOf(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.indexOf", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "indexOf");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -4125,9 +4127,7 @@ bool js::array_indexOf(JSContext* cx, unsigned argc, Value* vp) {
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 22.1.3.17 Array.prototype.lastIndexOf ( searchElement [ , fromIndex ] )
 bool js::array_lastIndexOf(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.lastIndexOf", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "lastIndexOf");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -4241,9 +4241,7 @@ bool js::array_lastIndexOf(JSContext* cx, unsigned argc, Value* vp) {
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 22.1.3.13 Array.prototype.includes ( searchElement [ , fromIndex ] )
 bool js::array_includes(JSContext* cx, unsigned argc, Value* vp) {
-  AutoGeckoProfilerEntry pseudoFrame(
-      cx, "Array.prototype.includes", JS::ProfilingCategoryPair::JS,
-      uint32_t(ProfilingStackFrame::Flags::RELEVANT_FOR_JS));
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Array.prototype", "includes");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -4379,8 +4377,8 @@ static const JSFunctionSpec array_methods[] = {
     JS_SELF_HOSTED_FN("map", "ArrayMap", 1, 0),
     JS_SELF_HOSTED_FN("filter", "ArrayFilter", 1, 0),
 #ifdef NIGHTLY_BUILD
-    JS_SELF_HOSTED_FN("groupBy", "ArrayGroupBy", 1, 0),
-    JS_SELF_HOSTED_FN("groupByToMap", "ArrayGroupByToMap", 1, 0),
+    JS_SELF_HOSTED_FN("group", "ArrayGroup", 1, 0),
+    JS_SELF_HOSTED_FN("groupToMap", "ArrayGroupToMap", 1, 0),
 #endif
     JS_SELF_HOSTED_FN("reduce", "ArrayReduce", 1, 0),
     JS_SELF_HOSTED_FN("reduceRight", "ArrayReduceRight", 1, 0),
@@ -4408,6 +4406,8 @@ static const JSFunctionSpec array_methods[] = {
 
     /* Proposal */
     JS_SELF_HOSTED_FN("at", "ArrayAt", 1, 0),
+    JS_SELF_HOSTED_FN("findLast", "ArrayFindLast", 1, 0),
+    JS_SELF_HOSTED_FN("findLastIndex", "ArrayFindLastIndex", 1, 0),
 
 #ifdef ENABLE_CHANGE_ARRAY_BY_COPY
     JS_SELF_HOSTED_FN("toReversed", "ArrayToReversed", 0, 0),
@@ -4469,11 +4469,13 @@ static inline bool ArrayConstructorImpl(JSContext* cx, CallArgs& args,
 
 /* ES5 15.4.2 */
 bool js::ArrayConstructor(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSConstructorProfilerEntry pseudoFrame(cx, "Array");
   CallArgs args = CallArgsFromVp(argc, vp);
   return ArrayConstructorImpl(cx, args, /* isConstructor = */ true);
 }
 
 bool js::array_construct(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSConstructorProfilerEntry pseudoFrame(cx, "Array");
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(!args.isConstructing());
   MOZ_ASSERT(args.length() == 1);
@@ -4482,7 +4484,7 @@ bool js::array_construct(JSContext* cx, unsigned argc, Value* vp) {
 }
 
 ArrayObject* js::ArrayConstructorOneArg(JSContext* cx,
-                                        HandleArrayObject templateObject,
+                                        Handle<ArrayObject*> templateObject,
                                         int32_t lengthInt) {
   // JIT code can call this with a template object from a different realm when
   // calling another realm's Array constructor.
@@ -4527,7 +4529,7 @@ static inline bool EnsureNewArrayElements(JSContext* cx, ArrayObject* obj,
 
 template <uint32_t maxLength>
 static MOZ_ALWAYS_INLINE ArrayObject* NewArrayWithShape(
-    JSContext* cx, HandleShape shape, uint32_t length, NewObjectKind newKind,
+    JSContext* cx, Handle<Shape*> shape, uint32_t length, NewObjectKind newKind,
     gc::AllocSite* site = nullptr) {
   // The shape must already have the |length| property defined on it.
   MOZ_ASSERT(shape->propMapLength() == 1);
@@ -4560,7 +4562,7 @@ static MOZ_ALWAYS_INLINE ArrayObject* NewArrayWithShape(
 static Shape* GetArrayShapeWithProto(JSContext* cx, HandleObject proto) {
   // Get a shape with zero fixed slots, because arrays store the ObjectElements
   // header inline.
-  RootedShape shape(
+  Rooted<Shape*> shape(
       cx, SharedShape::getInitialShape(cx, &ArrayObject::class_, cx->realm(),
                                        TaggedProto(proto), /* nfixed = */ 0));
   if (!shape) {
@@ -4605,7 +4607,7 @@ template <uint32_t maxLength>
 static MOZ_ALWAYS_INLINE ArrayObject* NewArray(JSContext* cx, uint32_t length,
                                                NewObjectKind newKind,
                                                gc::AllocSite* site = nullptr) {
-  RootedShape shape(cx, GlobalObject::getArrayShapeWithDefaultProto(cx));
+  Rooted<Shape*> shape(cx, GlobalObject::getArrayShapeWithDefaultProto(cx));
   if (!shape) {
     return nullptr;
   }
@@ -4618,7 +4620,7 @@ static MOZ_ALWAYS_INLINE ArrayObject* NewArrayWithProto(JSContext* cx,
                                                         uint32_t length,
                                                         HandleObject proto,
                                                         NewObjectKind newKind) {
-  RootedShape shape(cx);
+  Rooted<Shape*> shape(cx);
   if (!proto || proto == cx->global()->maybeGetArrayPrototype()) {
     shape = GlobalObject::getArrayShapeWithDefaultProto(cx);
   } else {
@@ -4658,6 +4660,8 @@ static bool array_proto_finish(JSContext* cx, JS::HandleObject ctor,
       !DefineDataProperty(cx, unscopables, cx->names().fill, value) ||
       !DefineDataProperty(cx, unscopables, cx->names().find, value) ||
       !DefineDataProperty(cx, unscopables, cx->names().findIndex, value) ||
+      !DefineDataProperty(cx, unscopables, cx->names().findLast, value) ||
+      !DefineDataProperty(cx, unscopables, cx->names().findLastIndex, value) ||
       !DefineDataProperty(cx, unscopables, cx->names().flat, value) ||
       !DefineDataProperty(cx, unscopables, cx->names().flatMap, value) ||
       !DefineDataProperty(cx, unscopables, cx->names().includes, value) ||
@@ -4787,7 +4791,7 @@ ArrayObject* js::NewDenseFullyAllocatedArrayWithTemplate(
   MOZ_ASSERT(CanChangeToBackgroundAllocKind(allocKind, &ArrayObject::class_));
   allocKind = ForegroundToBackgroundAllocKind(allocKind);
 
-  RootedShape shape(cx, templateObject->shape());
+  Rooted<Shape*> shape(cx, templateObject->shape());
 
   gc::InitialHeap heap = GetInitialHeap(GenericObject, &ArrayObject::class_);
   ArrayObject* arr = ArrayObject::create(cx, allocKind, heap, shape, length,
@@ -4807,7 +4811,7 @@ ArrayObject* js::NewDenseFullyAllocatedArrayWithTemplate(
 
 // TODO(no-TI): clean up.
 ArrayObject* js::NewArrayWithShape(JSContext* cx, uint32_t length,
-                                   HandleShape shape) {
+                                   Handle<Shape*> shape) {
   // Ion can call this with a shape from a different realm when calling
   // another realm's Array constructor.
   Maybe<AutoRealm> ar;
@@ -5058,21 +5062,12 @@ JS_PUBLIC_API bool JS::SetArrayLength(JSContext* cx, Handle<JSObject*> obj,
   return SetLengthProperty(cx, obj, length);
 }
 
-bool js::intrinsic_newList(JSContext* cx, unsigned argc, js::Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  MOZ_ASSERT(args.length() == 0);
-
-  RootedShape shape(cx, GetArrayShapeWithProto(cx, nullptr));
+ArrayObject* js::NewArrayWithNullProto(JSContext* cx) {
+  Rooted<Shape*> shape(cx, GetArrayShapeWithProto(cx, nullptr));
   if (!shape) {
-    return false;
+    return nullptr;
   }
 
   uint32_t length = 0;
-  ArrayObject* list = ::NewArrayWithShape<0>(cx, shape, length, GenericObject);
-  if (!list) {
-    return false;
-  }
-
-  args.rval().setObject(*list);
-  return true;
+  return ::NewArrayWithShape<0>(cx, shape, length, GenericObject);
 }

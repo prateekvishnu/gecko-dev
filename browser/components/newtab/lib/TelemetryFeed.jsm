@@ -4,9 +4,8 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 const { MESSAGE_TYPE_HASH: msg } = ChromeUtils.import(
   "resource://activity-stream/common/ActorConstants.jsm"
@@ -67,6 +66,7 @@ ChromeUtils.defineModuleGetter(
 
 XPCOMUtils.defineLazyModuleGetters(lazy, {
   ExperimentAPI: "resource://nimbus/ExperimentAPI.jsm",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.jsm",
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.jsm",
   TelemetrySession: "resource://gre/modules/TelemetrySession.jsm",
 });
@@ -188,6 +188,7 @@ class TelemetryFeed {
       this._impressionId
     );
     Services.telemetry.scalarSet("deletion.request.context_id", lazy.contextId);
+    Glean.newtab.locale.set(Services.locale.appLocaleAsBCP47);
   }
 
   handleEvent(event) {
@@ -423,6 +424,14 @@ class TelemetryFeed {
     this.sendDiscoveryStreamLoadedContent(portID, session);
     this.sendDiscoveryStreamImpressions(portID, session);
 
+    Glean.newtab.closed.record({ newtab_visit_id: session.session_id });
+    if (
+      this.telemetryEnabled &&
+      (lazy.NimbusFeatures.glean.getVariable("newtabPingEnabled") ?? true)
+    ) {
+      GleanPings.newtab.submit("newtab_session_end");
+    }
+
     if (session.perf.visibility_event_rcvd_ts) {
       let absNow = this.processStartTs + Cu.now();
       session.session_duration = Math.round(
@@ -629,6 +638,9 @@ class TelemetryFeed {
       case "spotlight_user_event":
         event = await this.applySpotlightPolicy(event);
         break;
+      case "toast_notification_user_event":
+        event = await this.applyToastNotificationPolicy(event);
+        break;
       case "moments_user_event":
         event = await this.applyMomentsPolicy(event);
         break;
@@ -689,6 +701,13 @@ class TelemetryFeed {
     ping.browser_session_id = lazy.browserSessionId;
     delete ping.action;
     return { ping, pingType: "spotlight" };
+  }
+
+  async applyToastNotificationPolicy(ping) {
+    ping.client_id = await this.telemetryClientId;
+    ping.browser_session_id = lazy.browserSessionId;
+    delete ping.action;
+    return { ping, pingType: "toast_notification" };
   }
 
   /**
@@ -845,9 +864,10 @@ class TelemetryFeed {
 
   handleTopSitesImpressionStats(action) {
     const { data } = action;
-    const { type, position, source } = data;
+    const { type, position, source, advertiser } = data;
     let pingType;
 
+    const session = this.sessions.get(au.getPortIdOfSender(action));
     if (type === "impression") {
       pingType = "topsites-impression";
       Services.telemetry.keyedScalarAdd(
@@ -855,6 +875,12 @@ class TelemetryFeed {
         `${source}_${position}`,
         1
       );
+      if (session) {
+        Glean.topsites.impression.record({
+          newtab_visit_id: session.session_id,
+          is_sponsored: !!advertiser,
+        });
+      }
     } else if (type === "click") {
       pingType = "topsites-click";
       Services.telemetry.keyedScalarAdd(
@@ -862,6 +888,12 @@ class TelemetryFeed {
         `${source}_${position}`,
         1
       );
+      if (session) {
+        Glean.topsites.click.record({
+          newtab_visit_id: session.session_id,
+          is_sponsored: !!advertiser,
+        });
+      }
     } else {
       Cu.reportError("Unknown ping type for TopSites impression");
       return;
@@ -1022,6 +1054,8 @@ class TelemetryFeed {
       // Intentional fall-through
       case msg.SPOTLIGHT_TELEMETRY:
       // Intentional fall-through
+      case msg.TOAST_NOTIFICATION_TELEMETRY:
+      // Intentional fall-through
       case at.AS_ROUTER_TELEMETRY_USER_EVENT:
         this.handleASRouterUserEvent(action);
         break;
@@ -1146,6 +1180,17 @@ class TelemetryFeed {
     }
 
     Object.assign(session.perf, data);
+
+    if (data.visibility_event_rcvd_ts && !session.newtabOpened) {
+      session.newtabOpened = true;
+      const source = ONBOARDING_ALLOWED_PAGE_VALUES.includes(session.page)
+        ? session.page
+        : "other";
+      Glean.newtab.opened.record({
+        newtab_visit_id: session.session_id,
+        source,
+      });
+    }
   }
 
   uninit() {

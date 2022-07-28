@@ -4,11 +4,6 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
 const lazy = {};
 
 ChromeUtils.defineModuleGetter(
@@ -16,8 +11,6 @@ ChromeUtils.defineModuleGetter(
   "CanonicalJSON",
   "resource://gre/modules/CanonicalJSON.jsm"
 );
-
-XPCOMUtils.defineLazyGlobalGetters(lazy, ["fetch"]);
 
 var EXPORTED_SYMBOLS = ["NormandyApi"];
 
@@ -59,7 +52,7 @@ var NormandyApi = {
         url.searchParams.set(key, data[key]);
       }
     }
-    return lazy.fetch(url.href, {
+    return fetch(url.href, {
       method: "get",
       headers: { Accept: "application/json" },
       credentials: "omit",

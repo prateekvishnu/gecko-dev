@@ -9,11 +9,9 @@ var EXPORTED_SYMBOLS = ["ClickHandlerParent", "MiddleMousePasteHandlerParent"];
 
 const lazy = {};
 
-ChromeUtils.defineModuleGetter(
-  lazy,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(lazy, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 ChromeUtils.defineModuleGetter(
   lazy,
   "PrivateBrowsingUtils",
@@ -115,6 +113,8 @@ class ClickHandlerParent extends JSWindowActorParent {
       csp: data.csp ? lazy.E10SUtils.deserializeCSP(data.csp) : null,
       frameID: data.frameID,
       openerBrowser: browser,
+      // The child ensures that untrusted events have a valid user activation.
+      hasValidUserGestureActivation: true,
     };
 
     // The new tab/window must use the same userContextId.

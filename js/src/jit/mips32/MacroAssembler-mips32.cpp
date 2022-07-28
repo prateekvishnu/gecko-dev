@@ -1856,6 +1856,8 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
   loadValue(Address(StackPointer, ResumeFromException::offsetOfException()),
             JSReturnOperand);
   loadPtr(Address(StackPointer, ResumeFromException::offsetOfFramePointer()),
+          FramePointer);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
           StackPointer);
 
   // If profiling is enabled, then update the lastProfilingFrame to refer to
@@ -1866,7 +1868,7 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
     Label skipProfilingInstrumentation;
     // Test if profiler enabled.
     AbsoluteAddress addressOfEnabled(
-        GetJitContext()->runtime->geckoProfiler().addressOfEnabled());
+        asMasm().runtime()->geckoProfiler().addressOfEnabled());
     asMasm().branch32(Assembler::Equal, addressOfEnabled, Imm32(0),
                       &skipProfilingInstrumentation);
     jump(profilerExitTail);
@@ -1938,7 +1940,7 @@ void MacroAssemblerMIPSCompat::profilerEnterFrame(Register framePtr,
 }
 
 void MacroAssemblerMIPSCompat::profilerExitFrame() {
-  jump(GetJitContext()->runtime->jitRuntime()->getProfilerExitFrameTail());
+  jump(asMasm().runtime()->jitRuntime()->getProfilerExitFrameTail());
 }
 
 void MacroAssembler::subFromStackPtr(Imm32 imm32) {

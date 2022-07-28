@@ -12,8 +12,8 @@ const EXPORTED_SYMBOLS = [
   "unregisterCommandsActor",
 ];
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const lazy = {};
@@ -348,6 +348,11 @@ function getMarionetteCommandsActorProxy(browsingContextFn) {
               }
 
               if (NO_RETRY_METHODS.includes(methodName)) {
+                const browsingContextId = browsingContextFn()?.id;
+                lazy.logger.trace(
+                  `[${browsingContextId}] Querying "${methodName}" failed with` +
+                    ` ${e.name}, returning "null" as fallback`
+                );
                 return null;
               }
 

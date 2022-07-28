@@ -178,11 +178,11 @@ static void ReportSyntaxError(TokenStreamAnyChars& ts,
                               size_t length, ...) {
   MOZ_ASSERT(line.isSome() == column.isSome());
 
-  gc::AutoSuppressGC suppressGC(ts.context());
+  gc::AutoSuppressGC suppressGC(ts.jsContext());
   uint32_t errorNumber = ErrorNumber(result.error);
 
   if (errorNumber == JSMSG_OVER_RECURSED) {
-    ReportOverRecursed(ts.context());
+    ReportOverRecursed(ts.jsContext());
     return;
   }
 
@@ -238,7 +238,7 @@ static void ReportSyntaxError(TokenStreamAnyChars& ts,
 
   // Create the windowed string, not including the potential line
   // terminator.
-  StringBuffer windowBuf(ts.context());
+  StringBuffer windowBuf(ts.jsContext());
   if (!windowBuf.append(windowStart, windowEnd)) {
     return;
   }
@@ -265,7 +265,8 @@ static void ReportSyntaxError(TokenStreamAnyChars& ts,
 }
 
 static void ReportSyntaxError(TokenStreamAnyChars& ts,
-                              RegExpCompileData& result, HandleAtom pattern) {
+                              RegExpCompileData& result,
+                              Handle<JSAtom*> pattern) {
   JS::AutoCheckCannotGC nogc_;
   if (pattern->hasLatin1Chars()) {
     ReportSyntaxError(ts, Nothing(), Nothing(), result,
@@ -303,7 +304,7 @@ bool CheckPatternSyntax(JSContext* cx, TokenStreamAnyChars& ts,
 }
 
 bool CheckPatternSyntax(JSContext* cx, TokenStreamAnyChars& ts,
-                        HandleAtom pattern, JS::RegExpFlags flags) {
+                        Handle<JSAtom*> pattern, JS::RegExpFlags flags) {
   FlatStringReader reader(cx, pattern);
   RegExpCompileData result;
   if (!CheckPatternSyntaxImpl(cx, &reader, flags, &result)) {
@@ -320,9 +321,8 @@ template <typename CharT>
 static bool HasFewDifferentCharacters(const CharT* chars, size_t length) {
   const uint32_t tableSize =
       v8::internal::NativeRegExpMacroAssembler::kTableSize;
-  bool character_found[tableSize];
+  bool character_found[tableSize] = {};
   uint32_t different = 0;
-  memset(&character_found[0], 0, sizeof(character_found));
   for (uint32_t i = 0; i < length; i++) {
     uint32_t ch = chars[i] % tableSize;
     if (!character_found[ch]) {
@@ -339,7 +339,7 @@ static bool HasFewDifferentCharacters(const CharT* chars, size_t length) {
 }
 
 // Identifies the sort of pattern where Boyer-Moore is faster than string search
-static bool UseBoyerMoore(HandleAtom pattern, JS::AutoAssertNoGC& nogc) {
+static bool UseBoyerMoore(Handle<JSAtom*> pattern, JS::AutoAssertNoGC& nogc) {
   size_t length =
       std::min(size_t(kMaxLookaheadForBoyerMoore), pattern->length());
   if (length <= kPatternTooShortForBoyerMoore) {
@@ -463,10 +463,11 @@ enum class AssembleResult {
 
 [[nodiscard]] static AssembleResult Assemble(
     JSContext* cx, RegExpCompiler* compiler, RegExpCompileData* data,
-    MutableHandleRegExpShared re, HandleAtom pattern, Zone* zone,
+    MutableHandleRegExpShared re, Handle<JSAtom*> pattern, Zone* zone,
     bool useNativeCode, bool isLatin1) {
   // Because we create a StackMacroAssembler, this function is not allowed
   // to GC. If needed, we allocate and throw errors in the caller.
+  jit::TempAllocator temp(&cx->tempLifoAlloc());
   Maybe<jit::JitContext> jctx;
   Maybe<js::jit::StackMacroAssembler> stack_masm;
   UniquePtr<RegExpMacroAssembler> masm;
@@ -476,8 +477,8 @@ enum class AssembleResult {
                  : NativeRegExpMacroAssembler::UC16;
     // If we are compiling native code, we need a macroassembler,
     // which needs a jit context.
-    jctx.emplace(cx, nullptr);
-    stack_masm.emplace();
+    jctx.emplace(cx);
+    stack_masm.emplace(cx, temp);
 #ifdef DEBUG
     // It would be much preferable to use `class AutoCreatedBy` here, but we
     // may be operating without an assembler at all if `useNativeCode` is
@@ -585,8 +586,9 @@ enum class AssembleResult {
 }
 
 bool CompilePattern(JSContext* cx, MutableHandleRegExpShared re,
-                    HandleLinearString input, RegExpShared::CodeKind codeKind) {
-  RootedAtom pattern(cx, re->getSource());
+                    Handle<JSLinearString*> input,
+                    RegExpShared::CodeKind codeKind) {
+  Rooted<JSAtom*> pattern(cx, re->getSource());
   JS::RegExpFlags flags = re->getFlags();
   LifoAllocScope allocScope(&cx->tempLifoAlloc());
   HandleScope handleScope(cx->isolate);
@@ -597,8 +599,9 @@ bool CompilePattern(JSContext* cx, MutableHandleRegExpShared re,
     FlatStringReader patternBytes(cx, pattern);
     if (!RegExpParser::ParseRegExp(cx->isolate, &zone, &patternBytes, flags,
                                    &data)) {
+      MainThreadErrorContext ec(cx);
       JS::CompileOptions options(cx);
-      DummyTokenStream dummyTokenStream(cx, options);
+      DummyTokenStream dummyTokenStream(cx, &ec, options);
       ReportSyntaxError(dummyTokenStream, data, pattern);
       return false;
     }
@@ -616,7 +619,7 @@ bool CompilePattern(JSContext* cx, MutableHandleRegExpShared re,
     // First, check to see if we should use simple string search
     // with an atom.
     if (!flags.ignoreCase() && !flags.sticky()) {
-      RootedAtom searchAtom(cx);
+      Rooted<JSAtom*> searchAtom(cx);
       if (data.simple) {
         // The parse-tree is a single atom that is equal to the pattern.
         searchAtom = re->getSource();
@@ -636,7 +639,7 @@ bool CompilePattern(JSContext* cx, MutableHandleRegExpShared re,
       }
     }
     if (!data.capture_name_map.is_null()) {
-      RootedNativeObject namedCaptures(cx, data.capture_name_map->inner());
+      Rooted<NativeObject*> namedCaptures(cx, data.capture_name_map->inner());
       if (!RegExpShared::initializeNamedCaptures(cx, re, namedCaptures)) {
         return false;
       }
@@ -703,7 +706,7 @@ RegExpRunStatus ExecuteRaw(jit::JitCode* code, const CharT* chars,
 }
 
 RegExpRunStatus Interpret(JSContext* cx, MutableHandleRegExpShared re,
-                          HandleLinearString input, size_t startIndex,
+                          Handle<JSLinearString*> input, size_t startIndex,
                           VectorMatchPairs* matches) {
   MOZ_ASSERT(re->getByteCode(input->hasLatin1Chars()));
 
@@ -731,7 +734,7 @@ RegExpRunStatus Interpret(JSContext* cx, MutableHandleRegExpShared re,
 }
 
 RegExpRunStatus Execute(JSContext* cx, MutableHandleRegExpShared re,
-                        HandleLinearString input, size_t startIndex,
+                        Handle<JSLinearString*> input, size_t startIndex,
                         VectorMatchPairs* matches) {
   bool latin1 = input->hasLatin1Chars();
   jit::JitCode* jitCode = re->getJitCode(latin1);
@@ -753,8 +756,8 @@ RegExpRunStatus Execute(JSContext* cx, MutableHandleRegExpShared re,
   return Interpret(cx, re, input, startIndex, matches);
 }
 
-RegExpRunStatus ExecuteForFuzzing(JSContext* cx, HandleAtom pattern,
-                                  HandleLinearString input,
+RegExpRunStatus ExecuteForFuzzing(JSContext* cx, Handle<JSAtom*> pattern,
+                                  Handle<JSLinearString*> input,
                                   JS::RegExpFlags flags, size_t startIndex,
                                   VectorMatchPairs* matches,
                                   RegExpShared::CodeKind codeKind) {

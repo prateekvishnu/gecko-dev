@@ -333,7 +333,13 @@ def initialize(topsrcdir):
         "data-review": MachCommandReference(
             "toolkit/components/glean/build_scripts/mach_commands.py"
         ),
+        "perf-data-review": MachCommandReference(
+            "toolkit/components/glean/build_scripts/mach_commands.py"
+        ),
         "update-glean-tags": MachCommandReference(
+            "toolkit/components/glean/build_scripts/mach_commands.py"
+        ),
+        "update-glean": MachCommandReference(
             "toolkit/components/glean/build_scripts/mach_commands.py"
         ),
         "browsertime": MachCommandReference("tools/browsertime/mach_commands.py"),
@@ -355,6 +361,8 @@ def initialize(topsrcdir):
         "test-interventions": MachCommandReference(
             "testing/webcompat/mach_commands.py"
         ),
+        "esmify": MachCommandReference("tools/esmify/mach_commands.py"),
+        "xpcshell": MachCommandReference("js/xpconnect/mach_commands.py"),
     }
 
     # Set a reasonable limit to the number of open files.
@@ -541,7 +549,8 @@ def _finalize_telemetry_glean(telemetry, is_bootstrap, success):
         # psutil may not be available (we may not have been able to download
         # a wheel or build it from source).
         system_metrics.logical_cores.add(logical_cores)
-        system_metrics.physical_cores.add(physical_cores)
+        if physical_cores is not None:
+            system_metrics.physical_cores.add(physical_cores)
         if memory_total is not None:
             system_metrics.memory.accumulate(
                 int(math.ceil(float(memory_total) / (1024 * 1024 * 1024)))
